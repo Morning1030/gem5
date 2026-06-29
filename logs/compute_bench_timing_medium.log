@@ -1,0 +1,32 @@
+Global frequency set at 1000000000000 ticks per second
+src/mem/dram_interface.cc:690: warn: DRAM device capacity (8192 Mbytes) does not match the address range assigned (512 Mbytes)
+src/base/statistics.hh:279: warn: One of the stats is a legacy stat. Legacy stat is a stat that does not belong to any statistics::Group. Legacy stat is deprecated.
+board.remote_gdb: Listening for connections on port 7000
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 23.1.0.0
+gem5 compiled Jun 26 2026 10:03:24
+gem5 started Jun 26 2026 16:02:00
+gem5 executing on pine, pid 1215939
+command line: ./build/X86/gem5.opt --outdir=m5out/compute_bench_timing_medium my_run/run_hello.py
+
+========== gem5 run configuration ==========
+GEM5 root   : /home/renbang16/LEGOSIM_MICRO/gem5
+Binary path : /home/renbang16/LEGOSIM_MICRO/gem5/my_test/compute_bench
+CPU type    : TIMING
+ISA         : X86
+Cores       : 1
+Clock       : 3GHz
+Memory      : 512MB
+L1I / L1D   : 64KiB / 64KiB
+L2          : 512KiB
+============================================
+warn: No dot file generated. Please install pydot to generate the dot file and pdf.
+src/sim/simulate.cc:199: info: Entering event queue @ 0.  Starting simulation...
+src/sim/mem_state.cc:448: info: Increasing stack size by one page.
+src/sim/syscall_emul.hh:1014: warn: readlink() called on '/proc/self/exe' may yield unexpected results in various settings.
+      Returning '/home/renbang16/LEGOSIM_MICRO/gem5/my_test/compute_bench'
+src/sim/syscall_emul.cc:74: warn: ignoring syscall mprotect(...)
+Compute tiny benchmark finished.
+Result: 9845552623054773495 9052037935576556197 929279894818906502

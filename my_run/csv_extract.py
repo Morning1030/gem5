@@ -1,0 +1,33 @@
+import pandas as pd, io
+csv='''workload,cpu_model,case,l1i_size,l1d_size,l2_size,simInsts,simOps,simTicks,simSeconds,numCycles,ipc,cpi,hostSeconds,hostInstRate,l1d_accesses,l1d_misses,l1d_miss_rate,l1d_miss_rate_percent,l1i_accesses,l1i_misses,l1i_miss_rate,l1i_miss_rate_percent,l2_accesses,l2_misses,l2_miss_rate,l2_miss_rate_percent
+compute_bench,Timing,small,16KiB,16KiB,128KiB,14013971.0,17026640.0,10039261023.0,0.010039,30147931.0,0.464841,2.151273231061804,17.39,805851.0,9005025.0,231.0,2.6e-05,0.0026,21018216.0,536.0,2.6e-05,0.0026,801.0,775.0,0.967541,96.7541
+compute_bench,Timing,baseline,32KiB,32KiB,256KiB,14013971.0,17026640.0,10039211739.0,0.010039,30147783.0,0.464843,2.1512639751485985,17.5,800996.0,9005025.0,231.0,2.6e-05,0.0026,21018216.0,530.0,2.5e-05,0.0025,795.0,775.0,0.974843,97.4843
+compute_bench,Timing,medium,64KiB,64KiB,512KiB,14013971.0,17026640.0,10039209408.0,0.010039,30147776.0,0.464843,2.1512639751485985,17.78,788041.0,9005025.0,231.0,2.6e-05,0.0026,21018216.0,530.0,2.5e-05,0.0025,795.0,775.0,0.974843,97.4843
+compute_bench,Timing,large,64KiB,64KiB,1MiB,14013971.0,17026640.0,10039209408.0,0.010039,30147776.0,0.464843,2.1512639751485985,17.28,810772.0,9005025.0,231.0,2.6e-05,0.0026,21018216.0,530.0,2.5e-05,0.0025,795.0,775.0,0.974843,97.4843
+memory_seq_bench,Timing,small,16KiB,16KiB,128KiB,34616743.0,58746621.0,33156377433.0,0.033156,99568701.0,0.347698,2.8760591087668033,46.55,743662.0,15733667.0,257988.0,0.016397,1.6397,46159405.0,553.0,1.2e-05,0.0012000000000000001,721767.0,574695.0,0.796233,79.6233
+memory_seq_bench,Timing,baseline,32KiB,32KiB,256KiB,34616743.0,58746621.0,33381126792.0,0.033381,100243624.0,0.345357,2.8955544552448624,46.94,737432.0,15733667.0,253552.0,0.016115,1.6115000000000002,46159405.0,547.0,1.2e-05,0.0012000000000000001,721761.0,589344.0,0.816536,81.6536
+memory_seq_bench,Timing,medium,64KiB,64KiB,512KiB,34616743.0,58746621.0,33583131585.0,0.033583,100850245.0,0.34328,2.913073875553484,45.89,754384.0,15733667.0,254425.0,0.016171,1.6171000000000002,46159405.0,546.0,1.2e-05,0.0012000000000000001,721760.0,587555.0,0.814059,81.4059
+memory_seq_bench,Timing,large,64KiB,64KiB,1MiB,34616743.0,58746621.0,33349451832.0,0.033349,100148504.0,0.345685,2.89280703530671,45.91,754008.0,15733667.0,253079.0,0.016085,1.6084999999999998,46159405.0,546.0,1.2e-05,0.0012000000000000001,721760.0,590051.0,0.817517,81.7517
+'''
+df=pd.read_csv(io.StringIO(csv))
+for w,g in df.groupby('workload'):
+    print('\n',w)
+    base=g[g.case=='baseline'].iloc[0]
+    best_ipc=g.loc[g.ipc.idxmax()]
+    best_sim=g.loc[g.simSeconds.idxmin()]
+    print('ipc range', g.ipc.min(), g.ipc.max(), 'delta%', (g.ipc.max()/g.ipc.min()-1)*100)
+    print('simSeconds range', g.simSeconds.min(), g.simSeconds.max(), 'delta%', (g.simSeconds.max()/g.simSeconds.min()-1)*100)
+    print('l1d miss% range',g.l1d_miss_rate_percent.min(),g.l1d_miss_rate_percent.max())
+    print('l2 miss% range',g.l2_miss_rate_percent.min(),g.l2_miss_rate_percent.max())
+    print('best ipc', best_ipc['case'], best_ipc.ipc)
+    print('best sim', best_sim['case'], best_sim.simSeconds)
+
+# compute differences baseline vs large for memory
+mem=df[df.workload=='memory_seq_bench'].set_index('case')
+for metric in ['ipc','simSeconds','numCycles','l1d_miss_rate_percent','l2_miss_rate_percent']:
+    print('mem large vs baseline', metric, mem.loc['large',metric]-mem.loc['baseline',metric], (mem.loc['large',metric]/mem.loc['baseline',metric]-1)*100)
+comp=df[df.workload=='compute_bench'].set_index('case')
+for metric in ['ipc','simSeconds','numCycles','l1d_miss_rate_percent','l2_miss_rate_percent']:
+    print('comp large vs baseline', metric, comp.loc['large',metric]-comp.loc['baseline',metric], (comp.loc['large',metric]/comp.loc['baseline',metric]-1)*100)
+
+
