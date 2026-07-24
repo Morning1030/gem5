@@ -149,7 +149,10 @@ class MemCmd
         HTMAbort,
         // Tlb shootdown
         TlbiExtSync,
-        NUM_MEM_CMDS
+        NUM_MEM_CMDS,
+        // DCF query state
+        QueryReq,
+        QueryResp
     };
 
   private:

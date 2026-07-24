@@ -1,0 +1,177 @@
+/*
+ * Copyright (c) 2017 Jason Lowe-Power
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are
+ * met: redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer;
+ * redistributions in binary form must reproduce the above copyright
+ * notice, this list of conditions and the following disclaimer in the
+ * documentation and/or other materials provided with the distribution;
+ * neither the name of the copyright holders nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#ifndef __LEARNING_GEM5_SCHEDULER_HH__
+#define __LEARNING_GEM5_SCHEDULER_HH__
+
+#include <deque>
+#include <string>
+
+#include "mem/port.hh"
+#include "params/Scheduler.hh"
+#include "sim/clocked_object.hh"
+
+namespace gem5
+{
+struct QueryPayload
+{
+    uint32_t setID;
+    uint32_t wayID;
+};
+
+struct RespPayload
+{
+    uint64_t addr;
+    uint32_t state;
+};
+
+class Scheduler : public ClockedObject
+{
+    private:
+        enum class TaskOp {P2S, CAL, ACC, SWITCH};
+        struct TaskParam
+        {
+            uint32_t wayID;
+        };
+        struct Task
+        {
+            TaskOp taskOp;
+            TaskParam taskParam;
+        };
+        // to interact with MMIO request
+        class CPUSidePort : public ResponsePort
+        {
+            private:
+                Scheduler *owner;
+
+            public:
+                CPUSidePort(const std::string& name, Scheduler *owner);
+                void sendPacket(PacketPtr pkt);
+                AddrRangeList getAddrRanges() const override;
+
+            // there are three modes of the port
+            protected:
+                Tick recvAtomic(PacketPtr pkt) override {panic("recvAtomic unimplemented.");}
+                void recvFunctional(PacketPtr pkt) override;
+                bool recvTimingReq(PacketPtr pkt) override;
+                void recvRespRetry() override;
+        };
+        // to interact with Cache controller
+        class MemSidePort : public RequestPort
+        {
+            private:
+                Scheduler *owner;
+
+            public:
+                MemSidePort(const std::string& name, Scheduler *owner);
+                void sendPacket(PacketPtr pkt);
+
+            protected:
+                bool recvTimingResp(PacketPtr pkt) override;
+                void recvReqRetry() override;
+                void recvRangeChange() override;
+        };
+
+        class TaskScheduler
+        {
+            private:
+                enum class TaskState
+                {
+                    IDLE,
+                    SWITCHING,
+                    COMPUTING
+                };
+                Scheduler *owner;
+                TaskState currState;
+                void triggerTS(Task t);
+
+            public:
+                TaskScheduler(Scheduler *owner);
+            protected:
+        };
+
+        class SwitchController
+        {
+            private:
+                Scheduler *owner;
+                uint32_t setID;
+                uint32_t wayID;
+                uint32_t wayStateValid;
+                Addr flushAddr;
+
+                EventFunctionWrapper switchEvent;
+                EventFunctionWrapper queryEvent;
+                EventFunctionWrapper requestFlushEvent;
+                EventFunctionWrapper switch2PICEvent;
+                EventFunctionWrapper switch2CacheEvent;
+                void processSwitchEvent();
+                void processQueryEvent();
+                void processRequestFlushEvent();
+                void processSwitch2PICEvent();
+                void processSwitch2CacheEvent();
+
+            public:
+                SwitchController(Scheduler *owner);
+            protected:
+
+        };
+
+        CPUSidePort instPort;
+        MemSidePort memPort;
+        TaskScheduler taskScheduler;
+        SwitchController switchController;
+
+        std::deque<PacketPtr> instQueue;
+        size_t maxInstQueueSize = 1000; // temporarily set to 1000
+        EventFunctionWrapper decodeEvent;
+
+        void processDecodeEvent();
+
+    public:
+        Scheduler(SchedulerParams *params);
+
+        Port &getPort(const std::string &if_name, PortID idx=InvalidPortID) override;
+        AddrRangeList getAddrRanges() const;
+        void sendRangeChange();
+        void handleFunctional(PacketPtr pkt);
+        bool handleRequest(PacketPtr pkt);
+        bool handleResponse(PacketPtr pkt);
+        void startup() override;
+
+    /**
+     * Part of a SimObject's initilaization. Startup is called after all
+     * SimObjects have been constructed. It is called after the user calls
+     * simulate() for the first time.
+     */
+    // void startup() override;
+};
+
+
+} // namespace gem5
+
+#endif // __LEARNING_GEM5_SCHEDULER_HH__
