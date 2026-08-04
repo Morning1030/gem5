@@ -38,6 +38,7 @@
 
 namespace gem5
 {
+// datapayload for switch
 struct QueryPayload
 {
     uint32_t setID;
@@ -49,19 +50,22 @@ struct RespPayload
     uint64_t addr;
     uint32_t state;
 };
+// datapayload for p2s
+struct p2s_R_Payload
+{    
+};
+struct p2s_L_Payload
+{
+};
 
 class Scheduler : public ClockedObject
 {
     private:
         enum class TaskOp {P2S, CAL, ACC, SWITCH};
-        struct TaskParam
-        {
-            uint32_t wayID;
-        };
         struct Task
         {
             TaskOp taskOp;
-            TaskParam taskParam;
+            PacketPtr pkt;
         };
         // to interact with MMIO request
         class CPUSidePort : public ResponsePort
@@ -85,8 +89,10 @@ class Scheduler : public ClockedObject
         class MemSidePort : public RequestPort
         {
             private:
+                // corresponds to each direct port
+                enum class PortID {CC, DPM, CB};
                 Scheduler *owner;
-
+                PortID portID;
             public:
                 MemSidePort(const std::string& name, Scheduler *owner);
                 void sendPacket(PacketPtr pkt);
@@ -104,25 +110,35 @@ class Scheduler : public ClockedObject
                 {
                     IDLE,
                     SWITCHING,
-                    COMPUTING
+                    P2SING,
+                    CALING,
+                    ACCING
                 };
                 Scheduler *owner;
+                std::deque<Task> nextTask;
                 TaskState currState;
+                Task nextImmTask;   // switch is immTask
+                EventFunctionWrapper p2sEvent;
+
                 void triggerTS(Task t);
+                void processP2SEvent();
 
             public:
                 TaskScheduler(Scheduler *owner);
+               
             protected:
         };
 
         class SwitchController
         {
             private:
+                enum class SwitchType {PIC2Cache, Cache2PIC};
                 Scheduler *owner;
                 uint32_t setID;
                 uint32_t wayID;
                 uint32_t wayStateValid;
                 Addr flushAddr;
+                SwitchType currSwitchType;
 
                 EventFunctionWrapper switchEvent;
                 EventFunctionWrapper queryEvent;
@@ -142,11 +158,19 @@ class Scheduler : public ClockedObject
         };
 
         CPUSidePort instPort;
-        MemSidePort memPort;
+        MemSidePort cacheControllerPort; // cache controller direct port
+        MemSidePort DPMPort;             // DPM direct port
+        MemSidePort cacheBankPort;       // cache bank direct port
         TaskScheduler taskScheduler;
         SwitchController switchController;
 
         std::deque<PacketPtr> instQueue;
+        // register file data to store the params
+        uint64_t src;                   // SET_SRC
+        uint64_t dst;                   // SET_DST
+        uint64_t size;                  // SET_SIZE
+        uint64_t param;                 // SET_PARAM
+
         size_t maxInstQueueSize = 1000; // temporarily set to 1000
         EventFunctionWrapper decodeEvent;
 
@@ -160,7 +184,7 @@ class Scheduler : public ClockedObject
         void sendRangeChange();
         void handleFunctional(PacketPtr pkt);
         bool handleRequest(PacketPtr pkt);
-        bool handleResponse(PacketPtr pkt);
+        bool handleResponse(PortID portID, PacketPtr pkt);
         void startup() override;
 
     /**

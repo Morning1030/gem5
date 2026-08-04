@@ -35,8 +35,9 @@ class Scheduler(ClockedObject):
     cxx_class = "gem5::Scheduler"
 
     inst_port = ResponsePort("Scheduler port, receives MMIO requests")
-    mem_side = RequestPort("Memory side port, sends requests")
-
+    mem_side_cc = RequestPort("Scheduler port, send request to cache controller")
+    mem_side_dpm = RequestPort("Scheduler port, send request to DPM")
+    mem_side_cb = RequestPort("Scheduler port, send request to cache bank")
     # time_to_wait = Param.Latency("Time before firing the event")
     # number_of_fires = Param.Int(
     #     1, "Number of times to fire the event before goodbye"
