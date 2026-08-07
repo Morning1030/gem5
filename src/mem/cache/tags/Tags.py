@@ -173,3 +173,44 @@ class FALRU(BaseTags):
 
     # This tag uses its own embedded indexing
     indexing_policy = NULL
+
+#mod PIC-LLC class
+class PICLLCTags(BaseSetAssoc):
+    """
+    PIC-LLC (Processing-In-Cache Last Level Cache) tag store.
+
+    Models the cache bank architecture from Section 4.1.3 of the Polymorphic
+    PIC paper:
+      - 4 banks (Bank 0-3), each with 16 ways
+      - Way 0 : Normal Cache way  — always for conventional CPU use
+      - Ways 1-15 : PIC ways      — runtime-switchable between cache and
+                                    PIC/compute mode
+      - 16 Mats per bank (4 SRAM sub-arrays per Mat)
+      - Each Mat stores a 16-byte slice of one way across all sets
+      - SRAM: 64-bit I/O width, 512-wordline configuration
+      - An arbiter gates CPU access to ways currently in PIC mode
+    """
+
+    type = "PICLLCTags"
+    cxx_header = "mem/cache/tags/pic_llc_tags.hh"
+    cxx_class = "gem5::PICLLCTags"
+
+    # Number of cache banks. Must be a power of 2. Paper default: 4.
+    num_banks = Param.Unsigned(4, "Number of cache banks (Bank 0-3)")
+
+    # Which way is permanently reserved for normal CPU cache use.
+    # Paper default: way 0. Cannot be switched to PIC mode.
+    normal_cache_way = Param.Unsigned(0, "Way index of the normal cache way")
+
+    # Physical SRAM geometry parameters (used for area/energy modeling).
+    # Paper: 16 Mats per bank, 4 sub-arrays per Mat.
+    num_mats_per_bank = Param.Unsigned(
+        16, "Number of Mats per cache bank (paper: 16)"
+    )
+    num_sub_arrays_per_mat = Param.Unsigned(
+        4, "Number of SRAM sub-arrays per Mat (paper: 4)"
+    )
+    # Each Mat outputs a 16-byte slice; 4 Mats * 16 B = 64 B = 1 cache line.
+    mat_slice_bytes = Param.Unsigned(
+        16, "Byte width of one Mat's data output (paper: 16)"
+    )
