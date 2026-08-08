@@ -1,0 +1,15 @@
+# -*- mode:python -*-
+#
+# PolymorPIC DMA engine for gem5: address-chunk splitting and DMA response
+# reassembly. DMAEngine takes a DMAEngine::Host struct of callbacks (see
+# pic_dma_engine.hh) for the port, translation, and scheduling it needs --
+# it does not depend on any particular SimObject to embed it.
+
+# import the SCons environment
+Import('*')
+
+# only list .cc files here; .hh files are automatically included by the build system
+Source('pic_dma_engine.cc')
+
+# use -debug-flags=PICDMA to open the debug output for the DMA engine
+DebugFlag('PICDMA', 'DMA request generation, page split, responses')
