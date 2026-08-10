@@ -244,7 +244,7 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, Addr currentSrc, Addr 
                 DPRINTF(Scheduler, "SET_PARAM STORE\n");
             // p2s
             case 2:
-                // make packet for p2s(later send to dpm)
+                // TODO　make packet for p2s(later send to dpm)
                 size_t pktSize = sizeof(...)+
                 RequestorID requestorId = system.getRequestorId(this, "Scheduler");
 
@@ -319,8 +319,7 @@ Scheduler::TaskScheduler::triggerTS()
 void
 Scheduler::TaskScheduler::processP2SEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->DPMPort.sendTimingReq(nextTask.pkt);
-
+    bool success = owner->DPMPort.sendTimingReq(nextImmTask.pkt);
 }
 
 Scheduler::SwitchController::SwitchController(Scheduler* owner) :
