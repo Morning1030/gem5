@@ -99,7 +99,7 @@ P2S_L::handleP2SRequest(PacketPtr pkt) {
         RequestPtr request = std::make_shared<Request>(
             pioAddr + offset,    // the target MMIO address of cache bank
             p2sWritePayload,     // store address + bitSlice
-            Request::,           // TODO
+            0,           // TODO
             requestorId
         );
 
@@ -176,7 +176,7 @@ P2S::P2S_R() {
     // ##########################################################
     get_array_relatice_offset(relative_offset_buf, bufNum);
     arrayID_offset[0] = 0;
-    for (int i = 1; i < 8; i++) arrayID_offset[i] = relative_offset_buf[i-1] + arrayID_offset[i - 1];
+    for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
     // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 }
 bool
@@ -266,4 +266,74 @@ P2S_R::get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf) {
     if (numBuf == 1) offset = [4, 4, 4, 4, 4, 4, 4];        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
     else if (numBuf == 2) offset = [1, 3, 1, 3, 1, 3, 1];   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
     else if (numBuf == 3) offset = [1, 1, 2, 1, 1, 2, 1];   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
+}
+
+class P2S_R_T {
+    // request params
+    uint64_t base_arrayID_to_store;
+    uint32_t nCols;
+    uint32_t nRows;
+    uint8_t precision;     
+    uint8_t bufNum;
+
+    next_row_offset_bytes=UInt(sysCfg.offset_signLen.W)
+    dramAddr=UInt(sysCfg.virtualAddrLen.W)
+
+    
+
+    // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
+    std::vector<uint8_t> relative_offset_buf(7);
+    std::vector<uint8_t> arrayID_offset(8);
+
+    // Buffer Array 
+    std::vector<uint64_t> bufArray(8);               // nBuf = 8, busWidth=64 bit
+    std::vector<uint8_t> bufArrayOutReFormat(64);    // bitline=64
+    
+}
+P2S_R_T::P2S_R_T() {
+    get_array_relatice_offset(relative_offset_buf, bufNum);
+    arrayID_offset[0] = 0;
+    for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
+}
+P2S_R_T::handleP2SRequest(PacketPtr pkt) {
+    for (int 
+        for(int i = 0; i < 64; i++) {
+            uint8_t bitShift = (i % 8) * 8;
+            bufArrayOutReFormat[i] = (bufArray[i / 8] >> bitShift) & 0xFF;
+        }
+
+
+        // per bit, each element is uint_8
+        for (int i = 0; i < precision; i++) {
+        // extract bits from raw data
+        uint64_t bitSlice = extractBits_R(regArray, curEnqBlockInBufColPtr, i)
+
+        // determine the address and pack into packets
+        RequestorID requestorId = system.getRequestorId(this, "DPM");
+
+                    RequestPtr request = std::make_shared<Request>(
+                        pioAddr + offset,    // the target MMIO address of cache bank
+                        p2sWritePayload,     // store address + bitSlice
+                        0,                   // TODO request flag?
+                        requestorId
+                    );
+
+                    PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
+                    bitSlicePkt->allocate();
+
+                    uint64_t arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
+                    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+                    
+                    // enqueue into write queue
+                    bitSliceQueue.push_back(bitSlicePkt);
+                    schedule(ProcessWriteEvent, curTick() + cycles(1));
+
+                }
+            }
+        }
+    }
+    // write to cache bank
+
+    // send p2s_done to scheduler
+    cpuSidePort.sendTimingResp(pkt);
 }
