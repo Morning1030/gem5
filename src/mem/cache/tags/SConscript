@@ -36,6 +36,7 @@ SimObject(
         "SectorTags",
         "CompressedTags",
         "FALRU",
+        "PICLLCTags", #mod
         "TaggedIndexingPolicy",
         "TaggedSetAssociative",
     ],
@@ -46,6 +47,7 @@ Source("base_set_assoc.cc")
 Source("compressed_tags.cc")
 Source("dueling.cc")
 Source("fa_lru.cc")
+Source("pic_llc_tags.cc") #mod
 Source("sector_blk.cc")
 Source("sector_tags.cc")
 Source("super_blk.cc")
