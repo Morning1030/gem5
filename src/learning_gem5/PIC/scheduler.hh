@@ -50,13 +50,19 @@ struct RespPayload
     uint64_t addr;
     uint32_t state;
 };
+struct P2S_L_Payload
+{
+    uint64_t base_dramAddr_to_load;
+    uint64_t base_picAddr_to_store;
+    uint32_t next_row_offset_elem;  // the low 15 bits
+    uint8_t _L_block_row;           // 8 bits
+    uint8_t precision;              // 3 bits
+};
 // datapayload for p2s
 struct p2s_R_Payload
 {    
 };
-struct p2s_L_Payload
-{
-};
+
 
 class Scheduler : public ClockedObject
 {

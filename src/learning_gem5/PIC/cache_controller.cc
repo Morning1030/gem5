@@ -111,13 +111,9 @@ CacheController::handleQueryWayState(PacketPtr pkt) {
     bool valid = getSetWayValid(setID, wayID);
     Addr addr = getSetWayAddr(setID, wayID);
 
-    RespPayload respPayload;
-    respPayload.state = valid;
-    respPayload.addr = addr;
-
+    RespPayload *respPayload = new RespPayload{valid, addr};
     pkt->makeResponse();
-
-    pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
+    pkt->dataDynamic(reinterpret_cast<uint8_t*>(respPayload));
 
     bool success = cpuSidePort.sendTimingResp(pkt);
     if (!success) {
@@ -131,7 +127,7 @@ bool
 CacheController::handleFlushReq(PacketPtr pkt) {
 
     // decode flush address from packet
-    Addr flushAddr = pkt->getLE<Addr>;
+    Addr flushAddr = pkt->getLE<Addr>();
 
     // flush the (setID, wayID) cache block / cache line
     CacheBlk *blk = tags->findBlock(flushAddr, false);
@@ -161,7 +157,7 @@ CacheController::handleFlushReq(PacketPtr pkt) {
 bool
 CacheController::handleCache2PIC(pkt) {
     // switch PIC_model[wayID] from cache mode to PIC mode
-    uint32_t wayID = pkt->getLE<uint32_t>;
+    uint32_t wayID = pkt->getLE<uint32_t>();
     tags->PIC_mode[wayID] = true;
 
     if (pkt->needsResponse()) {
@@ -179,7 +175,7 @@ CacheController::handleCache2PIC(pkt) {
 bool
 CacheController::handlePIC2Cache(pkt) {
     // switch PIC_model[wayID] from PIC mode to cache mode
-    uint32_t wayID = pkt->getLE<uint32_t>;
+    uint32_t wayID = pkt->getLE<uint32_t>();
     tags->PIC_mode[wayID] = true;
 
     if (pkt->needsResponse()) {

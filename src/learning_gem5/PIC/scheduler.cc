@@ -35,9 +35,9 @@ namespace gem5
 Scheduler::Scheduler(SchedulerParams *params) :
     ClockedObject(params),
     instPort(params->name + ".inst_port", this),
-    cacheControllerPort(params->name + ".mem_side_cc", this),
-    DPMPort(params->name + ".mem_side_dpm", this),
-    cacheBankPort(params->name + ".mem_side_cb", this),
+    cacheControllerPort(params->name + ".cc_port", this),
+    DPMPort(params->name + ".dpm_port", this),
+    cacheBankPort(params->name + ".cb_port", this),
     taskScheduler(this),
     switchController(this),
     decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent")
@@ -250,8 +250,8 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, Addr currentSrc, Addr 
 
                 RequestPtr request = std::make_shared<Request>(
                     pioAddr + offset    // the target MMIO address of dpm
-                    sizeof(Addr),       // flush addr
-                    Request::FlushWay,  // flag
+                    sizeof(P2S_L_Payload),
+                    Request::,          // TODO
                     requestorId
                 );
 
@@ -390,7 +390,7 @@ Scheduler::SwitchController::processNextSet()
 void
 Scheduler::SwitchController::processQueryEvent()
 {
-    size_t pktSize = std::max(sizeof(QueryPayload, sizeof(RespPayload)));
+    size_t pktSize = std::max(sizeof(QueryPayload), sizeof(RespPayload));
     RequestorID requestorId = system.getRequestorId(this, "Scheduler");
 
     RequestPtr request = std::make_shared<Request>(
@@ -401,10 +401,9 @@ Scheduler::SwitchController::processQueryEvent()
     );
 
     PacketPtr pkt = new Packet(request, MemCmd::QueryReq);
-    pkt->allocate();
+    QueryPayload *queryPayload = new QueryPayload{setID, wayID};
+    pkt->dataDynamic(reinterpret_cast<uint8_t*>(queryPayload));
 
-    QueryPayload queryPayload = {setID, wayID};
-    pkt->setData(reinterpret_cast<const uint8_t*>(&queryPayload));
     bool success = owner->cacheControllerPort.sendTimingReq(pkt);
     // if (!success) {
     // owner->retryQueue.push_back(pkt);
