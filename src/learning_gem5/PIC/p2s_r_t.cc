@@ -29,29 +29,9 @@
 #include "learning_gem5/PIC/p2s.hh"
 #include "debug/P2S_L.hh"
 
-/* DATA MEMBERS
-precision=precision
-uint64_t base_dram_addr = base_dramAddr_to_load
-uint64_t base_picAddr=RegInit(0.U((sysCfg.accessCacheFullAddrLen).W))
-uint64_t pic_write_ptr = base_picAddr_to_store;
-next_row_offset_elem=next_row_offset_elem
-next_row_offset_dram=(next_row_offset_elem*bits_per_ele)>>log2Ceil(8)
-_L_block_row =_L_block_row
-_L_block_row_ptr=RegInit(0.U(sysCfg._L_nRow_sigLen.W))
-next_slice_offset_pic=_L_block_row
-*/
-
-/*
-P2S_L REQUEST PARAMETERS
-base_dramAddr_to_load
-base_picAddr_to_store
-_L_block_row
-next_row_offset_elem
-precision
-*/
 namespace gem5
 {
-P2S_L::P2S_L(P2S_LParams *params) :
+P2S_R_T::P2S_R_T(P2S_R_TParams *params) :
     ClockedObject(params),
     instPort(params.name + ".cpu_port", this),
     DMAPort(params.name + ".dma_port", this),
@@ -59,10 +39,16 @@ P2S_L::P2S_L(P2S_LParams *params) :
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
     bitSliceEvent([this]{this->processBitSliceEvent();}, "bitSliceEvent"),
     writeEvent([this]{this->processWriteEvent();}, "writeBankEvent")
-{}
-
-bool
-P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
+{
+    // ##########################################################
+    // ################# Array offset Part ######################
+    // ##########################################################
+    get_array_relatice_offset(relative_offset_buf, bufNum);
+    arrayID_offset[0] = 0;
+    for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
+}
+bool 
+P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt) {
     // Just forward to the memobj.
     if (!owner->handleRequest(pkt)) {
         needRetry = true;
@@ -71,23 +57,19 @@ P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
         return true;
     }
 }
-
-void
-P2S_L::MemSidePort::sendPacket(PacketPtr pkt){}
-
-// TODO take care of out of order responses
 bool
-P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
-    // fill the response to buffer
+P2S_R_T::MemSidePort::recvTimingResp(PacketPtr pkt) {
+// fill the response to buffer
     // TODO need sender state row to deal with out of order receiving
+    // TODO make sure whether DMA returns a 64bit data or a 8 * 8 bit data
     uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
     size_t writeOffset = dmaRow * 8; 
     size_t pktSize = pkt->getSize();
 
-    if (writeOffset + pktSize <= regArray[dmaRow].size()) {
-        std::memcpy(regArray[dmaRow].data(), dmaData, pktSize);
+    if (writeOffset + pktSize <= bufArray[dmaRow].size()) {
+        std::memcpy(bufArray[dmaRow].data(), dmaData, pktSize);
     } else {
-        panic("P2S_L: regArray buffer overflow! dmaRow=%u\n", dmaRow);
+        panic("P2S_L: bufArray buffer overflow! dmaRow=%u\n", dmaRow);
     }
 
     delete pkt;
@@ -96,125 +78,110 @@ P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
     if (dmaRow == dim) {
         dmaRow = 0;
         bit_ptr = 0;
-
-        pic_write_ptr = base_picAddr + _L_block_row_ptr;
+        // finish filling dma into buffer
         schedule(bitSliceEvent, curTick() + cycles(1));
 
     } else {
         // need to wait for other dmaRows to finish
     }
+
+    // reformat the buffer from dma data to extract bit format
+        for(int i = 0; i < 64; i++) {
+            uint8_t bitShift = (i % 8) * 8;
+            bufArrayOutReFormat[i] = (bufArray[i / 8] >> bitShift) & 0xFF;
+        }
 }
-
-bool
-P2S_L::handleRequest(PacketPtr pkt) {
-    // fill the packet field into data members of p2s
-    P2S_L_Payload *p2s_L_Payload = pkt->getConstPtr<P2S_L_Payload>();
-
-    base_dram_addr = p2s_L_Payload->base_dramAddr_to_load;
-    base_picAddr = p2s_L_Payload->base_picAddr_to_store;
-    pic_write_ptr = p2s_L_Payload->base_picAddr_to_store;
-    next_row_offset_elem = p2s_L_Payload->next_row_offset_elem;
-    next_row_offset_dram = (p2s_L_Payload->next_row_offset_elem * 8) >> log2Ceil(8)
-    _L_block_row = p2s_L_Payload->_L_block_row;
-    _L_block_row_ptr = 0;
-    next_slice_offset_pic = p2s_L_Payload->_L_block_row;
-    precision = p2s_L_Payload->precision;
-    bit_ptr = 0;
-    dmaRow = 0;
-
-    schedule(dmaReadEvent, curTick + cyckes(1));
-}
-
 void
-P2S_L::processDMAReadEvent() {
-    // read one row in L Tile
-    RequestorID requestorId = system.getRequestorId(this, "P2S_L");
+P2S_R_T::handleRequest(PacketPtr pkt) {
+    // fill the packet field into data members of p2s
+    P2S_R_Payload *p2s_R_Payload = pkt->getConstPtr<P2S_R_Payload>();
+    dramAddr = p2s_R_Payload->dramAddr;
+    base_arrayID_to_store = p2s_R_Payload->base_arrayID_to_store; // Which subarray to put the first selected bit map
+    next_row_offset_bytes = p2s_R_Payload->next_row_offset_bytes;                                 // 15bits
+    nRows = p2s_R_Payload->nRows;                                                 // Read how many rows
+    nCols = p2s_R_Payload->nCols;                                                 // Number of columns to read, max 1024
+    precision = p2s_R_Payload->precision;    
+    bufNum = p2s_R_Payload->bufNum;  
+
+    // initialize data memebers
+    bit_ptr = 0;
+    row_store_ptr = 0;
+    schedule(dmaReadEvent, curTick() + cycles(1));
+}
+void
+P2S_R_T::processDMAReadEvent() {
+    // read one row in R Tile
+    RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
 
     RequestPtr request = std::make_shared<Request>(
         pioAddr + offset                    // the target MMIO address of cache controller
-        sizeof(DMALPayload),                // next_row_offset_elem, base_dram_addr
+        sizeof(DMARTPayload),                // next_row_offset_elem, base_dram_addr
         Request::,                          // TODO
         requestorId
     )
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
         
     // ask DMA to get data by cache controller
-    DMALPayload* dmaLPayload = new DMALPayload{next_row_offset_elem, base_dram_addr};
-    
-    pkt->dataDynamic(reinterpret_cast<uint8_t*>(&dmaLPayload));
+    DMARTPayload* dmaRTPayload = new DMARTPayload{nCols, dramAddr};
+    pkt->dataDynamic(reinterpret_cast<uint8_t*>(&dmaRTPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
-        base_dram_addr += next_row_offset_dram; // update base_dram_addr for the next round
+        dramAddr += next_row_offset_bytes; // update base_dram_addr for the next round
     }
-
-    
+    else {
+        // need to retry
+    }
 }
 void
-P2S_L::processBitSliceEvent() {
-    // each bit of elements in the whole row
+P2S_R_T::processBitSliceEvent() {
 
     // extract bits from raw data
-    uint64_t bitSlice = extractBits(regArray, bit);
+    uint64_t bitSlice = extractBits_R_T(bufArrayOutReFormat, bit_ptr);
 
-    // determine the address and pack into packets
-    RequestorID requestorId = system.getRequestorId(this, "PS2L");
+    // determine the address
+    uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
+    uint64_t arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + row_store_ptr;
+
+    // pack into packets
+    RequestorID requestorId = system.getRequestorId(this, "DPM");
 
     RequestPtr request = std::make_shared<Request>(
         pioAddr + offset,    // the target MMIO address of cache bank
-        sizeof(P2SWritePayload),     // store address + bitSlice
-        0,                   // TODO
+        sizeof(p2sWritePayload),     // store address + bitSlice
+        0,                   // TODO request flag?
         requestorId
     );
 
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
+    bitSlicePkt->allocate();
 
-    P2SWritePayload *p2sWritePayload = new P2SWritePayload{pic_write_ptr, bitSlice};
-    bitSlicePkt->dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
-
+    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+                        
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
+    // write to cache bank
     schedule(writeEvent, curTick() + cycles(1));
-
-    // update the next address
-    pic_write_ptr += next_slice_offset_pic; // next_slice_offset_pic = _L_block_row(?)
-
-    // finish one bit slice, move on to the next bit
+    
     bit_ptr++;
     if (bit_ptr < precision) {
         schedule(bitSliceEvent, curTick() + cycles(1));
     }
-    // finish one row, move on to the next row
     else {
         bit_ptr = 0;
-        _L_block_row_ptr++;
-        if (_L_block_row_ptr < _L_block_row) {
+        row_store_ptr++;
+        if (row_store_ptr < nRows) {
             schedule(dmaReadEvent, curTick() + cycles(1));
         }
         else {
             // send p2s_done to scheduler
         }
     }
+
+    // send p2s_done to scheduler
+
 }
-
-uint64_t
-P2S_L::extractBits(const std::vector<std::vector<uint8_t>> &arr, uint8_t bit) {
-    uint64_t extractedBit = 0;
-    uint64_t bitSlice = 0;
-
-    // for each element in the array
-    for (int i = 0; i < 64; i++) {
-        // extract the bit for element i
-        extractedBit = (arr[i / 8][i % 8] >> bit) & 0x1;
-
-        // shift it to bit and OR to bitSlice
-        bitSlice |= (extractedBit << i);
-    }
-    // element 63, 62, 61, 60 .... 0
-    return bitSlice;
-}
-
 void
-P2S_L::processWriteEvent() {
+P2S_R_T::processWriteEvent() {
     if (!bitSliceQueue.empty()) {
         PacketPtr pkt = bitSliceQueue.front();
         bool success = cacheBankPort.sendTimingReq(pkt);
@@ -228,5 +195,27 @@ P2S_L::processWriteEvent() {
     }
 }
 
+uint64_t
+P2S_R_T::extractBits_R_T(const std::vector<uint_8> &buf, uint8_t bit) {
+    uint64_t extractedBit 0;
+    uint64_t bitSlice = 0;
+
+    for (int i = 0; i < 64; i++) {
+        // extract the bit for element i
+        extractedBit = (buf[i] >> bit) & 0x1;
+
+        // shift it to bit and OR to bitSlice
+        bitSlice |= (extractedBit << i);
+    }
+    // element 63, 62, 61, 60 .... 0
+    return bitSlice;
 }
 
+
+void
+P2S_R::get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf) { // numBuf is 2 bit in fact
+    if (numBuf == 1) offset = [4, 4, 4, 4, 4, 4, 4];        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
+    else if (numBuf == 2) offset = [1, 3, 1, 3, 1, 3, 1];   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
+    else if (numBuf == 3) offset = [1, 1, 2, 1, 1, 2, 1];   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
+}
+}

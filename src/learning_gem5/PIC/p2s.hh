@@ -46,11 +46,17 @@ namespace gem5
         uint64_t baseAddr_DRAM;
     };
     struct DMARPayload{
-
     };
     struct DMARTPayload{
-
+        // row = 1;
+        uint32_t byte_per_row;
+        uint64_t baseAddr_DRAM;
     };
+    struct P2SWritePayload {
+        uint64_t arrayAddr;
+        uint64_t bitSlice;
+    };
+
     class P2S_L : public ClockedObject {
         private:
             // to interact with scheduler
@@ -109,8 +115,12 @@ namespace gem5
 
             // write bank queue
             std::vector<PacketPtr> bitSliceQueue;
+
             // events
+            EventFunctionWrapper dmaReadEvent;
+            EventFunctionWrapper bitSliceEvent;
             EventFunctionWrapper writeEvent;
+            
         protected:
         public:
             P2S_L(P2S_LParams *params);
@@ -224,14 +234,16 @@ namespace gem5
             MemSidePort CacheBankPort;
 
             // request params
-            uint64_t base_arrayID_to_store;
-            uint32_t nCols;
-            uint32_t nRows;
-            uint8_t precision;     
-            uint8_t bufNum;
-            next_row_offset_bytes=UInt(sysCfg.offset_signLen.W)
-            dramAddr=UInt(sysCfg.virtualAddrLen.W)
-
+            uint64_t dramAddr;
+            uint64_t base_arrayID_to_store; // Which subarray to put the first selected bit map
+            uint32_t next_row_offset_bytes;                                 // 15bits
+            uint32_t nRows                          ;                        // Read how many rows
+            uint32_t nCols;                                                 // Number of columns to read, max 1024
+            uint8_t precision;    
+            uint8_t bufNum;  
+            // variables
+            bit_ptr;
+            row_store_ptr;
             // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
             std::vector<uint8_t> relative_offset_buf(7);
             std::vector<uint8_t> arrayID_offset(8);

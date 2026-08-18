@@ -59,8 +59,15 @@ struct P2S_L_Payload
     uint8_t precision;              // 3 bits
 };
 // datapayload for p2s
-struct p2s_R_Payload
-{    
+struct P2S_R_Payload
+{
+    uint64_t dramAddr;
+    uint64_t base_arrayID_to_store; // Which subarray to put the first selected bit map
+    uint32_t next_row_offset_bytes;                                 // 15bits
+    uint32_t nRows                          ;                        // Read how many rows
+    uint32_t nCols;                                                 // Number of columns to read, max 1024
+    uint8_t precision;    
+    uint8_t bufNum;                                                 // 2 bits
 };
 
 
