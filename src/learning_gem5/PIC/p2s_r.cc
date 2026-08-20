@@ -169,9 +169,9 @@ P2S_R::processDMAReadEvent() {
         
     // ask DMA to get data by cache controller
     curBlockNCols = std::min(128, nCols - curBlockColPtr);
-    DMARPayload* dmaRPayload = new DMARPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
+    DMARPayload *dmaRPayload = new DMARPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
     
-    pkt->dataDynamic(reinterpret_cast<uint8_t*>(&dmaRPayload));
+    pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
 
@@ -204,7 +204,7 @@ P2S_R::processBitSliceEvent() {
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
     uint64_t arrayAddrEnq = (currArrayID << log2Ceil(coreCfg.wordlineNums)) + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
-    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+    P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
 
     // pack into packets
     RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
@@ -218,7 +218,7 @@ P2S_R::processBitSliceEvent() {
     
     // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-    bitSlicePkt->allocate();
+    bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
                     
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);

@@ -121,7 +121,7 @@ P2S_R_T::processDMAReadEvent() {
         
     // ask DMA to get data by cache controller
     DMARTPayload* dmaRTPayload = new DMARTPayload{nCols, dramAddr};
-    pkt->dataDynamic(reinterpret_cast<uint8_t*>(&dmaRTPayload));
+    pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
         dramAddr += next_row_offset_bytes; // update base_dram_addr for the next round
@@ -139,7 +139,7 @@ P2S_R_T::processBitSliceEvent() {
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
     uint64_t arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + row_store_ptr;
-    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+    P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
 
     // pack into packets
     RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
@@ -153,7 +153,7 @@ P2S_R_T::processBitSliceEvent() {
 
     // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-    bitSlicePkt->allocate();
+    bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
