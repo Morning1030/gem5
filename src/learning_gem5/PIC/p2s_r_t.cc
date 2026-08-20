@@ -59,23 +59,21 @@ P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt) {
 }
 bool
 P2S_R_T::MemSidePort::recvTimingResp(PacketPtr pkt) {
-// fill the response to buffer
+    // fill the response to buffer
     // TODO need sender state row to deal with out of order receiving
-    // TODO make sure whether DMA returns a 64bit data or a 8 * 8 bit data
     uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
-    size_t writeOffset = dmaRow * 8; 
     size_t pktSize = pkt->getSize();
 
-    if (writeOffset + pktSize <= bufArray[dmaRow].size()) {
-        std::memcpy(bufArray[dmaRow].data(), dmaData, pktSize);
+    if (dmaRow < bufArray.size() && pktSize <= sizeof(uint64_t)) {
+        std::memcpy(&bufArray[dmaRow], dmaData, pktSize);
     } else {
-        panic("P2S_L: bufArray buffer overflow! dmaRow=%u\n", dmaRow);
+        panic("P2S_R_T: bufArray buffer overflow! dmaRow=%u\n", dmaRow);
     }
 
     delete pkt;
     dmaRow++;
 
-    if (dmaRow == dim) {
+    if (dmaRow == bufArray.size()) {
         dmaRow = 0;
         bit_ptr = 0;
         // finish filling dma into buffer
@@ -86,10 +84,10 @@ P2S_R_T::MemSidePort::recvTimingResp(PacketPtr pkt) {
     }
 
     // reformat the buffer from dma data to extract bit format
-        for(int i = 0; i < 64; i++) {
-            uint8_t bitShift = (i % 8) * 8;
-            bufArrayOutReFormat[i] = (bufArray[i / 8] >> bitShift) & 0xFF;
-        }
+    // for(int i = 0; i < 64; i++) {
+    //     uint8_t bitShift = (i % 8) * 8;
+    //     bufArrayOutReFormat[i] = (bufArray[i / 8] >> bitShift) & 0xFF;
+    // }
 }
 void
 P2S_R_T::handleRequest(PacketPtr pkt) {
@@ -141,22 +139,22 @@ P2S_R_T::processBitSliceEvent() {
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
     uint64_t arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + row_store_ptr;
+    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
 
     // pack into packets
-    RequestorID requestorId = system.getRequestorId(this, "DPM");
+    RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
 
     RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset,    // the target MMIO address of cache bank
+        pioAddr + offset,            // the target MMIO address of cache bank
         sizeof(p2sWritePayload),     // store address + bitSlice
-        0,                   // TODO request flag?
+        0,                           // TODO request flag?
         requestorId
     );
 
+    // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
     bitSlicePkt->allocate();
 
-    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
-                        
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
     // write to cache bank

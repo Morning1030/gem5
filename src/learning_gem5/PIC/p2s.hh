@@ -46,10 +46,13 @@ namespace gem5
         uint64_t baseAddr_DRAM;
     };
     struct DMARPayload{
+        uint32_t byte_per_row;  // cols
+        uint32_t offset;
+        uint64_t baseAddr_DRAM;
     };
     struct DMARTPayload{
         // row = 1;
-        uint32_t byte_per_row;
+        uint32_t byte_per_row;  // cols
         uint64_t baseAddr_DRAM;
     };
     struct P2SWritePayload {
@@ -111,7 +114,7 @@ namespace gem5
             uint8_t dmaRow;
 
             // buffer to store data accessed from DMA
-            std::vector<std::vector<uint8_t>> &regArray; // 8 * 8
+            std::vector<std::vector<uint8_t>> regArray(8, std::vector<uint8_t>(8, 0)); // 8 * 8
 
             // write bank queue
             std::vector<PacketPtr> bitSliceQueue;
@@ -168,19 +171,38 @@ namespace gem5
             MemSidePort CacheBankPort;
 
             // request params
-            uint64_t base_arrayID_to_store;
-            uint32_t nCols;
-            uint32_t nRows;
-            uint8_t precision;     
+            uint64_t dramAddr;
+            uint64_t base_arrayID_to_store; // Which subarray to put the first selected bit map
+            uint32_t next_row_offset_bytes;                                 // 15bits
+            uint32_t nRows                          ;                        // Read how many rows
+            uint32_t nCols;                                                 // Number of columns to read, max 1024
+            uint8_t precision;    
             uint8_t bufNum;
 
-            next_row_offset_bytes=UInt(sysCfg.offset_signLen.W)
-            dramAddr=UInt(sysCfg.virtualAddrLen.W)
+            // variables for bitslice
+            uint32_t curBlockColPtrGlobal;
+            uint32_t blockNColInMem;
+            uint32_t curBufColPtrInBlock;
+            uint32_t curBufNCols;
+            uint32_t curEnqBlockInBufColPtr;
+            uint32_t bit_ptr;
+
+            // variables for dma request (each block)
+            uint32_t curBlockDramBaseAddrPtr;
+            uint32_t curRowDramAddrOffset;
+            uint32_t curBlockNRows;
+            uint32_t curBlockNCols;
+            uint32_t curBlockColPtr;
+            uint32_t curBlockRowPtr;
+            uint32_t writeBufRowPtr;
+            uint32_t readMemAddr;
+            uint32_t writeMemAddr;
 
             // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
             std::vector<uint8_t> relative_offset_buf(7);
             std::vector<uint8_t> arrayID_offset(8);
-            std::vector<std::vector<uint8_t>> &regArray;    // p2s_R it's 64 * 8
+            std::vector<std::vector<uint8_t>> mem0(64, std::vector<uint8_t>(128, 0));      // SRAM block is 64 * 128
+            std::vector<std::vector<uint8_t>> regArray(64, std::vector<uint8_t>(8, 0));    // p2s_R it's 64 * 8
             // write bank queue
             std::vector<PacketPtr> bitSliceQueue;
             // events
@@ -192,7 +214,6 @@ namespace gem5
             void extractBits_R(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim);
             void processWriteEvent();
             
-
     };
 
     class P2S_R_T : public ClockedObject{

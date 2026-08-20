@@ -81,10 +81,9 @@ P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
     // fill the response to buffer
     // TODO need sender state row to deal with out of order receiving
     uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
-    size_t writeOffset = dmaRow * 8; 
     size_t pktSize = pkt->getSize();
 
-    if (writeOffset + pktSize <= regArray[dmaRow].size()) {
+    if (dmaRow < regArray.size() && pktSize <= regArray[dmaRow].size()) {
         std::memcpy(regArray[dmaRow].data(), dmaData, pktSize);
     } else {
         panic("P2S_L: regArray buffer overflow! dmaRow=%u\n", dmaRow);
@@ -93,7 +92,7 @@ P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
     delete pkt;
     dmaRow++;
 
-    if (dmaRow == dim) {
+    if (dmaRow == regArray.size()) {
         dmaRow = 0;
         bit_ptr = 0;
 
