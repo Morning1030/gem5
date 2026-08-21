@@ -29,9 +29,17 @@ Import('*')
 
 SimObject('Scheduler.py', sim_objects=['Scheduler'])
 SimObject('CacheController.py', sim_objects=['CacheController'])
+SimObject('P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
+
 
 Source('scheduler.cc')
 Source('cache_controller.cc')
+Source('p2s_l.cc')
+Source('p2s_r.cc')
+Source('p2s_r_t.cc')
 
 DebugFlag('Scheduler', "PolymorPIC Scheduler")
 DebugFlag('CacheController', "PolymorPIC Cache Controller")
+DebugFlag('P2S_L', "PolymorPIC P2S_L")
+DebugFlag('P2S_R', "PolymorPIC P2S_R")
+DebugFlag('P2S_R_T', "PolymorPIC P2S_R_T")
