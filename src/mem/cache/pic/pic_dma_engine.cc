@@ -7,6 +7,7 @@
 #include "base/logging.hh" // gem5 handle panic, fatal, warn
 #include "base/trace.hh" // gem5 handle DPRINTF
 #include "debug/PICDMA.hh" //come up after compile with debug flags
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -58,12 +59,192 @@ splitRequests(const DMADescriptor &desc, uint32_t maxChunkBytes,
     return out;
 }
 
-DMAEngine::DMAEngine(Host _host) : host(std::move(_host)) {}
+// mod: p2s_arbiter
+// ---------------------------------------------------------------------------
+// DMAEngine -- construction, ports, getPort
+// ---------------------------------------------------------------------------
+
+DMAEngine::DMAEngine(const Params &p) :
+    ClockedObject(p),
+    memSidePort(p.name + ".mem_side", this),
+    requestorId(p.system->getRequestorId(this)),
+    issueEvent([this]{ processIssueEvent(); }, name() + ".issueEvent"),
+    chunkBytes(p.chunk_bytes),
+    blockBytes(p.block_bytes),
+    maxOutstanding(p.max_outstanding),
+    tlbLatencyTicks(cyclesToTicks(p.tlb_latency))
+{
+    for (int i = 0; i < p.port_p2s_side_connection_count; ++i) {
+        p2sPorts.emplace_back(
+            p.name + csprintf(".p2s_side[%d]", i), i, this);
+    }
+}
+
+Port &
+DMAEngine::getPort(const std::string &if_name, PortID idx)
+{
+    if (if_name == "mem_side") {
+        panic_if(idx != InvalidPortID, "DMAEngine mem_side is not a vector port");
+        return memSidePort;
+    } else if (if_name == "p2s_side" &&
+               static_cast<size_t>(idx) < p2sPorts.size()) {
+        return p2sPorts[idx];
+    } else {
+        return ClockedObject::getPort(if_name, idx);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P2SPort
+// ---------------------------------------------------------------------------
+
+void
+DMAEngine::P2SPort::sendPacket(PacketPtr pkt)
+{
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    DPRINTF(PICDMA, "DMAEngine: sending row response %s to P2S[%d]\n",
+            pkt->print(), id);
+    if (!sendTimingResp(pkt)) {
+        DPRINTF(PICDMA, "DMAEngine: P2S[%d] refused, will retry\n", id);
+        blockedPacket = pkt;
+    }
+}
+
+AddrRangeList
+DMAEngine::P2SPort::getAddrRanges() const
+{
+    // Private point-to-point link to one P2S engine, not decoded off a
+    // shared bus -- claim the whole address space like other such links
+    // in this tree.
+    AddrRangeList ranges;
+    ranges.push_back(AddrRange(0, MaxAddr));
+    return ranges;
+}
+
+void
+DMAEngine::P2SPort::trySendRetry()
+{
+    if (needRetry && blockedPacket == nullptr) {
+        needRetry = false;
+        DPRINTF(PICDMA, "DMAEngine: sending retry req to P2S[%d]\n", id);
+        sendRetryReq();
+    }
+}
+
+bool
+DMAEngine::P2SPort::recvTimingReq(PacketPtr pkt)
+{
+    DPRINTF(PICDMA, "DMAEngine: got row request %s from P2S[%d]\n",
+            pkt->print(), id);
+
+    if (blockedPacket || needRetry) {
+        // A previous response to this same P2S engine hasn't gone out
+        // yet -- don't accept a new op until it has.
+        needRetry = true;
+        return false;
+    }
+    if (!owner->handleRequest(pkt, id)) {
+        needRetry = true;
+        return false;
+    }
+    return true;
+}
+
+void
+DMAEngine::P2SPort::recvRespRetry()
+{
+    assert(blockedPacket != nullptr);
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+    // May now be able to accept new requests from this same P2S engine.
+    trySendRetry();
+}
+
+// ---------------------------------------------------------------------------
+// MemSidePort -- thin pass-through. DMAEngine already owns the
+// held-for-retry packet (retryPkt/blocked) internally, so this port must
+// not double-buffer on top of it.
+// ---------------------------------------------------------------------------
+
+bool
+DMAEngine::MemSidePort::recvTimingResp(PacketPtr pkt)
+{
+    return owner->handleResponse(pkt);
+}
+
+void
+DMAEngine::MemSidePort::recvReqRetry()
+{
+    owner->retry();
+}
+
+// ---------------------------------------------------------------------------
+// Request/response handling
+// ---------------------------------------------------------------------------
+
+bool
+DMAEngine::handleRequest(PacketPtr pkt, int port_id)
+{
+    // mod: p2s_arbiter
+    // One op per request: numRows=1, rowsPerGroup=1, so groupReady()
+    // fires exactly once, when this single row is fully reassembled. See
+    // the "Request/response granularity" note in the header for why
+    // this is pinned to one row rather than a whole descriptor.
+    P2SOpState op;
+    op.desc.dramVaddr = pkt->getAddr();
+    op.desc.onChipAddr = 0;  // unused on the DRAM-read side
+    op.desc.bytesPerRow = pkt->getSize();
+    op.desc.numRows = 1;
+    op.desc.rowStrideBytes = 0;
+    op.dest = static_cast<P2SDest>(port_id);
+    op.rowsPerGroup = 1;
+
+    const uint32_t opId = startOp(std::move(op));
+    if (opId == 0) {
+        // Malformed descriptor (e.g. size 0) -- refuse outright, retrying
+        // the identical request would just fail again.
+        return false;
+    }
+
+    DPRINTF(PICDMA, "DMAEngine: op %u started for P2S[%d], addr %#x size %u\n",
+            opId, port_id, pkt->getAddr(), pkt->getSize());
+
+    pendingReqPkt.emplace(opId, pkt);
+
+    if (!issueEvent.scheduled()) {
+        schedule(issueEvent, clockEdge(Cycles(1)));
+    }
+    return true;
+}
+
+void
+DMAEngine::processIssueEvent()
+{
+    const Tick next = issue();
+    if (next != MaxTick) {
+        schedule(issueEvent, next);
+    }
+}
+
+void
+DMAEngine::sendResponse(PacketPtr pkt, int port_id)
+{
+    p2sPorts[port_id].sendPacket(pkt);
+}
+
+// ---------------------------------------------------------------------------
+// startOp / issue / handleResponse / retry / findOp -- unchanged in logic
+// from before the merge, just calling this class's own methods/ports
+// directly instead of going through a separate Host struct.
+// ---------------------------------------------------------------------------
 
 uint32_t
 DMAEngine::startOp(P2SOpState op)
 {
-    op.pending = splitRequests(op.desc, host.chunkBytes, host.blockBytes);
+    op.pending = splitRequests(op.desc, chunkBytes, blockBytes);
     if (op.pending.empty())
         return 0;
 
@@ -94,8 +275,8 @@ DMAEngine::issue()
         P2SOpState &op = entry.second;
 
         while (!op.pending.empty()) {
-            if (op.outstanding >= host.maxOutstanding) {
-                nextWake = std::min(nextWake, host.nextCycleTick());
+            if (op.outstanding >= maxOutstanding) {
+                nextWake = std::min(nextWake, nextCycleTick());
                 break;
             }
 
@@ -106,7 +287,7 @@ DMAEngine::issue()
             // stalls long before it can saturate the memory system, which
             // is the whole point of keeping the depth parameterised.
             const uint32_t group = c.rowIdx / op.rowsPerGroup;
-            const uint32_t windowEnd = op.groupsCompleted + host.bufRows(op.dest);
+            const uint32_t windowEnd = op.groupsCompleted + bufRows(op.dest);
             if (group >= windowEnd) {
                 DPRINTF(PICDMA, "op %u: stalled on buffer credits "
                         "(group %u, window ends %u)\n",
@@ -116,22 +297,22 @@ DMAEngine::issue()
 
             // Serialised TLB port.  SE mode would otherwise translate for
             // free, hiding the cost that page splitting actually incurs.
-            if (!host.tlbPipelined && curTick() < tlbFreeTick) {
+            if (!tlbPipelined && curTick() < tlbFreeTick) {
                 nextWake = std::min(nextWake, tlbFreeTick);
                 break;
             }
-            tlbFreeTick = curTick() + host.tlbLatencyTicks;
+            tlbFreeTick = curTick() + tlbLatencyTicks;
 
             // Translated here, per chunk, at the moment it's actually
             // sent -- not up front in splitRequests() -- so tlbFreeTick
             // above lands where the RTL pays the TLB round trip, and a
             // future TLB-miss model has somewhere to hook in.
             Addr paddr = 0;
-            panic_if(!host.translate(c.vaddr, paddr),
+            panic_if(!translate(c.vaddr, paddr),
                      "DMAEngine::issue: op %u translation failed for "
                      "vaddr %#x", op.opId, c.vaddr);
 
-            PacketPtr pkt = host.buildReadPacket(paddr, c); // build packet
+            PacketPtr pkt = buildReadPacket(paddr, c); // build packet
             pkt->pushSenderState(new PICDMASenderState(
                 op.opId, c.rowIdx, c.rowOffset, c.size)); // add lable for this packet (the position for data coming back)
 
@@ -139,7 +320,7 @@ DMAEngine::issue()
                     "(row %u off %u)\n",
                     op.opId, paddr, c.size, c.rowIdx, c.rowOffset);
 
-            if (!host.sendDMAReq(pkt)) {
+            if (!sendDMAReq(pkt)) {
                 // Port refused: hold the packet, wait for a retry.
                 retryPkt = pkt;
                 blocked = true;
@@ -160,7 +341,7 @@ void
 DMAEngine::retry()
 {
     if (retryPkt) {
-        if (!host.sendDMAReq(retryPkt)) {
+        if (!sendDMAReq(retryPkt)) {
             // Still refused; stay blocked and wait for the next
             // recvReqRetry().
             DPRINTF(PICDMA, "retry: port refused retryPkt again, "
@@ -211,7 +392,7 @@ DMAEngine::handleResponse(PacketPtr pkt)
     delete pkt;
 
     if (groupDone)
-        host.groupReady(*op, group);
+        groupReady(*op, group);
 
     return groupDone;
 }
@@ -221,6 +402,74 @@ DMAEngine::findOp(uint32_t opId)
 {
     auto it = opTable.find(opId);
     return it == opTable.end() ? nullptr : &it->second;
+}
+
+// ---------------------------------------------------------------------------
+// Port-facing callback bodies (used to be Host::translate/buildReadPacket/
+// sendDMAReq/nextCycleTick/bufRows/groupReady, called via std::function;
+// now plain private methods called directly).
+// ---------------------------------------------------------------------------
+
+bool
+DMAEngine::translate(Addr vaddr, Addr &paddr)
+{
+    // mod: p2s_arbiter
+    // Placeholder: identity-mapped (SE-mode-style passthrough). No
+    // MMU/TLB hookup exists yet for this DMA path -- replace once one
+    // does. tlbLatencyTicks still models the round-trip cost even though
+    // the mapping itself is trivial.
+    paddr = vaddr;
+    return true;
+}
+
+PacketPtr
+DMAEngine::buildReadPacket(Addr paddr, const AddrChunk &c)
+{
+    RequestPtr req = std::make_shared<Request>(paddr, c.size, 0, requestorId);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->allocate();
+    return pkt;
+}
+
+bool
+DMAEngine::sendDMAReq(PacketPtr pkt)
+{
+    return memSidePort.sendTimingReq(pkt);
+}
+
+Tick
+DMAEngine::nextCycleTick()
+{
+    return clockEdge(Cycles(1));
+}
+
+uint32_t
+DMAEngine::bufRows([[maybe_unused]] P2SDest dest)
+{
+    return 1;
+}
+
+void
+DMAEngine::groupReady(P2SOpState &op, uint32_t group)
+{
+    auto it = pendingReqPkt.find(op.opId);
+    panic_if(it == pendingReqPkt.end(),
+             "DMAEngine::groupReady: no pending request packet for op %u",
+             op.opId);
+    PacketPtr pkt = it->second;
+    pendingReqPkt.erase(it);
+
+    panic_if(op.buf.size() != pkt->getSize(),
+             "DMAEngine::groupReady: op %u buf size %zu != request size %u",
+             op.opId, op.buf.size(), pkt->getSize());
+
+    DPRINTF(PICDMA, "DMAEngine: op %u group %u ready, responding to P2S[%d]\n",
+            op.opId, group, static_cast<int>(op.dest));
+
+    pkt->makeResponse();
+    pkt->setData(op.buf.data());
+
+    sendResponse(pkt, static_cast<int>(op.dest));
 }
 
 }  // namespace gem5

@@ -1,5 +1,13 @@
 #include <vector>
 #include <deque>
+
+// mod: p2s_arbiter
+// Connection point: all three P2S variants below issue bit-plane WRITEs
+// through the single shared AccessBankArb (a standalone module, not part of
+// the tag store -- see its file header for why), mirroring
+// accessArb.io.request(kClientP2S_*) <> p2s_*.io.accessArray in the RTL.
+#include "mem/cache/pic/access_bank_arb.hh"
+
 /*
 DPM P2S DATA MEMBERS
 
@@ -74,24 +82,50 @@ P2S_L::handleP2SRequest(PacketPtr pkt) {
         // extract bits from raw data
         uint64_t bitSlice = extractBits(regArray, i);
 
-        // determine the address and pack into packets
-        RequestorID requestorId = system.getRequestorId(this, "DPM");
+        // mod: p2s_arbiter -- superseded by the direct arbiter call below.
+        // Packet/MMIO path is not how the RTL does this (accessArb.io.
+        // request(kClientP2S_L) <> io.accessArray is a direct Decoupled
+        // port, not a memory-mapped write), kept here commented for
+        // reference in case the packet-based path is still wanted later.
+        //
+        // // determine the address and pack into packets
+        // RequestorID requestorId = system.getRequestorId(this, "DPM");
+        //
+        // RequestPtr request = std::make_shared<Request>(
+        //     pioAddr + offset,    // the target MMIO address of cache bank
+        //     p2sWritePayload,     // store address + bitSlice
+        //     0,           // TODO
+        //     requestorId
+        // );
+        //
+        // PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
+        // bitSlicePkt->allocate();
+        //
+        // P2SWritePayload p2sWritePayload = {pic_write_ptr, bitSlice};
+        //
+        // // enqueue into write queue
+        // bitSliceQueue.push_back(bitSlicePkt);
+        // schedule(writeEvent, curTick() + cycles(1));
 
-        RequestPtr request = std::make_shared<Request>(
-            pioAddr + offset,    // the target MMIO address of cache bank
-            p2sWritePayload,     // store address + bitSlice
-            0,           // TODO
-            requestorId
-        );
-
-        PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-        bitSlicePkt->allocate();
-
-        P2SWritePayload p2sWritePayload = {pic_write_ptr, bitSlice};
-        
-        // enqueue into write queue
-        bitSliceQueue.push_back(bitSlicePkt);
-        schedule(writeEvent, curTick() + cycles(1));
+        // mod: p2s_arbiter
+        // Direct Decoupled(ReqPackage) connection to the shared bank
+        // arbiter -- matches accessArb.io.request(kClientP2S_L) <>
+        // io.accessArray in the RTL.
+        bool fired = bankArb->submitP2SWrite(
+            gem5::kClientP2S_L, static_cast<uint32_t>(pic_write_ptr),
+            bitSlice);
+        if (!fired) {
+            // ready == false this cycle: the arbiter is still Blocked
+            // landing an earlier client's write. RTL would just not fire
+            // and retry next cycle; this loop has no per-cycle scheduling
+            // yet (TODO: turn this into a pending-queue drained by a
+            // clocked event, the way DMAEngine::issue()/retry() works,
+            // instead of a flat unconditional for-loop).
+            break;
+        }
+        // fire == true: from P2S's point of view the write is done right
+        // here, even if the arbiter is still landing it internally against
+        // a busy bank (see AccessBankArb::tick()'s Block state).
 
         // update the next address
         pic_write_ptr += next_slice_offset_pic; // next_slice_offset_pic = _L_block_row(?)
@@ -171,25 +205,39 @@ P2S_R::handleP2SRequest(PacketPtr pkt) {
                     // determine the address
                     curArrayID = base_arrayID_to_store + arrayID_offset[bit];
                     arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
-                    P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
 
-                    // pack into packets
-                    RequestorID requestorId = system.getRequestorId(this, "DPM");
+                    // mod: p2s_arbiter -- superseded by the direct arbiter
+                    // call below (kept commented for reference).
+                    //
+                    // P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+                    //
+                    // // pack into packets
+                    // RequestorID requestorId = system.getRequestorId(this, "DPM");
+                    //
+                    // RequestPtr request = std::make_shared<Request>(
+                    //     pioAddr + offset,    // the target MMIO address of cache bank
+                    //     p2sWritePayload,     // store address + bitSlice
+                    //     0,                   // TODO request flag?
+                    //     requestorId
+                    // );
+                    //
+                    // PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
+                    // bitSlicePkt->allocate();
+                    //
+                    // // enqueue into write queue
+                    // bitSliceQueue.push_back(bitSlicePkt);
+                    // if (i == 0) schedule(writeEvent, curTick() + cycles(1));
 
-                    RequestPtr request = std::make_shared<Request>(
-                        pioAddr + offset,    // the target MMIO address of cache bank
-                        p2sWritePayload,     // store address + bitSlice
-                        0,                   // TODO request flag?
-                        requestorId
-                    );
-
-                    PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-                    bitSlicePkt->allocate();
-                    
-                    // enqueue into write queue
-                    bitSliceQueue.push_back(bitSlicePkt);
-                    if (i == 0) schedule(writeEvent, curTick() + cycles(1));
-
+                    // mod: p2s_arbiter
+                    // accessArb.io.request(kClientP2S_R) <> io.accessArray
+                    bool fired = bankArb->submitP2SWrite(
+                        gem5::kClientP2S_R,
+                        static_cast<uint32_t>(arrayAddrEnq), bitSlice);
+                    if (!fired) {
+                        // See P2S_L::handleP2SRequest for the same TODO:
+                        // this nested-for-loop has no per-cycle retry yet.
+                        break;
+                    }
                 }
             }
         }
@@ -254,24 +302,38 @@ P2S_R_T::handleP2SRequest(PacketPtr pkt) {
             curArrayID = base_arrayID_to_store + arrayID_offset[bit];
             arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + rowPtrStore;
 
-            // pack into packets
-            RequestorID requestorId = system.getRequestorId(this, "DPM");
+            // mod: p2s_arbiter -- superseded by the direct arbiter call
+            // below (kept commented for reference).
+            //
+            // // pack into packets
+            // RequestorID requestorId = system.getRequestorId(this, "DPM");
+            //
+            // RequestPtr request = std::make_shared<Request>(
+            //     pioAddr + offset,    // the target MMIO address of cache bank
+            //     p2sWritePayload,     // store address + bitSlice
+            //     0,                   // TODO request flag?
+            //     requestorId
+            // );
+            //
+            // PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
+            // bitSlicePkt->allocate();
+            //
+            // P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
+            //
+            // // enqueue into write queue
+            // bitSliceQueue.push_back(bitSlicePkt);
+            // if (i == 0) schedule(writeEvent, curTick() + cycles(1));
 
-            RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of cache bank
-                p2sWritePayload,     // store address + bitSlice
-                0,                   // TODO request flag?
-                requestorId
-            );
-
-            PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-            bitSlicePkt->allocate();
-
-            P2SWritePayload p2sWritePayload = {arrayAddrEnq, bitSlice};
-                        
-            // enqueue into write queue
-            bitSliceQueue.push_back(bitSlicePkt);
-            if (i == 0) schedule(writeEvent, curTick() + cycles(1));
+            // mod: p2s_arbiter
+            // accessArb.io.request(kClientP2S_R_T) <> io.accessArray
+            bool fired = bankArb->submitP2SWrite(
+                gem5::kClientP2S_R_T,
+                static_cast<uint32_t>(arrayAddrEnq), bitSlice);
+            if (!fired) {
+                // See P2S_L::handleP2SRequest for the same TODO: this
+                // nested-for-loop has no per-cycle retry yet.
+                break;
+            }
         }
     }
     // write to cache bank
