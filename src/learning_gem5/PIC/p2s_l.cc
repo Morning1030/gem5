@@ -132,7 +132,7 @@ P2S_L::processDMAReadEvent() {
     RequestPtr request = std::make_shared<Request>(
         pioAddr + offset                    // the target MMIO address of cache controller
         sizeof(DMALPayload),                // next_row_offset_elem, base_dram_addr
-        Request::,                          // TODO
+        0,                          // TODO
         requestorId
     )
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);

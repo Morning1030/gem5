@@ -32,6 +32,7 @@
 #include <deque>
 #include <string>
 
+#include "learning_gem5/PIC/p2s.hh"
 #include "mem/port.hh"
 #include "params/p2s.hh"
 #include "sim/clocked_object.hh"

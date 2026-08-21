@@ -32,11 +32,11 @@ from m5.proxy import *
 class P2S_L(ClockedObject):
     type = "P2S_L"
     cxx_header = "learning_gem5/PIC/p2s.hh"
-    cxx_class = "gem5::CacheController"
+    cxx_class = "gem5::P2S_L"
 
     inst_port = ResponsePort("CPU side port, receives MMIO requests")
-    data_port = ResponsePort("CPU side port, receives MMIO request")
-    mem_side = RequestPort("Memory side port, sends requests")
+    dma_port = RequestPort("DMA port, send read requests")
+    cb_port = RequestPort("Cache bank port, sends requests")
 
     # time_to_wait = Param.Latency("Time before firing the event")
     # number_of_fires = Param.Int(
@@ -48,8 +48,8 @@ class P2S_R(ClockedObject):
     cxx_class = "gem5::P2S_R"
 
     inst_port = ResponsePort("CPU side port, receives MMIO requests")
-    data_port = ResponsePort("CPU side port, receives MMIO request")
-    mem_side = RequestPort("Memory side port, sends requests")
+    dma_port = RequestPort("DMA port, send read requests")
+    cb_port = RequestPort("Cache bank port, sends requests")
 
     # time_to_wait = Param.Latency("Time before firing the event")
     # number_of_fires = Param.Int(
@@ -61,8 +61,8 @@ class P2S_R_T(ClockedObject):
     cxx_class = "gem5::P2S_R_T"
 
     inst_port = ResponsePort("CPU side port, receives MMIO requests")
-    data_port = ResponsePort("CPU side port, receives MMIO request")
-    mem_side = RequestPort("Memory side port, sends requests")
+    dma_port = RequestPort("DMA port, send read requests")
+    cb_port = RequestPort("Cache bank port, sends requests")
 
     # time_to_wait = Param.Latency("Time before firing the event")
     # number_of_fires = Param.Int(
