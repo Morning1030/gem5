@@ -74,10 +74,24 @@ struct P2S_R_Payload
 class Scheduler : public ClockedObject
 {
     private:
-        enum class TaskOp {P2S, CAL, ACC, SWITCH};
+    /*
+    val LOAD_ID=0
+        val P2SL_ID=1
+        val P2SR_ID=2
+        val P2SRT_ID=3
+        val IM2COL_ID=4
+        val ACC_ID=5
+        val EXE_ID=6
+        val STORE_ID=7
+        val SWITCH_ID=8
+        val QUERY_ID=9
+
+        val totalModule=10
+    */
+        enum class FuncID {LOAD, STORE, P2S_L, P2S_R, P2S_R_T, ACC, CAL, SWITCH, QUERY};
         struct Task
         {
-            TaskOp taskOp;
+            FuncID funcID;
             PacketPtr pkt;
         };
         // to interact with MMIO request
@@ -129,12 +143,19 @@ class Scheduler : public ClockedObject
                 };
                 Scheduler *owner;
                 std::deque<Task> nextTask;
+                std::deque<Task> nextImmTask;   // switch is immTask
                 TaskState currState;
-                Task nextImmTask;   // switch is immTask
-                EventFunctionWrapper p2sEvent;
+                
+                EventFunctionWrapper p2sLEvent;
+                EventFunctionWrapper p2sREvent;
+                EventFunctionWrapper p2sRTEvent;
 
+
+                void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);
                 void triggerTS(Task t);
-                void processP2SEvent();
+                void processP2SLEvent();
+                void processP2SREvent();
+                void processP2SRTEvent();
 
             public:
                 TaskScheduler(Scheduler *owner);
@@ -181,12 +202,13 @@ class Scheduler : public ClockedObject
         // register file data to store the params
         uint64_t src;                   // SET_SRC
         uint64_t dst;                   // SET_DST
-        uint64_t size;                  // SET_SIZE
-        uint64_t param;                 // SET_PARAM
+        uint16_t row;                   // SET_SIZE
+        uint16_t byte_per_row;          // SET_SIZE
+        uint16_t offset;                // SET_SIZE                 
 
         size_t maxInstQueueSize = 1000; // temporarily set to 1000
         EventFunctionWrapper decodeEvent;
-
+        
         void processDecodeEvent();
 
     public:

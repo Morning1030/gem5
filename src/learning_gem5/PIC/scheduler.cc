@@ -40,7 +40,10 @@ Scheduler::Scheduler(SchedulerParams *params) :
     cacheBankPort(params->name + ".cb_port", this),
     taskScheduler(this),
     switchController(this),
-    decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent")
+    decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent"),
+    p2sLEvent([this]{this->processP2SLEvent();}, "p2sLEvent"),
+    p2sREvent([this]{this->processP2SREvent();}, "p2sREvent"),
+    p2sRTEvent([this]{this->processP2SRTEvent();}, "p2sRTEvent")
 {
 }
 Port&
@@ -134,17 +137,19 @@ Scheduler::processDecodeEvent()
             
             // SET_SIZE
             case 0x04:
-                row = static_cast<uint32_t>(dataPayload >> 32);
-                col = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
-                DPRINTF(Scheduler, "SET_SIZE to (%d, %d)\n", row, col);
+                row = dataPayload & 0x7FF;                      // 11 bit LSB
+                byte_per_row = (dataPayload >> 11) & 0x7FF;     // 11 bit
+                offset = (dataPayload >> 22)& 0x3FFF            // 15 bit
+                DPRINTF(Scheduler, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
                 break;
 
             // SET_PARAM 
             case 0x06:
-                taskScheduler->prepareTask(pkt);
+                taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
                 break;
             default:
     }
+    // TODO make pkt into response / delete it
     // waiting for instructions, self looping at each cycle
     if (taskScheduler.currState == IDLE && !instQueue.empty()) {
         schedule(decodeEvent, curTick() + cycles(1))    // temporarily set to 1
@@ -226,70 +231,142 @@ Scheduler::TaskScheduler::TaskScheduler(Scheduler *owner) :
     p2sEvent([this]{this->processP2SEvent();}, "p2sEvent")
 {
 }
+
 void
-Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, Addr currentSrc, Addr currentDst, uint32_t currentRow, uint32_t currentCol)
+Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset)
 {
-    uint64_t dataPayload = paramPkt->getRaw<uint64_t>();
-    funcID = 
-        switch(funcID):
-            // load
-            case 0:
-                taskScheduler->nextTask.taskOp = LOAD;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM LOAD\n");
-            // store
-            case 1:
-                taskScheduler->nextTask.taskOp = STORE;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM STORE\n");
-            // p2s
-            case 2:
-                // TODO　make packet for p2s(later send to dpm)
-                size_t pktSize = sizeof(...)+
-                RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+    uint64_t dataPayload = paramPkt->getLE<uint64_t>();
+    Task nextEnqTask;
+    FUncID funcID = (dataPayload >> 60)& 0xF;                      // funcID is bit 60 ~ bit 63
+    switch(funcID):
+        case LOAD:
+            nextEnqTask.funcID = LOAD;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM LOAD\n");
+        case STORE:
+            nextEnqTask.funcID = STORE;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM STORE\n");
+        case P2S_L:
+            // decode the params from SET_PARAM
+            uint8_t precision = dataPayload & 0x8;    // TODO: but precision is 3 bit
 
-                RequestPtr request = std::make_shared<Request>(
-                    pioAddr + offset    // the target MMIO address of dpm
-                    sizeof(P2S_L_Payload),
-                    Request::,          // TODO
-                    requestorId
-                );
-
-                PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
-                pkt->allocate();
-
-                pkt->setLE<Addr>(flushAddr);
-
-                taskScheduler->nextTask.taskOp = P2S;
-                taskScheduler->nextTask.push_back(pkt);
-                DPRINTF(Scheduler, "SET_PARAM P2S\n");
-                break;
-            // cal
-            case 3:
-                taskScheduler->nextTask.taskOp = CAL;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM CAL\n");
-                break;
-            // acc
-            case 4:
-                taskScheduler->nextTask.taskOp = ACC;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM ACC\n");
-                break;
-            // switch
-            case 5:
-                // decode datapayload and set wayID and switch type
-                wayID = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
-                uint32 st = static_cast<uint32_t>(dataPayload >> 32);   // switch type
-                if (st == 0) switchController->switchType = PIC2Cache;
-                else switchController->switchType = Cache2PIC;
+            RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+            RequestPtr request = std::make_shared<Request>(
+                pioAddr + offset,    // the target MMIO address of dpm
+                sizeof(P2S_L_Payload),
+                0,                   // TODO
+                requestorId
+            );
                 
-                taskScheduler->nextImmTask.taskOp = SWITCH;
-                taskScheduler->nextImmTask.pkt = pkt;
-                DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
-                break;
+            PacketPtr pkt = new Packet(request, MemCmd::WriteReq);  
+            P2S_L_Payload *p2s_L_Payload = new P2S_L_Payload{
+                src,
+                dst,
+                byte_per_row,
+                row,
+                offset
+                precision   // precision is int8
+            };
+            pkt->dataDynamic(reinterpret_cast<uint8_t*>(p2s_L_Payload));
+
+            nextEnqTask.funcID = P2S_L;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM P2S\n");
+            break;
+        case P2S_R:
+            uint8_t precision = dataPayload & 0x8;    // TODO: but precision is 3 bit
+            uint8_t bufNum = (dataPayload >> 4) &0x3;
+
+            RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+
+            RequestPtr request = std::make_shared<Request>(
+                pioAddr + offset,    // the target MMIO address of dpm
+                sizeof(P2S_R_Payload),
+                0,          // TODO
+                requestorId
+            );
+
+            PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
+            P2S_R_Payload *p2s_R_Payload = new P2S_R_Payload{
+                src,
+                dst,
+                byte_per_row,
+                row,
+                offset,
+                precision,
+                bufNum
+            };
+            pkt->dataDynamic(reinterpret_cast<uint8_t*>(p2s_R_Payload));
+
+            nextEnqTask.funcID = P2S_R;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM P2S\n");
+            break;
+        case P2S_R_T:
+            uint8_t precision = dataPayload & 0x8;    // TODO: but precision is 3 bit
+            uint8_t bufNum = (dataPayload >> 4) &0x3;
+
+            RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+
+            RequestPtr request = std::make_shared<Request>(
+                pioAddr + offset,    // the target MMIO address of dpm
+                sizeof(P2S_R_Payload),
+                    0,                  // TODO
+                    requestorId
+            );
+
+            PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
+            P2S_R_Payload *p2s_R_T_Payload = new P2S_R_Payload{
+                src,
+                dst,
+                byte_per_row,
+                row,
+                offset,
+                precision,
+                bufNum
+            };
+            pkt->dataDynamic(reinterpret_cast<uint8_t*>(p2s_R_T_Payload));
+
+            nextEnqTask.funcID = P2S_R_T;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM P2S\n");
+            break;
+        case ACC:
+            nextEnqTask.funcID = ACC;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM ACC\n");
+            break;
+        case CAL:
+            nextEnqTask.funcID = CAL;
+            nextEnqTask.pkt = pkt;
+            taskScheduler->nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM CAL\n");
+            break;
+        case SWITCH:
+            
+            // decode datapayload and set wayID and switch type
+            // wayID = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
+            bool st = static_cast<uint32_t>(dataPayload & 0x1);   // switch type
+            if (!st) switchController->switchType = Cache2PIC;    // ALLOC
+            else switchController->switchType = PIC2Cache;        // FREE
+            
+            nextEnqTask.funcID = SWITCH;
+            nextEnqTask.pkt = pkt;
+
+            taskScheduler->nextImmTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
+            break;
+    //      case QUERY
     // TODO
     // call triggerTS
+    triggerTS();
 }
 void
 Scheduler::TaskScheduler::triggerTS()
@@ -305,21 +382,67 @@ Scheduler::TaskScheduler::triggerTS()
     if (currState != IDLE) {
         return;
     }
-    if (t.taskOp == SWITCH) {
-        currState = SWITCHING;
-        // trigger switch controller
-        schedule(owner->switchController->switchEvent, curTick() + cycles(1));
-    }
-    else if (t.taskOp == P2S) {
-        currState = P2SING;
-        schedule(P2SEvent, curTick() + cycles(1));
+    // IDLE right now
+    else {
+        // check if there's immtask
+        if (!nextImmTask.empty()) {
+            currState = SWITCHING;
+            // Task t = nextTask.front();
+            schedule(owner->switchController->switchEvent, curTick() + cycles(1));  
+        }
+
+        else {
+            if (!nextTask.empty()) {
+                Task t = nextTask.front();
+                switch(t.funcID) {
+                    case P2S_L:
+                        currState = P2SING;
+                        schedule(p2sLEvent, curTick() + cycles(1));
+                    case P2S_R:
+                        currState = P2SING;
+                        schedule(p2sREvent, curTick() + cycles(1));
+                    case P2S_R_T:
+                        currState = P2SING;
+                        schedule(p2sRTEvent, curTick() + cycles(1));
+                }
+            }
+            
+        }
     }
 }
 
 void
-Scheduler::TaskScheduler::processP2SEvent() {
+Scheduler::TaskScheduler::processP2SLEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->DPMPort.sendTimingReq(nextImmTask.pkt);
+    bool success = owner->P2SLPort.sendTimingReq(nextTask.front());
+    if (success) {
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+    }
+}
+void
+Scheduler::TaskScheduler::processP2SREvent() {
+    // send the nextTask packet to DPM
+    bool success = owner->P2SRPort.sendTimingReq(nextTask.front());
+    if (success) {
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+    }
+}
+void
+Scheduler::TaskScheduler::processP2SRTEvent() {
+    // send the nextTask packet to DPM
+    bool success = owner->P2SRTPort.sendTimingReq(nextTask.front());
+    if (success) {
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+    }
 }
 
 Scheduler::SwitchController::SwitchController(Scheduler* owner) :

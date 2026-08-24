@@ -112,7 +112,7 @@ P2S_R_T::processDMAReadEvent() {
     RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
 
     RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset                    // the target MMIO address of cache controller
+        pioAddr + offset,                    // the target MMIO address of cache controller
         sizeof(DMARTPayload),                // next_row_offset_elem, base_dram_addr
         0,                          // TODO
         requestorId
