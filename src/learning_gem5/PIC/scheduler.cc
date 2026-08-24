@@ -1,48 +1,27 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "learning_gem5/PIC/scheduler.hh"
-
+#include "mem/request.hh"
+#include <algorithm>
+#include <cassert>
 #include "debug/Scheduler.hh"
+#include "mem/packet_access.hh"
+
 
 namespace gem5
 {
-Scheduler::Scheduler(SchedulerParams *params) :
-    ClockedObject(params),
-    instPort(params->name + ".inst_port", this),
-    cacheControllerPort(params->name + ".mem_side_cc", this),
-    DPMPort(params->name + ".mem_side_dpm", this),
-    cacheBankPort(params->name + ".mem_side_cb", this),
-    taskScheduler(this),
-    switchController(this),
-    decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent")
+Scheduler::Scheduler(const SchedulerParams &params)
+    : ClockedObject(params),
+      instPort(name() + ".inst_port", this),
+      cacheControllerPort(name() + ".mem_side_cc", this, DownstreamPortID::CC),
+      p2sLPort(name() + ".mem_side_p2sl", this, DownstreamPortID::P2SL),
+      p2sRPort(name() + ".mem_side_p2sr",this,DownstreamPortID::P2SR),
+      p2sRTPort(name() + ".mem_side_p2srt",this,DownstreamPortID::P2SRT),
+      cacheBankPort(name() + ".mem_side_cb",this,DownstreamPortID::CB),
+      taskScheduler(this),
+      switchController(this),
+      decodeEvent([this] { processDecodeEvent(); }, name() + ".decodeEvent")
 {
 }
+
 Port&
 Scheduler::getPort(const std::string &if_name, PortID idx)
 {
@@ -52,48 +31,84 @@ Scheduler::getPort(const std::string &if_name, PortID idx)
     else if (if_name == "mem_side_cc") {
         return cacheControllerPort;
     }
-    else if (if_name == "mem_side_dpm") {
-        return DPMPort;
+    else if (if_name == "mem_side_p2sl") {
+        return p2sLPort;
+    }
+    else if (if_name == "mem_side_p2sr") {
+        return p2sRPort;
+    }
+    else if (if_name == "mem_side_p2srt") {
+        return p2sRTPort;
     }
     else if (if_name == "mem_side_cb") {
         return cacheBankPort;
     }
-    else {
-        return ClockedObject::getPort(if_name, idx);
-    }
+
+    return ClockedObject::getPort(if_name, idx);
 }
+
 void
-Scheduler::handleFunctional(PacketPtr pkt){}
+Scheduler::handleFunctional(PacketPtr pkt)
+{
+    (void)pkt;
+}
 
 bool
 Scheduler::handleRequest(PacketPtr pkt)
 {
-    if (instQueue.size() == maxInstQueueSize) {
+    if (instQueue.size() >= maxInstQueueSize) {
+        instPort.markRequestRetry();
         return false;
     }
-    DPRINTF(Scheduler, "Got request for addr %#x\n", pkt->getAddr());
-    // push to the IQ
+
+    DPRINTF(Scheduler, "Got request for addr %#llx\n",
+            static_cast<unsigned long long>(pkt->getAddr()));
+
     instQueue.push_back(pkt);
+    scheduleDecodeIfNeeded();
     return true;
 }
 
 bool
-Scheduler::handleResponse(PortID portID, PacketPtr pkt)
+Scheduler::handleResponse(DownstreamPortID portID, PacketPtr pkt)
 {
-    DPRINTF(Scheduler, "Got response for addr %#x\n", pkt->getAddr());
-    switch(portID):
-        case(CC):
-            return switchController->handleResponse(pkt);
-        // p2s_is_done from DPM
-        case(DPM):
-            delete pkt;
-            return true;
-        case(CB):
-        default:
+    DPRINTF(Scheduler, "Got downstream response for addr %#llx\n",
+            static_cast<unsigned long long>(pkt->getAddr()));
+
+    switch (portID) {
+      case DownstreamPortID::CC:
+        return switchController.handleResponse(pkt);
+
+      case DownstreamPortID::P2SL:
+      case DownstreamPortID::P2SR:
+      case DownstreamPortID::P2SRT:
+        panic_if(
+            !pkt->isResponse(),
+            "Scheduler expected P2S completion response");
+
+        DPRINTFS(
+            Scheduler,
+            this,
+            "P2S COMPLETION RESPONSE port=%u\n",
+            static_cast<unsigned>(portID));
+
+        delete pkt;
+        taskScheduler.completeCurrentTask();
+        return true;
+
+      case DownstreamPortID::CB:
+        delete pkt;
+        return true;
+    }
+
+    return false;
 }
 
 AddrRangeList
-Scheduler::getAddrRanges() const {}
+Scheduler::getAddrRanges() const
+{
+    return {AddrRange(pic::MmioBase, pic::MmioBase + pic::MmioWindowSize)};
+}
 
 void
 Scheduler::sendRangeChange()
@@ -102,381 +117,609 @@ Scheduler::sendRangeChange()
 }
 
 void
+Scheduler::scheduleDecodeIfNeeded()
+{
+    // do not decode another instruction while
+    // TaskScheduler says hardware is busy
+    if (!instQueue.empty() && taskScheduler.idle() &&
+        !instPort.responseBlocked() && !decodeEvent.scheduled()) {
+        schedule(decodeEvent, clockEdge(Cycles(1)));
+    }
+}
+
+void
 Scheduler::processDecodeEvent()
 {
-    // dequeue and decode
-    if (taskScheduler.currState != IDLE || instQueue.empty()) return;
+    if (!taskScheduler.idle() || instQueue.empty() ||
+        instPort.responseBlocked()) {
+        return;
+    }
 
     PacketPtr pkt = instQueue.front();
     instQueue.pop_front();
-    // to ensure the bytes of datapayload
-    // unsigned int pktSize = pkt->getSize();
-    // DPRINTF(Scheduler, "PacketPtr get Size is %u bytes\n", pktSize);
-    uint64_t pktAddr = pkt->getAddr();
-    uint64_t offset = pktAddr - MMIOBase;   // Base address not yet defined
-    uint64_t dataPayload = pkt->getRaw<uint64_t>();
-    
-    DPRINTF(Scheduler, "Decoding Request at addr %#x\n", pktAddr);
 
-    if (pkt->isWrite()) {   // pkt contains data payload
-        switch(offset):
-            // SET_SRC
-            case 0x00:
-                src = dataPayload;
-                DPRINTF(Scheduler, "SET_SRC to %#x\n", src);
-                break;
+    const Addr pktAddr = pkt->getAddr();
+    const uint64_t offset = pktAddr - pic::MmioBase;
 
-            // SET_DST
-            case 0x02:
-                dst = dataPayload;
-                DPRINTF(Scheduler, "SET_DST to %#x\n", dst);
-                break;
-            
-            // SET_SIZE
-            case 0x04:
-                row = static_cast<uint32_t>(dataPayload >> 32);
-                col = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
-                DPRINTF(Scheduler, "SET_SIZE to (%d, %d)\n", row, col);
-                break;
+    // The current public protocol is one 64-bit write per SET register.
+    if (!pkt->isWrite() || pkt->getSize() != pic::MmioAccessSize ||
+        pktAddr < pic::MmioBase ||
+        pktAddr >= pic::MmioBase + pic::MmioWindowSize) {
+        warn("%s received malformed PIC MMIO request addr=%#llx size=%u\n",
+             name(), static_cast<unsigned long long>(pktAddr),
+             pkt->getSize());
 
-            // SET_PARAM 
-            case 0x06:
-                taskScheduler->prepareTask(pkt);
-                break;
-            default:
-    }
-    // waiting for instructions, self looping at each cycle
-    if (taskScheduler.currState == IDLE && !instQueue.empty()) {
-        schedule(decodeEvent, curTick() + cycles(1))    // temporarily set to 1
+        pkt->makeResponse();
+        pkt->setLE<uint64_t>(pic::RetryResponse);
+        instPort.sendPacket(pkt);
+
+        instPort.trySendRequestRetry();
+        scheduleDecodeIfNeeded();
+        return;
     }
 
+    const uint64_t dataPayload = pkt->getLE<uint64_t>();
+    uint64_t responseData = 0;
+
+    DPRINTF(Scheduler, "Decoding request addr=%#llx value=%#llx\n",
+            static_cast<unsigned long long>(pktAddr),
+            static_cast<unsigned long long>(dataPayload));
+
+    switch (offset) {
+      case static_cast<uint64_t>(pic::SetRegister::Src):
+        src = dataPayload;
+        DPRINTF(Scheduler, "SET_SRC = %#llx\n", static_cast<unsigned long long>(src));
+        break;
+
+      case static_cast<uint64_t>(pic::SetRegister::Dst):
+        dst = dataPayload;
+        DPRINTF(Scheduler, "SET_DST = %#llx\n", static_cast<unsigned long long>(dst));
+        break;
+
+      case static_cast<uint64_t>(pic::SetRegister::Size): {
+        size = dataPayload;
+        const pic::SizeFields f = pic::unpackSize(size);
+        DPRINTF(Scheduler,
+                "SET_SIZE row=%u bytesPerRow=%u rowOffset=%u raw=%#llx\n",
+                static_cast<unsigned>(f.row),
+                static_cast<unsigned>(f.bytesPerRow),
+                static_cast<unsigned>(f.rowOffset),
+                static_cast<unsigned long long>(size));
+        break;
+      }
+
+      case static_cast<uint64_t>(pic::SetRegister::Param): {
+        param = dataPayload;
+        const pic::ParamFields f = pic::unpackParam(param);
+
+        DPRINTF(Scheduler,
+                "SET_PARAM module=%s cmdID=%u others=%#llx raw=%#llx\n",
+                pic::moduleName(f.module),
+                static_cast<unsigned>(f.commandId),
+                static_cast<unsigned long long>(f.others),
+                static_cast<unsigned long long>(param));
+
+        taskScheduler.prepareTask(pkt, src, dst, size);
+
+        if (f.module == pic::ModuleId::Query) {
+            const bool busy = !taskScheduler.idle();
+            responseData = pic::packQueryResponse(
+                {true, busy, true, 0, 0});
+        }
+        break;
+      }
+
+      default:
+        warn("%s received unknown PIC MMIO offset %#llx\n",
+            name(), static_cast<unsigned long long>(offset));
+        responseData = pic::RetryResponse;
+        break;
+    }
+
+    pkt->makeResponse();
+    pkt->setLE<uint64_t>(responseData);
+    instPort.sendPacket(pkt);
+
+    instPort.trySendRequestRetry();
+
+    scheduleDecodeIfNeeded();
 }
-Scheduler::CPUSidePort::CPUSidePort(const std::string& name, Scheduler *owner) :
-    ResponsePort(name, owner),
-    owner(owner)
+
+Scheduler::CPUSidePort::CPUSidePort(const std::string& name,Scheduler *owner)
+    : ResponsePort(name, owner), owner(owner)
 {
 }
 
 AddrRangeList
 Scheduler::CPUSidePort::getAddrRanges() const
 {
-    // CPUSidePort simply forwards to Scheduler
     return owner->getAddrRanges();
 }
 
 void
 Scheduler::CPUSidePort::recvFunctional(PacketPtr pkt)
 {
-    return owner->handleFunctional(pkt);
+    owner->handleFunctional(pkt);
 }
 
 bool
 Scheduler::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
-    if (!owner->handleRequest(pkt)) {
-        // handle failed
-        return false;
-    }
-    else {
-        return true;
-    }
-}
-
-Scheduler::MemSidePort::MemSidePort(const std::string& name, Scheduler *owner)
-    RequestPort(name, owner),
-    owner(owner)
-{
-
+    return owner->handleRequest(pkt);
 }
 
 void
+Scheduler::CPUSidePort::sendPacket(PacketPtr pkt)
+{
+    assert(blockedResponse == nullptr);
+
+    if (!sendTimingResp(pkt)) {
+        blockedResponse = pkt;
+    }
+}
+
+void
+Scheduler::CPUSidePort::recvRespRetry()
+{
+    assert(blockedResponse != nullptr);
+
+    PacketPtr pkt = blockedResponse;
+    if (sendTimingResp(pkt)) {
+        blockedResponse = nullptr;
+        owner->scheduleDecodeIfNeeded();
+    }
+}
+
+void
+Scheduler::CPUSidePort::trySendRequestRetry()
+{
+    if (requestRetryPending && owner->instQueue.size() < owner->maxInstQueueSize) {
+        requestRetryPending = false;
+        sendRetryReq();
+    }
+}
+
+Scheduler::MemSidePort::MemSidePort(const std::string& name,
+                                    Scheduler *owner,
+                                    DownstreamPortID port_id)
+    : RequestPort(name, owner),owner(owner),portID(port_id)
+{
+}
+
+bool
 Scheduler::MemSidePort::sendPacket(PacketPtr pkt)
 {
-}
-void
-Scheduler::MemSidePort::sendTimingReq(PacketPtr pkt)
-{
-    if (!RequestPort::sendTimingReq(pkt)) {
-        // owner->blocked = true;
-        // owner->retryPkt = pkt;
+    if (blockedRequest != nullptr) {
         return false;
     }
+
+    if (!isConnected()) {
+        warn("%s tried to send a downstream PIC packet on an unconnected port\n", name());
+        return false;
+    }
+
+    if (!sendTimingReq(pkt)) {
+        blockedRequest = pkt;
+        return false;
+    }
+
     return true;
 }
+
 bool
 Scheduler::MemSidePort::recvTimingResp(PacketPtr pkt)
 {
-    return owner->handleResponse(pkt);
+    return owner->handleResponse(portID, pkt);
 }
 
 void
 Scheduler::MemSidePort::recvReqRetry()
 {
+    assert(blockedRequest != nullptr);
 
+    PacketPtr pkt = blockedRequest;
+    if (sendTimingReq(pkt)) {
+        blockedRequest = nullptr;
+    }
 }
+
 void
 Scheduler::MemSidePort::recvRangeChange()
 {
     owner->sendRangeChange();
 }
 
-Scheduler::TaskScheduler::TaskScheduler(Scheduler *owner) :
-    owner(owner),
-    currState(TaskState::IDLE),
-    p2sEvent([this]{this->processP2SEvent();}, "p2sEvent")
+Scheduler::TaskScheduler::TaskScheduler(Scheduler *owner)
+    : owner(owner),
+      currState(TaskState::IDLE),
+      nextImmTask{TaskOp::SWITCH, nullptr},
+      p2sEvent([this] { processP2SEvent(); }, "p2sEvent")
 {
 }
+
 void
-Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, Addr currentSrc, Addr currentDst, uint32_t currentRow, uint32_t currentCol)
+Scheduler::TaskScheduler::prepareTask(
+    PacketPtr paramPkt, Addr currentSrc, Addr currentDst,
+    uint64_t currentSize)
 {
-    uint64_t dataPayload = paramPkt->getRaw<uint64_t>();
-    funcID = 
-        switch(funcID):
-            // load
-            case 0:
-                taskScheduler->nextTask.taskOp = LOAD;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM LOAD\n");
-            // store
-            case 1:
-                taskScheduler->nextTask.taskOp = STORE;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM STORE\n");
-            // p2s
-            case 2:
-                // make packet for p2s(later send to dpm)
-                size_t pktSize = sizeof(...)+
-                RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+    const uint64_t dataPayload = paramPkt->getLE<uint64_t>();
+    const pic::ParamFields fields = pic::unpackParam(dataPayload);
+    const pic::SizeFields sizeFields = pic::unpackSize(currentSize);
 
-                RequestPtr request = std::make_shared<Request>(
-                    pioAddr + offset    // the target MMIO address of dpm
-                    sizeof(Addr),       // flush addr
-                    Request::FlushWay,  // flag
-                    requestorId
-                );
+    DPRINTFS(Scheduler, owner,
+            "prepareTask: module=%s cmdID=%u src=%#llx dst=%#llx "
+            "row=%u bytesPerRow=%u rowOffset=%u\n",
+            pic::moduleName(fields.module),
+            static_cast<unsigned>(fields.commandId),
+            static_cast<unsigned long long>(currentSrc),
+            static_cast<unsigned long long>(currentDst),
+            static_cast<unsigned>(sizeFields.row),
+            static_cast<unsigned>(sizeFields.bytesPerRow),
+            static_cast<unsigned>(sizeFields.rowOffset));
 
-                PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
-                pkt->allocate();
+    switch (fields.module) {
+      case pic::ModuleId::P2SL: {
+        P2S_L_Payload payload{
+            currentSrc,
+            currentDst,
+            static_cast<uint32_t>(sizeFields.bytesPerRow),
+            static_cast<uint8_t>(sizeFields.row),
+            static_cast<uint8_t>(fields.others & 0x7)
+        };
 
-                pkt->setLE<Addr>(flushAddr);
+        RequestPtr request = std::make_shared<Request>(
+            0,
+            sizeof(P2S_L_Payload),
+            Request::Flags(),
+            Request::invldRequestorId);
 
-                taskScheduler->nextTask.taskOp = P2S;
-                taskScheduler->nextTask.push_back(pkt);
-                DPRINTF(Scheduler, "SET_PARAM P2S\n");
-                break;
-            // cal
-            case 3:
-                taskScheduler->nextTask.taskOp = CAL;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM CAL\n");
-                break;
-            // acc
-            case 4:
-                taskScheduler->nextTask.taskOp = ACC;
-                taskScheduler->nextTask.push_back();
-                DPRINTF(Scheduler, "SET_PARAM ACC\n");
-                break;
-            // switch
-            case 5:
-                // decode datapayload and set wayID and switch type
-                wayID = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
-                uint32 st = static_cast<uint32_t>(dataPayload >> 32);   // switch type
-                if (st == 0) switchController->switchType = PIC2Cache;
-                else switchController->switchType = Cache2PIC;
-                
-                taskScheduler->nextImmTask.taskOp = SWITCH;
-                taskScheduler->nextImmTask.pkt = pkt;
-                DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
-                break;
-    // TODO
-    // call triggerTS
+        PacketPtr p2sPkt = Packet::createWrite(request);
+        p2sPkt->allocate();
+        p2sPkt->setData(reinterpret_cast<const uint8_t *>(&payload));
+
+        Task t{TaskOp::P2S, p2sPkt};
+        nextTask.push_back(t);
+
+        DPRINTFS(
+            Scheduler, owner,
+            "SET_PARAM P2S_L packed: dram=%#llx pic=%#llx "
+            "rows=%u stride=%u precision=%u\n",
+            static_cast<unsigned long long>(payload.base_dramAddr_to_load),
+            static_cast<unsigned long long>(payload.base_picAddr_to_store),
+            static_cast<unsigned>(payload._L_block_row),
+            static_cast<unsigned>(payload.next_row_offset_elem),
+            static_cast<unsigned>(payload.precision));
+
+        triggerTS(t);
+        break;
+      }
+      case pic::ModuleId::P2SR: {
+        const bool ifT = ((fields.others >> 5) & 0x1) != 0;
+
+        const P2S_R_Payload payload{
+            static_cast<uint64_t>(currentSrc),
+            static_cast<uint64_t>(currentDst),
+            static_cast<uint32_t>(sizeFields.rowOffset),
+            static_cast<uint32_t>(sizeFields.row),
+            static_cast<uint32_t>(sizeFields.bytesPerRow),
+            static_cast<uint8_t>(
+                (fields.others >> 2) & 0x7),
+            static_cast<uint8_t>(
+                fields.others & 0x3)
+        };
+
+        RequestPtr request =
+            std::make_shared<Request>(
+                0,
+                sizeof(P2S_R_Payload),
+                Request::Flags(),
+                Request::invldRequestorId);
+
+        PacketPtr p2sPkt = Packet::createWrite(request);
+
+        p2sPkt->allocate();
+
+        p2sPkt->setData(
+            reinterpret_cast<const uint8_t *>(&payload));
+
+        Task t{
+            TaskOp::P2S,
+            p2sPkt,
+            ifT ? P2SRoute::RT : P2SRoute::R
+        };
+
+        nextTask.push_back(t);
+
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "P2SR PACK: "
+            "dram=%#llx baseArray=%#llx "
+            "rows=%u cols=%u stride=%u "
+            "precision=%u bufNum=%u if_T=%u route=%s\n",
+            static_cast<unsigned long long>(
+                payload.dramAddr),
+            static_cast<unsigned long long>(
+                payload.base_arrayID_to_store),
+            static_cast<unsigned>(
+                payload.nRows),
+            static_cast<unsigned>(
+                payload.nCols),
+            static_cast<unsigned>(
+                payload.next_row_offset_bytes),
+            static_cast<unsigned>(
+                payload.precision),
+            static_cast<unsigned>(
+                payload.bufNum),
+            static_cast<unsigned>(ifT),
+            ifT ? "RT" : "R");
+
+        triggerTS(t);
+        break;
+      }
+
+      case pic::ModuleId::P2SRTInternal: {
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "P2SRT_INTERNAL is not a public command; "
+            "use P2SR if_T=1\n");
+        break;
+      }
+
+
+
+      case pic::ModuleId::Exe: {
+        Task t{TaskOp::CAL, nullptr};
+        nextTask.push_back(t);
+        DPRINTFS(Scheduler, owner, "SET_PARAM CAL/EXE queued\n");
+        triggerTS(t);
+        break;
+      }
+
+      case pic::ModuleId::Acc: {
+        Task t{TaskOp::ACC, nullptr};
+        nextTask.push_back(t);
+        DPRINTFS(Scheduler, owner, "SET_PARAM ACC queued\n");
+        triggerTS(t);
+        break;
+      }
+
+      case pic::ModuleId::Switch: {
+        Task t{TaskOp::SWITCH, nullptr};
+        nextImmTask = t;
+        DPRINTFS(Scheduler, owner,
+                "SET_PARAM SWITCH stored as immediate task; "
+                "downstream switch packet remains un-packed\n");
+        triggerTS(t);
+        break;
+      }
+
+      case pic::ModuleId::Load:
+      case pic::ModuleId::Im2Col:
+      case pic::ModuleId::Store:
+      case pic::ModuleId::Query:
+
+      default:
+        warn("Unknown PIC module ID %u in Scheduler::prepareTask\n",
+             static_cast<unsigned>(fields.module));
+        break;
+    }
 }
-void
-Scheduler::TaskScheduler::triggerTS()
-{
-    // TODO
-    // schedule the task requests 
-    // for every cycle/trigger
-    // check if there's immTask if yes then check hardware condition(IDLE/BUSY)
-    // check if there's task in the queue, if yes then check hardware condition(IDLE/BUSY)
 
-    
-    // need to wait
-    if (currState != IDLE) {
+void
+Scheduler::TaskScheduler::triggerTS(Task t)
+{
+    if (currState != TaskState::IDLE) {
         return;
     }
-    if (t.taskOp == SWITCH) {
-        currState = SWITCHING;
-        // trigger switch controller
-        schedule(owner->switchController->switchEvent, curTick() + cycles(1));
+
+    if (t.taskOp == TaskOp::SWITCH) {
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "SWITCH task waiting for Scheduler<->CacheController "
+            "packet/parameter contract\n");
+        return;
     }
-    else if (t.taskOp == P2S) {
-        currState = P2SING;
-        schedule(P2SEvent, curTick() + cycles(1));
+
+    if (t.taskOp == TaskOp::P2S) {
+        if (t.pkt == nullptr) {
+            DPRINTFS(
+                Scheduler,
+                owner,
+                "P2S task has no packed packet\n");
+            return;
+        }
+
+        Scheduler::MemSidePort *port = nullptr;
+        const char *route = "UNKNOWN";
+
+        switch (t.p2sRoute) {
+          case P2SRoute::L:
+            port = &owner->p2sLPort;
+            route = "L";
+            break;
+
+          case P2SRoute::R:
+            port = &owner->p2sRPort;
+            route = "R";
+            break;
+
+          case P2SRoute::RT:
+            port = &owner->p2sRTPort;
+            route = "RT";
+            break;
+        }
+
+        if (port == nullptr || !port->isConnected()) {
+            DPRINTFS(
+                Scheduler,
+                owner,
+                "P2S route=%s waiting for connected port\n",
+                route);
+            return;
+        }
+
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "P2S FSM IDLE -> P2SING route=%s\n",
+            route);
+
+        currState = TaskState::P2SING;
+
+        owner->schedule(
+            p2sEvent,
+            owner->clockEdge(Cycles(1)));
+
+        return;
     }
 }
 
 void
-Scheduler::TaskScheduler::processP2SEvent() {
-    // send the nextTask packet to DPM
-    bool success = owner->DPMPort.sendTimingReq(nextTask.pkt);
-
-}
-
-Scheduler::SwitchController::SwitchController(Scheduler* owner) :
-    owner(owner);
-    switchEvent([this]{this->processSwitchEvent();}, "switchEvent"),
-    queryEvent([this]{this->processQueryEvent();}, "queryEvent"),
-    requestFlushEvent([this]{this->processRequestFlushEvent();}, "flushEvent"),
-    switch2PICEvent([this]{this->processSwitch2PICEvent();}, "switch2PICEvent"),
-    switch2CacheEvent([this]{this->processSwitch2CacheEvent();}, "switch2CacheEvent")
+Scheduler::TaskScheduler::processP2SEvent()
 {
+    if (nextTask.empty()) {
+        currState = TaskState::IDLE;
+        return;
+    }
 
+    Task &t = nextTask.front();
+
+    if (t.taskOp != TaskOp::P2S ||
+        t.pkt == nullptr) {
+
+        currState = TaskState::IDLE;
+        return;
+    }
+
+    Scheduler::MemSidePort *port = nullptr;
+    const char *route = "UNKNOWN";
+
+    switch (t.p2sRoute) {
+      case P2SRoute::L:
+        port = &owner->p2sLPort;
+        route = "L";
+        break;
+
+      case P2SRoute::R:
+        port = &owner->p2sRPort;
+        route = "R";
+        break;
+
+      case P2SRoute::RT:
+        port = &owner->p2sRTPort;
+        route = "RT";
+        break;
+    }
+
+    panic_if(
+        port == nullptr,
+        "Scheduler P2S task has invalid route");
+
+    DPRINTFS(
+        Scheduler,
+        owner,
+        "P2S DISPATCH route=%s payloadSize=%u\n",
+        route,
+        t.pkt->getSize());
+
+    if (port->sendPacket(t.pkt)) {
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "P2S DISPATCH ACCEPTED route=%s\n",
+            route);
+
+        nextTask.pop_front();
+
+        // Stay P2SING.
+        // Actual R / RT completion is Stage 4D, not hidden here.
+    }
+    else {
+        DPRINTFS(
+            Scheduler,
+            owner,
+            "P2S DISPATCH DEFERRED route=%s\n",
+            route);
+    }
 }
+
+void
+Scheduler::TaskScheduler::completeCurrentTask()
+{
+    panic_if(
+        currState != TaskState::P2SING,
+        "Scheduler received P2S completion outside P2SING");
+
+    DPRINTFS(
+        Scheduler,
+        owner,
+        "P2S FSM P2SING -> IDLE: downstream completion\n");
+
+    currState = TaskState::IDLE;
+    owner->scheduleDecodeIfNeeded();
+}
+
+Scheduler::SwitchController::SwitchController(Scheduler *owner)
+    : owner(owner),
+      setID(0),
+      wayID(0),
+      wayStateValid(0),
+      flushAddr(0),
+      currSwitchType(SwitchType::PIC2Cache),
+      switchEvent([this] { processSwitchEvent(); }, "switchEvent"),
+      queryEvent([this] { processQueryEvent(); }, "queryEvent"),
+      requestFlushEvent([this] { processRequestFlushEvent(); }, "flushEvent"),
+      switch2PICEvent([this] { processSwitch2PICEvent(); }, "switch2PICEvent"),
+      switch2CacheEvent([this] { processSwitch2CacheEvent(); }, "switch2CacheEvent")
+{
+}
+
 bool
 Scheduler::SwitchController::handleResponse(PacketPtr pkt)
 {
-    assert(pkt->isResponse());
-
-    // query way's response
-    if (pkt->req->isQueryWay()) {
-        RespPayload respPayload;
-        pkt->writeData(reinterpret_cast<uint8_t*>(&respPayload));
-
-        flushAddr = respPayload.addr;
-        wayStateValid = respPayload.state;
-        DPRINTF(Scheduler, "Response: Address=%p, wayState=%d", flushAddr, wayStateValid);
-        delete pkt;
-
-        // request flush if way state valid
-        if (waystatevalid) {
-            schedule(requestFlushEvent, curTick() + cycles(1));
-        }
-        else {
-            processNextSet();
-        }
-    }
-    // flush controller's response
-    else if (pkt->req->isFlushWay()) {
-        // advance to next set
-        processNextSet();
-    }
-    // switch way state response
-    else if (pkt->req->isCache2PIC() || pkt->req->isPIC2Cache()) {
-        delete pkt;
-        // notify scheduler switch finish
-        owner->taskScheduler->currState = TaskState::IDLE;
-    }
     return true;
 }
+
 void
 Scheduler::SwitchController::processSwitchEvent()
 {
-    // schedule first setID switch
-    schedule(queryEvent, curTick() + cycles(1));
 }
+
 void
 Scheduler::SwitchController::processNextSet()
 {
-    setID++;
-
-    if (setID < 1024) {
-        schedule(queryEvent, curTick() + cycles(1));
-    }
-    else {
-        if (currSwitchType == Cache2PIC) schedule(switch2PICEvent, curTick() + cycles(1));
-        else if (currSwitchType == PIC2Cache) schedule(switch2CacheEvent, curTick() + cycles(1));
-    }
 }
+
 void
 Scheduler::SwitchController::processQueryEvent()
 {
-    size_t pktSize = std::max(sizeof(QueryPayload, sizeof(RespPayload)));
-    RequestorID requestorId = system.getRequestorId(this, "Scheduler");
-
-    RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset                    // the target MMIO address of cache controller
-        pktSize,                            // setID, wayID
-        Request::QueryWay,                  // flag
-        requestorId
-    );
-
-    PacketPtr pkt = new Packet(request, MemCmd::QueryReq);
-    pkt->allocate();
-
-    QueryPayload queryPayload = {setID, wayID};
-    pkt->setData(reinterpret_cast<const uint8_t*>(&queryPayload));
-    bool success = owner->cacheControllerPort.sendTimingReq(pkt);
-    // if (!success) {
-    // owner->retryQueue.push_back(pkt);
 }
 
 void
 Scheduler::SwitchController::processRequestFlushEvent()
 {
-    RequestorID requestorId = system.getRequestorId(this, "Scheduler");
-
-    RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset    // the target MMIO address of cache controller
-        sizeof(Addr),       // flush addr
-        Request::FlushWay,                  // flag
-        requestorId
-    );
-
-    PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
-    pkt->allocate();
-
-    pkt->setLE<Addr>(flushAddr);
-
-    bool success = owner->cacheControllerPort.sendTimingReq(pkt);
-    // if (!success) {
-    // owner->retryQueue.push_back(pkt);
 }
+
 void
 Scheduler::SwitchController::processSwitch2PICEvent()
 {
-    // send request to cache controller to switch mode cache -> PIC
-    RequestorID requestorId = system.getRequestorId(this, "Scheduler");
-
-    RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset    // the target MMIO address of cache controller
-        sizeof(uint32_t),       // wayID
-        Request::Cache2PIC,     // flag
-        requestorId
-    );
-
-    PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
-    pkt->allocate();
-
-    pkt->setLE<uint32_t>(wayID);
-
-    bool success = owner->cacheControllerPort.sendTimingReq(pkt);
-    // if (!success) {
-    // owner->retryQueue.push_back(pkt);
 }
+
 void
 Scheduler::SwitchController::processSwitch2CacheEvent()
 {
-    // send request to cache controller to switch mode cache -> PIC
-    RequestorID requestorId = system.getRequestorId(this, "Scheduler");
-
-    RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset    // the target MMIO address of cache controller
-        sizeof(uint32_t),       // wayID
-        Request::PIC2Cache,     // flag
-        requestorId
-    );
-
-    PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
-    pkt->allocate();
-
-    pkt->setLE<uint32_t>(wayID);
-
-    bool success = owner->cacheControllerPort.sendTimingReq(pkt);
-    // if (!success) {
-    // owner->retryQueue.push_back(pkt);
 }
 
-
+void
+Scheduler::startup()
+{
+    // Publish the MMIO range
+    // Decoding itself starts when handleRequest() accepts the first packet.
+    sendRangeChange();
+    scheduleDecodeIfNeeded();
+}
 
 } // namespace gem5
