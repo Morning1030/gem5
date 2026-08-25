@@ -69,8 +69,34 @@ struct P2S_R_Payload
     uint8_t precision;    
     uint8_t bufNum;                                                 // 2 bits
 };
+// datapayload for exe/cal
+struct CAL_Payload
+{
+    uint64_t _L_vec_fetch_addr;     // SET_SRC
+    uint64_t set_up_addr;             // SET_DST
+    uint32_t _R_block_row;          // SET_PARAM
+    uint8_t nBuf;
+    uint8_t nCal;
+    uint8_t _R_base_bit;
+    uint8_t L_precision;
+    uint8_t _L_block_row;
+    bool signed_L;
+    bool signed_R_last_exist;
+    bool accWidth;
+};
 
-
+/*
+    uint32_t RValidNRows;
+    uint8_t nBufPerMat;
+    uint8_t nCalPerMat;
+    uint8_t baseRBit;
+    uint8_t L_Precision;
+    uint8_t L_Block_Row;
+    bool signL;
+    bool signRBitLast;
+    bool accWidth;
+    bool needL;
+*/
 class Scheduler : public ClockedObject
 {
     private:
