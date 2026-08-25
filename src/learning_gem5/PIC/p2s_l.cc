@@ -1,54 +1,12 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "learning_gem5/PIC/p2s.hh"
+#include "learning_gem5/PIC/scheduler.hh"
+#include "sim/system.hh"
+
+#include <algorithm>
+#include <cstring>
+
 #include "debug/P2S_L.hh"
 
-/* DATA MEMBERS
-precision=precision
-uint64_t base_dram_addr = base_dramAddr_to_load
-uint64_t base_picAddr=RegInit(0.U((sysCfg.accessCacheFullAddrLen).W))
-uint64_t pic_write_ptr = base_picAddr_to_store;
-next_row_offset_elem=next_row_offset_elem
-next_row_offset_dram=(next_row_offset_elem*bits_per_ele)>>log2Ceil(8)
-_L_block_row =_L_block_row
-_L_block_row_ptr=RegInit(0.U(sysCfg._L_nRow_sigLen.W))
-next_slice_offset_pic=_L_block_row
-*/
-
-/*
-P2S_L REQUEST PARAMETERS
-base_dramAddr_to_load
-base_picAddr_to_store
-_L_block_row
-next_row_offset_elem
-precision
-*/
 namespace gem5
 {
 P2S_L::P2S_L(P2S_LParams *params) :
@@ -56,11 +14,13 @@ P2S_L::P2S_L(P2S_LParams *params) :
     instPort(params.name + ".cpu_port", this),
     DMAPort(params.name + ".dma_port", this),
     CacheBankPort(params.name + ".cb_port", this),
+    // requestorId(params.system->getRequestorId(this, "P2S_L")),   // TBD
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
     bitSliceEvent([this]{this->processBitSliceEvent();}, "bitSliceEvent"),
     writeEvent([this]{this->processWriteEvent();}, "writeBankEvent")
 {}
-
+// TBA CPUSidePort constructor
+// TBA P2S_L::CPUSidePort::sendPacket(PacketPtr pkt)
 bool
 P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
     // Just forward to the memobj.
@@ -76,6 +36,7 @@ void
 P2S_L::MemSidePort::sendPacket(PacketPtr pkt){}
 
 // TODO take care of out of order responses
+// TODO implement handleResp, recvTimingResp should just forward
 bool
 P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
     // fill the response to buffer
@@ -97,7 +58,7 @@ P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
         bit_ptr = 0;
 
         pic_write_ptr = base_picAddr + _L_block_row_ptr;
-        schedule(bitSliceEvent, curTick() + cycles(1));
+        schedule(bitSliceEvent, clockEdge(Cycles(1)));
 
     } else {
         // need to wait for other dmaRows to finish
@@ -121,7 +82,7 @@ P2S_L::handleRequest(PacketPtr pkt) {
     bit_ptr = 0;
     dmaRow = 0;
 
-    schedule(dmaReadEvent, curTick + cyckes(1));
+    schedule(dmaReadEvent, clockEdge(Cycles(1)));
 }
 
 void
@@ -136,17 +97,17 @@ P2S_L::processDMAReadEvent() {
         requestorId
     )
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
-        
+
     // ask DMA to get data by cache controller
     DMALPayload* dmaLPayload = new DMALPayload{next_row_offset_elem, base_dram_addr};
-    
+
     pkt->dataDynamic(reinterpret_cast<uint8_t*>(&dmaLPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
         base_dram_addr += next_row_offset_dram; // update base_dram_addr for the next round
     }
 
-    
+
 }
 void
 P2S_L::processBitSliceEvent() {
@@ -172,7 +133,7 @@ P2S_L::processBitSliceEvent() {
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
-    schedule(writeEvent, curTick() + cycles(1));
+    schedule(writeEvent, clockEdge(Cycles(1)));
 
     // update the next address
     pic_write_ptr += next_slice_offset_pic; // next_slice_offset_pic = _L_block_row(?)
@@ -180,14 +141,14 @@ P2S_L::processBitSliceEvent() {
     // finish one bit slice, move on to the next bit
     bit_ptr++;
     if (bit_ptr < precision) {
-        schedule(bitSliceEvent, curTick() + cycles(1));
+        schedule(bitSliceEvent, clockEdge(Cycles(1)));
     }
     // finish one row, move on to the next row
     else {
         bit_ptr = 0;
         _L_block_row_ptr++;
         if (_L_block_row_ptr < _L_block_row) {
-            schedule(dmaReadEvent, curTick() + cycles(1));
+            schedule(dmaReadEvent, clockEdge(Cycles(1)));
         }
         else {
             // send p2s_done to scheduler
@@ -219,7 +180,7 @@ P2S_L::processWriteEvent() {
         bool success = cacheBankPort.sendTimingReq(pkt);
         if (success) {
             bitSliceQueue.pop_front();
-            schedule(writeEvent, curTick() + cycles(1));
+            schedule(writeEvent, clockEdge(Cycles(1)));
         }
         else {
             // p2s is stalled, need to wait for cache bank notify to retry
@@ -228,4 +189,3 @@ P2S_L::processWriteEvent() {
 }
 
 }
-

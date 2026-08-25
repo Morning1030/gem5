@@ -1,33 +1,8 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "learning_gem5/PIC/p2s.hh"
-#include "debug/P2S_L.hh"
+#include "learning_gem5/PIC/scheduler.hh"
+#include "sim/system.hh"
+#include <cstring>
+#include "debug/P2S_R_T.hh"
 
 namespace gem5
 {
@@ -47,7 +22,7 @@ P2S_R_T::P2S_R_T(P2S_R_TParams *params) :
     arrayID_offset[0] = 0;
     for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
 }
-bool 
+bool
 P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt) {
     // Just forward to the memobj.
     if (!owner->handleRequest(pkt)) {
@@ -98,8 +73,8 @@ P2S_R_T::handleRequest(PacketPtr pkt) {
     next_row_offset_bytes = p2s_R_Payload->next_row_offset_bytes;                                 // 15bits
     nRows = p2s_R_Payload->nRows;                                                 // Read how many rows
     nCols = p2s_R_Payload->nCols;                                                 // Number of columns to read, max 1024
-    precision = p2s_R_Payload->precision;    
-    bufNum = p2s_R_Payload->bufNum;  
+    precision = p2s_R_Payload->precision;
+    bufNum = p2s_R_Payload->bufNum;
 
     // initialize data memebers
     bit_ptr = 0;
@@ -118,7 +93,7 @@ P2S_R_T::processDMAReadEvent() {
         requestorId
     )
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
-        
+
     // ask DMA to get data by cache controller
     DMARTPayload* dmaRTPayload = new DMARTPayload{nCols, dramAddr};
     pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
@@ -134,7 +109,7 @@ void
 P2S_R_T::processBitSliceEvent() {
 
     // extract bits from raw data
-    uint64_t bitSlice = extractBits_R_T(bufArrayOutReFormat, bit_ptr);
+    uint64_t bitSlice = extractBits(bufArrayOutReFormat, bit_ptr);
 
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
@@ -159,7 +134,7 @@ P2S_R_T::processBitSliceEvent() {
     bitSliceQueue.push_back(bitSlicePkt);
     // write to cache bank
     schedule(writeEvent, curTick() + cycles(1));
-    
+
     bit_ptr++;
     if (bit_ptr < precision) {
         schedule(bitSliceEvent, curTick() + cycles(1));
@@ -194,7 +169,7 @@ P2S_R_T::processWriteEvent() {
 }
 
 uint64_t
-P2S_R_T::extractBits_R_T(const std::vector<uint_8> &buf, uint8_t bit) {
+P2S_R_T::extractBits(const std::vector<uint_8> &buf, uint8_t bit) {
     uint64_t extractedBit 0;
     uint64_t bitSlice = 0;
 

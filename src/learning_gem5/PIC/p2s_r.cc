@@ -1,38 +1,10 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "learning_gem5/PIC/p2s.hh"
 #include "debug/P2S_L.hh"
 /*
 P2S_R REQUEST PARAMETERS
 nCols=UInt(log2Ceil(sysCfg.core_config.wordlineNums+1).W)    // Number of columns to read, max 1024
 nRows=UInt(log2Ceil(sysCfg.core_config.wordlineNums+1).W)    // Read how many rows
-precision=UInt(3.W)     
+precision=UInt(3.W)
 next_row_offset_bytes=UInt(sysCfg.offset_signLen.W)          // 1byte
 base_arrayID_to_store=UInt(log2Ceil(sysCfg.numArraysTotal).W) // Which subarray to put the first selected bit map
 bufNum=UInt(2.W)
@@ -84,14 +56,14 @@ P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
     }
 
     delete pkt;
-    
+
     // the whole row finishes
     if ((pktSize + writeOffset) == curBlockNCols) {
-        
+
         writeMemAddr = 0;
         curBlockRowPtr++;
         curRowDramAddrOffset += next_row_offset_bytes;
-        
+
         // the whole block finishes
         if (curBlockRowPtr == curBlockNRows) {
             curBlockRowPtr = 0;
@@ -101,7 +73,7 @@ P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
             readMemAddr = 0;
             // fill dma from SRAM block into buffer
             schedule(loadBufferEvent, curTick() + cycles(1));
-        
+
         // schedule for the next row DMA
         } else {
             schedule(dmaReadEvent, curTick() + cycles(1));
@@ -111,7 +83,7 @@ P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
         // on the same row
         writeMemAddr++;
     }
-        
+
 }
 
 bool
@@ -127,8 +99,8 @@ P2S_R::handleRequest(PacketPtr pkt) {
     next_row_offset_bytes = p2s_R_Payload->next_row_offset_bytes;                                 // 15bits
     nRows = p2s_R_Payload->nRows;                                                 // Read how many rows
     nCols = p2s_R_Payload->nCols;                                                 // Number of columns to read, max 1024
-    precision = p2s_R_Payload->precision;    
-    bufNum = p2s_R_Payload->bufNum;  
+    precision = p2s_R_Payload->precision;
+    bufNum = p2s_R_Payload->bufNum;
 
     // initialize data memebers
     // bitSlice variables
@@ -154,7 +126,7 @@ P2S_R::handleRequest(PacketPtr pkt) {
     // send p2s_done to scheduler
     cpuSidePort.sendTimingResp(pkt);
 }
-void 
+void
 P2S_R::processDMAReadEvent() {
     // read 128 col into SRAM block
     RequestorID requestorId = system.getRequestorId(this, "P2S_R");
@@ -166,11 +138,11 @@ P2S_R::processDMAReadEvent() {
         requestorId
     )
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
-        
+
     // ask DMA to get data by cache controller
     curBlockNCols = std::min(128, nCols - curBlockColPtr);
     DMARPayload *dmaRPayload = new DMARPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
-    
+
     pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
@@ -194,12 +166,12 @@ P2S_R::processLoadBufferEvent() {
     else {
         schedule(loadBufferEvent, curTick() + cycles(1));
     }
-    
+
 }
 void
 P2S_R::processBitSliceEvent() {
     // extract bits from raw data
-    uint64_t bitSlice = extractBits_R(regArray, curEnqBlockInBufColPtr, bit_ptr)
+    uint64_t bitSlice = extractBits(regArray, curEnqBlockInBufColPtr, bit_ptr)
 
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
@@ -215,11 +187,11 @@ P2S_R::processBitSliceEvent() {
         0,                           // TODO request flag?
         requestorId
     );
-    
+
     // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
     bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
-                    
+
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
     // write to cache bank
@@ -253,7 +225,7 @@ P2S_R::processBitSliceEvent() {
                 // (TO BE CHECKED)
                 schedule(loadBufferEvent, curTick() + cycles(1));
             }
-            
+
         }
         else schedule(bitSliceEvent, curTick() + cycles(1));
     }
@@ -283,7 +255,7 @@ P2S_R::get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf) {
 }
 
 uint64_t
-P2S_R::extractBits_R(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim=8) {
+P2S_R::extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim=8) {
     uint64_t extractedBit 0;
     uint64_t bitSlice = 0;
 
@@ -292,7 +264,7 @@ P2S_R::extractBits_R(const std::vector<std::vector<uint8_t>> &arr, uint32_t row,
     // for each element in the array
     for (j = 0; j < 64; j++) {
         // here take regArray as regArray.transpose
-        extractBits = (arr[j][row] >> bit) & 0x1;
+        extractedBit = (arr[j][row] >> bit) & 0x1;
         bitSlice |= (extractedBit << j);
     }
     return bitSlice;
@@ -301,4 +273,3 @@ P2S_R::extractBits_R(const std::vector<std::vector<uint8_t>> &arr, uint32_t row,
 
 
 }
-
