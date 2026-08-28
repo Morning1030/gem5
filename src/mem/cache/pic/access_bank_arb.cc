@@ -1,6 +1,10 @@
 #include "mem/cache/pic/access_bank_arb.hh"
 
+#include <algorithm>
+
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "debug/PICBankArb.hh"
 
 namespace gem5
 {
@@ -29,20 +33,21 @@ constexpr unsigned kOffsetBits       = 9;  // wordline_offset, bits[8:0]
 constexpr unsigned kArrayIdInMatBits = 2;  // arrayID_in_mat, bits[10:9]
 } // namespace
 
-AccessBankArb::AccessBankArb(unsigned num_banks, unsigned num_clients)
-    : numClients(num_clients),
-      reqValid(num_clients, false),
-      reqPkg(num_clients),
+AccessBankArb::AccessBankArb(const Params &p)
+    : ClockedObject(p),
+      numClients(kNumBankArbClients),
+      reqValid(kNumBankArbClients, false),
+      reqPkg(kNumBankArbClients),
       // Start so the first tick() scans from client 0, matching an
       // RRArbiter that resets its rotating-priority pointer to 0.
-      lastGranted(num_clients - 1),
+      lastGranted(kNumBankArbClients - 1),
       state(ArbState::Access),
       blockedClientId(0),
       blockedBankId(0),
-      bankReadyVec(num_banks, true)
+      bankReadyVec(p.num_banks, true),
+      tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent")
 {
-    fatal_if(num_clients == 0, "AccessBankArb: num_clients must be > 0");
-    fatal_if(num_banks == 0, "AccessBankArb: num_banks must be > 0");
+    fatal_if(p.num_banks == 0, "AccessBankArb: num_banks must be > 0");
 
     // mod: p2s_arbiter
     // Default decode, matching get_bankID() (SysConfig.scala:282-305):
@@ -51,10 +56,180 @@ AccessBankArb::AccessBankArb(unsigned num_banks, unsigned num_clients)
     // config (see the field-layout note above). This is no longer a
     // placeholder for that default config; setArrayAddrToBank() remains
     // the override point if num_banks/matPerBank/core_addrLen differ.
+    const unsigned num_banks = p.num_banks;
     arrayAddrToBankFn = [num_banks](uint32_t addr) {
         constexpr unsigned shift = kOffsetBits + kArrayIdInMatBits; // = 11
         return static_cast<unsigned>((addr >> shift) & (num_banks - 1));
     };
+
+    // mod: p2s_arbiter
+    // Exactly one connection per P2S engine -- index doubles as
+    // (BankArbClient - kClientP2S_L), see the file header comment.
+    fatal_if(p.port_p2s_side_connection_count != 3,
+             "AccessBankArb: p2s_side must have exactly 3 connections "
+             "(P2S_L, P2S_R, P2S_R_T), got %d",
+             p.port_p2s_side_connection_count);
+    for (int i = 0; i < p.port_p2s_side_connection_count; ++i) {
+        p2sPorts.emplace_back(
+            p.name + csprintf(".p2s_side[%d]", i), i, this);
+    }
+}
+
+Port &
+AccessBankArb::getPort(const std::string &if_name, PortID idx)
+{
+    if (if_name == "p2s_side" &&
+        static_cast<size_t>(idx) < p2sPorts.size()) {
+        return p2sPorts[idx];
+    }
+    return ClockedObject::getPort(if_name, idx);
+}
+
+// ---------------------------------------------------------------------------
+// P2SPort
+// ---------------------------------------------------------------------------
+
+void
+AccessBankArb::P2SPort::sendPacket(PacketPtr pkt)
+{
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    DPRINTF(PICBankArb, "AccessBankArb: sending ack %s to P2S[%d]\n",
+            pkt->print(), id);
+    if (!sendTimingResp(pkt)) {
+        DPRINTF(PICBankArb, "AccessBankArb: P2S[%d] refused ack, will retry\n",
+                id);
+        blockedPacket = pkt;
+    }
+}
+
+AddrRangeList
+AccessBankArb::P2SPort::getAddrRanges() const
+{
+    // Private point-to-point link to one P2S engine, not decoded off a
+    // shared bus -- claim the whole address space like other such links
+    // in this tree (e.g. DMAEngine::P2SPort).
+    AddrRangeList ranges;
+    ranges.push_back(AddrRange(0, MaxAddr));
+    return ranges;
+}
+
+void
+AccessBankArb::P2SPort::trySendRetry()
+{
+    if (needRetry && blockedPacket == nullptr) {
+        needRetry = false;
+        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to P2S[%d]\n",
+                id);
+        sendRetryReq();
+    }
+}
+
+bool
+AccessBankArb::P2SPort::recvTimingReq(PacketPtr pkt)
+{
+    DPRINTF(PICBankArb, "AccessBankArb: got write req %s from P2S[%d]\n",
+            pkt->print(), id);
+
+    if (blockedPacket || needRetry) {
+        // Our previous ack to this same P2S engine hasn't gone out yet --
+        // don't accept a new write until it has.
+        needRetry = true;
+        return false;
+    }
+    if (!owner->handleRequest(pkt, id)) {
+        // Arbiter still holds an ungranted request from this client --
+        // mirrors io.accessArray(clientId).valid staying high.
+        needRetry = true;
+        return false;
+    }
+    return true;
+}
+
+void
+AccessBankArb::P2SPort::recvRespRetry()
+{
+    assert(blockedPacket != nullptr);
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+    // May now be able to accept a new request from this same P2S engine.
+    trySendRetry();
+}
+
+// ---------------------------------------------------------------------------
+// Request/response handling
+// ---------------------------------------------------------------------------
+
+bool
+AccessBankArb::handleRequest(PacketPtr pkt, int portIdx)
+{
+    panic_if(pkt->getSize() != sizeof(P2SWritePayload),
+             "AccessBankArb: P2S[%d] sent a %u-byte write payload, "
+             "expected %zu", portIdx, pkt->getSize(),
+             sizeof(P2SWritePayload));
+
+    const auto *payload = pkt->getConstPtr<P2SWritePayload>();
+    const unsigned clientId = kClientP2S_L + portIdx;
+
+    if (!submitP2SWrite(clientId, static_cast<uint32_t>(payload->arrayAddr),
+                         payload->bitSlice)) {
+        return false;
+    }
+
+    panic_if(pendingReqPkt.count(clientId) != 0,
+             "AccessBankArb: client %u already has a pending packet",
+             clientId);
+    pendingReqPkt.emplace(clientId, pkt);
+
+    DPRINTF(PICBankArb, "AccessBankArb: client %u posted addr=%#x\n",
+            clientId, payload->arrayAddr);
+
+    if (!tickEvent.scheduled()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+    return true;
+}
+
+void
+AccessBankArb::processTickEvent()
+{
+    std::optional<Grant> grant = tick();
+    if (grant) {
+        auto it = pendingReqPkt.find(grant->clientId);
+        panic_if(it == pendingReqPkt.end(),
+                 "AccessBankArb: granted client %u with no pending packet",
+                 grant->clientId);
+        PacketPtr pkt = it->second;
+        pendingReqPkt.erase(it);
+
+        const int portIdx = static_cast<int>(grant->clientId) - kClientP2S_L;
+        DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
+                "acking P2S[%d]\n", grant->clientId,
+                grant->committedThisCycle ? "ready" : "busy", portIdx);
+
+        pkt->makeResponse();
+        sendResponse(pkt, portIdx);
+        // The client's one pending-request slot just freed up -- let it
+        // send its next write if one was refused earlier.
+        p2sPorts[portIdx].trySendRetry();
+    }
+
+    // Keep ticking every cycle while there's pending work: either a
+    // client waiting to be granted, or we're frozen in Block waiting on
+    // a bank.
+    const bool anyPending = std::any_of(reqValid.begin(), reqValid.end(),
+                                         [](bool v) { return v; });
+    if (anyPending || isBlocked()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+}
+
+void
+AccessBankArb::sendResponse(PacketPtr pkt, int portIdx)
+{
+    p2sPorts[portIdx].sendPacket(pkt);
 }
 
 bool

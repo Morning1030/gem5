@@ -1,201 +1,332 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "learning_gem5/PIC/p2s.hh"
-#include "debug/P2S_L.hh"
+#include "learning_gem5/PIC/scheduler.hh"
+#include "sim/system.hh"
+#include <cstring>
+#include "debug/P2S_R_T.hh"
 
 namespace gem5
 {
-P2S_R_T::P2S_R_T(P2S_R_TParams *params) :
+P2S_R_T::P2S_R_T(const P2S_R_TParams &params) :
     ClockedObject(params),
-    instPort(params.name + ".cpu_port", this),
-    DMAPort(params.name + ".dma_port", this),
-    CacheBankPort(params.name + ".cb_port", this),
-    dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
-    bitSliceEvent([this]{this->processBitSliceEvent();}, "bitSliceEvent"),
-    writeEvent([this]{this->processWriteEvent();}, "writeBankEvent")
+    instPort(name() + ".inst_port", this),
+    DMAPort(name() + ".dma_port", this, true),
+    CacheBankPort(name() + ".cb_port", this, false),
+    requestorId(params.system->getRequestorId(this, "P2S_R_T")),
+    wordlineNums(params.wordline_nums),
+    dmaReadEvent([this]{ processDMAReadEvent(); }, "dmaReadEvent"),
+    bitSliceEvent([this]{ processBitSliceEvent(); }, "bitSliceEvent"),
+    writeEvent([this]{ processWriteEvent(); }, "writeBankEvent")
 {
-    // ##########################################################
-    // ################# Array offset Part ######################
-    // ##########################################################
-    get_array_relatice_offset(relative_offset_buf, bufNum);
-    arrayID_offset[0] = 0;
-    for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
 }
-bool 
-P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt) {
-    // Just forward to the memobj.
-    if (!owner->handleRequest(pkt)) {
-        needRetry = true;
-        return false;
-    } else {
+
+//===== gem5 port glue =====//
+P2S_R_T::CPUSidePort::CPUSidePort(
+    const std::string &name,
+    P2S_R_T *owner) :
+    ResponsePort(name, owner),
+    owner(owner)
+{}
+
+bool
+P2S_R_T::CPUSidePort::sendPacket(PacketPtr pkt)
+{
+    return sendTimingResp(pkt);
+}
+
+void
+P2S_R_T::CPUSidePort::recvFunctional(PacketPtr pkt)
+{
+    panic("P2S_R_T functional access is not implemented");
+}
+
+void
+P2S_R_T::CPUSidePort::recvRespRetry()
+{
+    owner->retryControlResponse();
+}
+
+AddrRangeList
+P2S_R_T::CPUSidePort::getAddrRanges() const
+{
+    return {};
+}
+
+P2S_R_T::MemSidePort::MemSidePort(
+    const std::string &name,
+    P2S_R_T *owner,
+    bool dmaSide) :
+    RequestPort(name, owner),
+    owner(owner),
+    dmaSide(dmaSide)
+{}
+
+void
+P2S_R_T::MemSidePort::sendPacket(PacketPtr pkt)
+{
+    sendTimingReq(pkt);
+}
+
+void
+P2S_R_T::MemSidePort::recvReqRetry()
+{
+    if (!dmaSide) {
+        if (!owner->writeEvent.scheduled() && !owner->bitSliceQueue.empty()) {
+            owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
+        }
+        return;
+    }
+    // dmaSide == true: no retry-holding mechanism exists yet on this path
+    // (processDMAReadEvent()'s "need to retry" comment below has no actual
+    // implementation) -- pre-existing gap, left as-is; out of scope for
+    // the CB/arbiter connection.
+}
+
+Port &
+P2S_R_T::getPort(const std::string &if_name, PortID idx)
+{
+    if (if_name == "inst_port")
+        return instPort;
+
+    if (if_name == "dma_port")
+        return DMAPort;
+
+    if (if_name == "cb_port")
+        return CacheBankPort;
+
+    return ClockedObject::getPort(if_name, idx);
+}
+//===========================//
+
+bool
+P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt)
+{
+    return owner->handleRequest(pkt);
+}
+
+bool
+P2S_R_T::MemSidePort::recvTimingResp(PacketPtr pkt)
+{
+    if (!dmaSide) {
+        // AccessBankArb's ack: fires at grant, not bank-commit (see its
+        // header comment), carries no payload -- just free the packet.
+        // The write queue resumes via recvReqRetry() once refused, or via
+        // processWriteEvent()'s own self-reschedule when not.
+        delete pkt;
         return true;
     }
-}
-bool
-P2S_R_T::MemSidePort::recvTimingResp(PacketPtr pkt) {
-    // fill the response to buffer
-    // TODO need sender state row to deal with out of order receiving
-    uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
-    size_t pktSize = pkt->getSize();
 
-    if (dmaRow < bufArray.size() && pktSize <= sizeof(uint64_t)) {
-        std::memcpy(&bufArray[dmaRow], dmaData, pktSize);
-    } else {
-        panic("P2S_R_T: bufArray buffer overflow! dmaRow=%u\n", dmaRow);
-    }
+    const uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
+    const size_t pktSize = pkt->getSize();
+
+    panic_if(
+        pktSize != owner->nCols,
+        "P2S_R_T: DMA row response size %zu != requested nCols %u",
+        pktSize,
+        owner->nCols);
+
+    panic_if(
+        pktSize > owner->bufArrayOutReFormat.size(),
+        "P2S_R_T: DMA row size %zu exceeds P2S_R_T buffer capacity %zu",
+        pktSize,
+        owner->bufArrayOutReFormat.size());
+
+    std::memcpy(owner->bufArrayOutReFormat.data(),dmaData,pktSize);
 
     delete pkt;
-    dmaRow++;
 
-    if (dmaRow == bufArray.size()) {
-        dmaRow = 0;
-        bit_ptr = 0;
-        // finish filling dma into buffer
-        schedule(bitSliceEvent, curTick() + cycles(1));
+    owner->bit_ptr = 0;
+    owner->schedule(owner->bitSliceEvent,owner->clockEdge(Cycles(1)));
 
-    } else {
-        // need to wait for other dmaRows to finish
+    return true;
+}
+
+bool
+P2S_R_T::handleRequest(PacketPtr pkt)
+{
+    if (active || pendingControlPkt != nullptr) {
+        return false;
     }
 
-    // reformat the buffer from dma data to extract bit format
-    // for(int i = 0; i < 64; i++) {
-    //     uint8_t bitShift = (i % 8) * 8;
-    //     bufArrayOutReFormat[i] = (bufArray[i / 8] >> bitShift) & 0xFF;
-    // }
-}
-void
-P2S_R_T::handleRequest(PacketPtr pkt) {
-    // fill the packet field into data members of p2s
-    P2S_R_Payload *p2s_R_Payload = pkt->getConstPtr<P2S_R_Payload>();
-    dramAddr = p2s_R_Payload->dramAddr;
-    base_arrayID_to_store = p2s_R_Payload->base_arrayID_to_store; // Which subarray to put the first selected bit map
-    next_row_offset_bytes = p2s_R_Payload->next_row_offset_bytes;                                 // 15bits
-    nRows = p2s_R_Payload->nRows;                                                 // Read how many rows
-    nCols = p2s_R_Payload->nCols;                                                 // Number of columns to read, max 1024
-    precision = p2s_R_Payload->precision;    
-    bufNum = p2s_R_Payload->bufNum;  
+    pendingControlPkt = pkt;
+    datapathDone = false;
+    active = true;
 
-    // initialize data memebers
+    const P2S_R_Payload *payload = pkt->getConstPtr<P2S_R_Payload>();
+
+    dramAddr = payload->dramAddr;
+    base_arrayID_to_store = payload->base_arrayID_to_store;
+    next_row_offset_bytes = payload->next_row_offset_bytes;
+    nRows = payload->nRows;
+    nCols = payload->nCols;
+    precision = payload->precision;
+    bufNum = payload->bufNum;
+
+    get_array_relatice_offset(relative_offset_buf, bufNum);
+
+    arrayID_offset[0] = 0;
+    for (int i = 1; i < 8; ++i) {
+        arrayID_offset[i] = arrayID_offset[i-1] + relative_offset_buf[i-1];
+    }
+
     bit_ptr = 0;
     row_store_ptr = 0;
-    schedule(dmaReadEvent, curTick() + cycles(1));
+
+    schedule(dmaReadEvent,clockEdge(Cycles(1)));
+    return true;
 }
+
 void
-P2S_R_T::processDMAReadEvent() {
-    // read one row in R Tile
-    RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
+P2S_R_T::processDMAReadEvent()
+{
+    panic_if(
+        nCols == 0,
+        "P2S_R_T: nCols must be non-zero");
 
     RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset                    // the target MMIO address of cache controller
-        sizeof(DMARTPayload),                // next_row_offset_elem, base_dram_addr
-        Request::,                          // TODO
-        requestorId
-    )
+        dramAddr,
+        nCols,
+        0,
+        requestorId);
+
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
-        
-    // ask DMA to get data by cache controller
-    DMARTPayload* dmaRTPayload = new DMARTPayload{nCols, dramAddr};
-    pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
-    bool success = DMAPort.sendTimingReq(pkt);
+
+    pkt->allocate();
+
+    const bool success = DMAPort.sendTimingReq(pkt);
+
     if (success) {
-        dramAddr += next_row_offset_bytes; // update base_dram_addr for the next round
+        dramAddr += next_row_offset_bytes;
     }
     else {
         // need to retry
     }
 }
+
 void
-P2S_R_T::processBitSliceEvent() {
+P2S_R_T::processBitSliceEvent()
+{
+    const uint64_t bitSlice = extractBits_R_T(bufArrayOutReFormat,bit_ptr);
 
-    // extract bits from raw data
-    uint64_t bitSlice = extractBits_R_T(bufArrayOutReFormat, bit_ptr);
+    const uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
 
-    // determine the address
-    uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
-    uint64_t arrayAddrEnq = currArrayID << log2Ceil(coreCfg.wordlineNums) + row_store_ptr;
-    P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
-
-    // pack into packets
-    RequestorID requestorId = system.getRequestorId(this, "P2S_R_T");
+    // Equivalent to original:
+    // (curArrayID << log2Ceil(coreCfg.wordlineNums)) + row_store_ptr
+    const uint64_t arrayAddrEnq = curArrayID * wordlineNums + row_store_ptr;
 
     RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset,            // the target MMIO address of cache bank
-        sizeof(p2sWritePayload),     // store address + bitSlice
-        0,                           // TODO request flag?
-        requestorId
-    );
+        0,
+        sizeof(P2SWritePayload),
+        0,
+        requestorId);
 
-    // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-    bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
 
-    // enqueue into write queue
+    bitSlicePkt->allocate();
+
+    const P2SWritePayload payload{
+        arrayAddrEnq,
+        bitSlice
+    };
+
+    bitSlicePkt->setData(reinterpret_cast<const uint8_t *>(&payload));
     bitSliceQueue.push_back(bitSlicePkt);
-    // write to cache bank
-    schedule(writeEvent, curTick() + cycles(1));
-    
-    bit_ptr++;
-    if (bit_ptr < precision) {
-        schedule(bitSliceEvent, curTick() + cycles(1));
+
+    if (!writeEvent.scheduled()) {
+        schedule(writeEvent,clockEdge(Cycles(1)));
+    }
+
+    const bool lastBit = (bit_ptr == precision);
+
+    if (!lastBit) {
+        bit_ptr++;
+
+        schedule(bitSliceEvent,clockEdge(Cycles(1)));
     }
     else {
         bit_ptr = 0;
         row_store_ptr++;
+
         if (row_store_ptr < nRows) {
-            schedule(dmaReadEvent, curTick() + cycles(1));
+            schedule(dmaReadEvent,clockEdge(Cycles(1)));
         }
         else {
-            // send p2s_done to scheduler
+            datapathDone = true;
         }
     }
-
-    // send p2s_done to scheduler
-
 }
+
+
+// Added for test & integration:
+// notify Scheduler only after the P2S_RT operation has fully completed.
 void
-P2S_R_T::processWriteEvent() {
+P2S_R_T::completeControlRequest()
+{
+    panic_if(
+        pendingControlPkt == nullptr,
+        "%s completion without pending control packet",
+        name());
+
+    if (!pendingControlPkt->isResponse()) {
+        pendingControlPkt->makeResponse();
+    }
+
+    if (instPort.sendPacket(pendingControlPkt)) {
+        DPRINTF(
+            P2S_R_T,
+            "CONTROL COMPLETE: output queue drained\n");
+
+        pendingControlPkt = nullptr;
+        datapathDone = false;
+    }
+}
+
+void
+P2S_R_T::retryControlResponse()
+{
+    if (pendingControlPkt == nullptr ||
+        !pendingControlPkt->isResponse()) {
+        return;
+    }
+
+    if (instPort.sendPacket(pendingControlPkt)) {
+        pendingControlPkt = nullptr;
+        datapathDone = false;
+    }
+}
+
+
+void
+P2S_R_T::processWriteEvent()
+{
+    if (bitSliceQueue.empty()) {
+        return;
+    }
+
+    PacketPtr pkt = bitSliceQueue.front();
+
+    const bool success = CacheBankPort.sendTimingReq(pkt);
+
+    if (!success) {
+        return;
+    }
+
+    bitSliceQueue.pop_front();
+
+    // keep p2s active until all queued array-write requests are accepted.
     if (!bitSliceQueue.empty()) {
-        PacketPtr pkt = bitSliceQueue.front();
-        bool success = cacheBankPort.sendTimingReq(pkt);
-        if (success) {
-            bitSliceQueue.pop_front();
-            schedule(writeEvent, curTick() + cycles(1));
-        }
-        else {
-            // p2s is stalled, need to wait for cache bank notify to retry
-        }
+        schedule(writeEvent,clockEdge(Cycles(1)));
+        return;
+    }
+
+    if (datapathDone) {
+        active = false;
+        completeControlRequest();
     }
 }
 
 uint64_t
-P2S_R_T::extractBits_R_T(const std::vector<uint_8> &buf, uint8_t bit) {
-    uint64_t extractedBit 0;
+P2S_R_T::extractBits_R_T(const std::vector<uint8_t> &buf, uint8_t bit) {
+    uint64_t extractedBit = 0;
     uint64_t bitSlice = 0;
 
     for (int i = 0; i < 64; i++) {
@@ -211,9 +342,23 @@ P2S_R_T::extractBits_R_T(const std::vector<uint_8> &buf, uint8_t bit) {
 
 
 void
-P2S_R::get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf) { // numBuf is 2 bit in fact
-    if (numBuf == 1) offset = [4, 4, 4, 4, 4, 4, 4];        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
-    else if (numBuf == 2) offset = [1, 3, 1, 3, 1, 3, 1];   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
-    else if (numBuf == 3) offset = [1, 1, 2, 1, 1, 2, 1];   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
+P2S_R_T::get_array_relatice_offset(
+    std::vector<uint8_t> &offset,
+    uint8_t numBuf)
+{
+
+    //fix
+    if (numBuf == 3) {
+        offset = {4, 4, 4, 4, 4, 4, 4};
+    }
+    else if (numBuf == 2) {
+        offset = {1, 3, 1, 3, 1, 3, 1};
+    } 
+    else if (numBuf == 1) {
+        offset = {1, 1, 2, 1, 1, 2, 1};
+    } 
+    else {
+        panic("P2S_R_T: invalid bufNum=%u", numBuf);
+    }
 }
 }

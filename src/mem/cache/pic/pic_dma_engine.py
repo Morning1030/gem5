@@ -1,6 +1,5 @@
 # -*- mode:python -*-
 
-# mod: p2s_arbiter
 # DMAEngine -- SimObject. Issues DMA reads for P2S engines and reassembles
 # the responses. See pic_dma_engine.hh for the port topology and the
 # "one request from P2S = one row = one response" design note.
