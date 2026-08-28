@@ -34,9 +34,19 @@ class Scheduler(ClockedObject):
     cxx_header = "learning_gem5/PIC/scheduler.hh"
     cxx_class = "gem5::Scheduler"
 
+    # mod: p2s_arbiter -- was mem_side_dpm (singular); the scheduler now
+    # dispatches directly to each P2S engine's own inst_port, so it needs
+    # one RequestPort per engine instead of one shared DPM port.
+    system = Param.System(
+        Parent.any,
+        "System used to allocate Scheduler requestor ID"
+    )
+
     inst_port = ResponsePort("Scheduler port, receives MMIO requests")
     mem_side_cc = RequestPort("Scheduler port, send request to cache controller")
-    mem_side_dpm = RequestPort("Scheduler port, send request to DPM")
+    mem_side_p2sl = RequestPort("Scheduler port, send request to P2S_L")
+    mem_side_p2sr = RequestPort("Scheduler port, send request to P2S_R")
+    mem_side_p2srt = RequestPort("Scheduler port, send request to P2S_R_T")
     mem_side_cb = RequestPort("Scheduler port, send request to cache bank")
     # time_to_wait = Param.Latency("Time before firing the event")
     # number_of_fires = Param.Int(
