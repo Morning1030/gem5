@@ -62,12 +62,11 @@ namespace gem5
                 private:
                     // corresponds to each direct port
                     P2S_L *owner;
-                    PacketPtr blockedPacket;
-
-                    enum class PICPortID {DMA, CB};
-                    PICPortID portID;
+                    PICPortID portID;               
                 public:
-                    MemSidePort(const std::string& name, P2S_L *owner);
+                    enum class PICPortID {DMA, CB};
+                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
                     void sendPacket(PacketPtr pkt) {}
 
                 protected:
@@ -143,14 +142,13 @@ namespace gem5
             class MemSidePort : public RequestPort
             {
                 private:
-                    // corresponds to each direct port
-                    enum class PICPortID {DMA, CB};
                     P2S_R *owner;
                     PICPortID portID;
                 public:
-                    MemSidePort(const std::string& name, P2S_R *owner);
-                    void sendPacket(PacketPtr pkt);
-
+                    enum class PICPortID {DMA, CB};
+                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
+                    void sendPacket(PacketPtr pkt) {}
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
                     void recvReqRetry() override;
@@ -250,14 +248,13 @@ namespace gem5
             class MemSidePort : public RequestPort
             {
                 private:
-                    // corresponds to each direct port
-                    enum class PICPortID {DMA, CB};
                     P2S_R_T *owner;
                     PICPortID portID;
                 public:
-                    MemSidePort(const std::string& name, P2S_R_T *owner);
-                    void sendPacket(PacketPtr pkt);
-
+                    enum class PICPortID {DMA, CB};
+                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
+                    void sendPacket(PacketPtr pkt) {}
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
                     void recvReqRetry() override;

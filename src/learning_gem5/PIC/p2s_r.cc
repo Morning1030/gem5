@@ -15,12 +15,12 @@ namespace gem5
 {
 P2S_R::P2S_R(P2S_RParams *params) :
     ClockedObject(params),
-    instPort(params.name + ".cpu_port", this),
-    DMAPort(params.name + ".dma_port", this),
-    CacheBankPort(params.name + ".cb_port", this),
+    instPort(params.name + ".cpu_port", this, nullptr),
+    DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA, nullptr),
+    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB, nullptr),
     requestorId(system.getRequestorId(this, "P2S_R")),
     pendingReqPkt(nullptr),
-    p2sDone(false),
+    p2sDone(true),
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
     loadBufferEvent([this]{this->processLoadBufferEvent();}, "loadBufferEvent"),
     bitSliceEvent([this]{this->processBitSliceEvent();}, "bitSliceEvent"),
@@ -43,40 +43,84 @@ P2S_R::getPort(const std::string &if_name, PortID idx)
 
 P2S_R::CPUSidePort::CPUSidePort(
     const std::string &name,
-    P2S_R *owner) :
+    P2S_R *owner,
+    PacketPtr blockedPacket) :
     ResponsePort(name, owner),
-    owner(owner)
+    owner(owner),
+    blockedPacket(blockedPacket)
 {}
-
 bool
 P2S_R::CPUSidePort::recvTimingReq(PacketPtr pkt) {
     // Just forward to the memobj.
     return owner->handleRequest(pkt);
 }
 void
-P2S_R::CPUSidePort::recvRespRetry() {
-    if (instPort.sendPacket(pendingReqPkt)) {
-        pendingReqPkt = nullptr;
-        p2sDone = false;
+P2S_R::CPUSidePort::sendPacket(PacketPtr pkt)
+{
+    // send p2s done to scheduler
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    if (sendTimingResp(pkt)) {
+        owner->pendingReqPkt = nullptr;
+        blockedPacket = nullptr;
+        // p2sDone = true;
+        DPRINTF(P2S_R, "P2S COMPLETE: send back to scheduler\n");
     }
+    else blockedPacket = pkt;
 }
+void
+P2S_R::CPUSidePort::recvRespRetry() {
+    // retry to send resp to scheduler
+    assert(blockedPacket != nullptr);
+
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+}
+
 P2S_R::MemSidePort::MemSidePort(
     const std::string &name,
-    P2S_R *owner) :
+    P2S_R *owner,
+    PICPortID picPortID) :
     RequestPort(name, owner),
-    owner(owner)
+    owner(owner),
+    portID(picPortID),
+    blockedPacket(blockedPacket)
 {}
-// TODO replace sendTimingReq / sendTimingResp with sendPacket
-// TODO take care of retry req/resp
-void
-P2S_R::MemSidePort::sendPacket(PacketPtr pkt){}
-
 bool
 P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
-    // TODO need to identify whether the resp is from cb or dma
-    return owner->handleResponse(pkt);
+    if (this->portID == PICPortID::DMA) {
+        return owner->handleResponse(pkt);
+    }
+    else {
+        // resp from cache bank: acknowledge a previously sent write
+        delete pkt;
+        return true;
+    }
 }
+void
+P2S_R::MemSidePort::recvReqRetry()
+{
+    if (this->portID == DMA) {
+        assert(blockedPacket != nullptr);
 
+        if (sendTimingReq(blockedPacket)) {
+            blockedPacket = nullptr;
+            DPRINTF(P2S_R, "P2S COMPLETE: send back to scheduler\n");
+        }
+        // might fail again, wait for another req retry
+    }
+    // retry req from cache bank, start writeEvent again from cache write queue
+    else if (this->portID == PICPortID::CB){
+        if (!owner->writeEvent.scheduled()) {
+            owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
+        }
+    }
+    else {
+        DPRINTF(P2S_R, "Unknown port id!\n");
+    }
+}
 bool
 P2S_R::handleRequest(PacketPtr pkt) {
     // fill the packet field into data members of p2s
@@ -85,6 +129,7 @@ P2S_R::handleRequest(PacketPtr pkt) {
     if (pendingReqPkt != nullptr || p2sDone == false) return false;
 
     pendingReqPkt = pkt;
+    p2sDone = false;
     const P2S_R_Payload *p2s_R_Payload = pkt->getConstPtr<P2S_R_Payload>();
 
     // fill the packet field into data members of p2s
@@ -168,7 +213,7 @@ P2S_R::handleResponse(PacketPtr pkt) {
         // on the same row
         writeMemAddr++;
     }
-
+    return true;
 }
 
 
@@ -176,11 +221,12 @@ void
 P2S_R::processDMAReadEvent() {
     // read 128 col into SRAM block
     RequestPtr request = std::make_shared<Request>(
-        rowAddr,                            // TODO
+        curBlockDramBaseAddr +
+        static_cast<Addr>(dmaRow) * static_cast<Addr>(next_row_offset_bytes),                            // TODO
         sizeof(DMARPayload),                // next_row_offset_elem, base_dram_addr
         0,                                  // TODO
         requestorId
-    )
+    );
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
@@ -194,7 +240,10 @@ P2S_R::processDMAReadEvent() {
     if (success) {
 
     }
-    else {} // need to retry
+    else {
+        // need to retry
+        DMAPort.blockedPacket = pkt;
+    } 
 
 }
 void
@@ -221,7 +270,7 @@ P2S_R::processBitSliceEvent() {
 
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
-    uint64_t arrayAddrEnq = currArrayID * WORDLINENUMS + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
+    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
     
     // pack into packets
     RequestPtr request = std::make_shared<Request>(
@@ -245,7 +294,10 @@ P2S_R::processBitSliceEvent() {
 
     // per bit
     bit_ptr++;
-    if (bit_ptr == precision) {
+    if (bit_ptr <= precision) {
+        schedule(bitSliceEvent, clockEdge(Cycles(1)));
+    }
+    else {
         // per row in the buffer
         bit_ptr = 0;
         curEnqBlockInBufColPtr++;
@@ -275,7 +327,6 @@ P2S_R::processBitSliceEvent() {
         }
         else schedule(bitSliceEvent, clockEdge(Cycles(1)));
     }
-    else schedule(bitSliceEvent, clockEdge(Cycles(1)));
 }
 
 void
@@ -322,8 +373,8 @@ P2S_R::extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, u
 }
 void
 P2S_R::get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf) { // numBuf is 2 bit in fact
-    if (numBuf == 3) offset = [4, 4, 4, 4, 4, 4, 4];        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
-    else if (numBuf == 2) offset = [1, 3, 1, 3, 1, 3, 1];   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
-    else if (numBuf == 1) offset = [1, 1, 2, 1, 1, 2, 1];   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
+    if (numBuf == 3) offset = std::vector<uint8_t>{4, 4, 4, 4, 4, 4, 4};        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
+    else if (numBuf == 2) offset = std::vector<uint8_t>{1, 3, 1, 3, 1, 3, 1};   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
+    else if (numBuf == 1) offset = std::vector<uint8_t>{1, 1, 2, 1, 1, 2, 1};   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
 }
 }
