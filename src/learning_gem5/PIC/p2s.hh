@@ -42,11 +42,11 @@ namespace gem5
             {
                 private:
                     P2S_L *owner;
-
+                    PacketPtr blockedPacket;
                 public:
                     CPUSidePort(const std::string& name, P2S_L *owner);
                     // TODO fix sendPacket, sendTimingReq, sendTimingResp, recvReqRetry, and RecvRespRetry
-                    void sendPacket(PacketPtr pkt) {sendTimingResp(pkt);}
+                    void sendPacket(PacketPtr pkt);
 
                 // there are three modes: Atomic, Functional and Timing
                 protected:
@@ -54,19 +54,21 @@ namespace gem5
                     void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
                     bool recvTimingReq(PacketPtr pkt) override;
                     void recvRespRetry() override;
-                    AddrRangeList getAddrRanges() const override {return {}};
+                    AddrRangeList getAddrRanges() const override {return {};}
             };
             // to interact with DMA and Cache Bank
             class MemSidePort : public RequestPort
             {
                 private:
                     // corresponds to each direct port
-                    enum class PICPortID {DMA, CB};
                     P2S_L *owner;
+                    PacketPtr blockedPacket;
+
+                    enum class PICPortID {DMA, CB};
                     PICPortID portID;
                 public:
                     MemSidePort(const std::string& name, P2S_L *owner);
-                    void sendPacket(PacketPtr pkt) {sendTimingReq(pkt);}
+                    void sendPacket(PacketPtr pkt) {}
 
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
@@ -124,7 +126,7 @@ namespace gem5
             {
                 private:
                     P2S_R *owner;
-
+                    PacketPtr blockedPacket;
                 public:
                     CPUSidePort(const std::string& name, P2S_R *owner);
                     void sendPacket(PacketPtr pkt);                     // TBD whether sendPacket is bool or void
@@ -132,10 +134,10 @@ namespace gem5
                 // there are three modes: Atomic, Functional and Timing
                 protected:
                     Tick recvAtomic(PacketPtr pkt) override {panic("recvAtomic unimplemented.");}
-                    void recvFunctional(PacketPtr pkt) override;
+                    void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
                     bool recvTimingReq(PacketPtr pkt) override;
                     void recvRespRetry() override;
-                    AddrRangeList getAddrRanges() const override;
+                    AddrRangeList getAddrRanges() const override {return {};}
             };
             // to interact with DMA and Cache Bank
             class MemSidePort : public RequestPort
@@ -239,10 +241,10 @@ namespace gem5
                 // there are three modes: Atomic, Functional and Timing
                 protected:
                     Tick recvAtomic(PacketPtr pkt) override {panic("recvAtomic unimplemented.");}
-                    void recvFunctional(PacketPtr pkt) override;
+                    void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
                     bool recvTimingReq(PacketPtr pkt) override;
                     void recvRespRetry() override;
-                    AddrRangeList getAddrRanges() const override;
+                    AddrRangeList getAddrRanges() const override {return {};}
             };
             // to interact with DMA and Cache Bank
             class MemSidePort : public RequestPort

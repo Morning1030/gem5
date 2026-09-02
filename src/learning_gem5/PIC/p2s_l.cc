@@ -48,11 +48,28 @@ P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
     return owner->handleRequest(pkt);
 }
 void
-P2S_L::CPUSidePort::recvRespRetry() {
-    if (instPort.sendPacket(pendingReqPkt)) {
+P2S_L::CPUSidePort::sendPacket(PacketPtr pkt)
+{
+    // send p2s done to scheduler
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    if (sendTimingResp(pkt)) {
         pendingReqPkt = nullptr;
-        p2sDone = false;
+        p2sDone = true;
+        DPRINTF(P2S_L, "P2S COMPLETE: send back to scheduler\n");
     }
+    else blockedPacket = pkt;
+}
+void
+SimpleMemobj::CPUSidePort::recvRespRetry()
+{
+    // retry to send resp to scheduler
+    assert(blockedPacket != nullptr);
+
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
 }
 
 P2S_L::MemSidePort::MemSidePort(
@@ -63,15 +80,41 @@ P2S_L::MemSidePort::MemSidePort(
 {}
 // TODO replace sendTimingReq / sendTimingResp with sendPacket
 // TODO take care of retry req/resp
-void
-P2S_L::MemSidePort::sendPacket(PacketPtr pkt){}
-
 // TODO take care of out of order responses
 bool
 P2S_L::MemSidePort::recvTimingResp(PacketPtr pkt) {
-    return owner->handleResponse(pkt);
+    if (this->portID == DMA) {
+        return owner->handleResponse(pkt);
+    }
+    else {
+        // resp from cache bank
+        delete pkt;
+        return true;
+    }
 }
+void
+P2S_L::MemSidePort::recvReqRetry()
+{
+    // TODO either retry req to dma or cache bank
+    if (this->portID == DMA) {
+        assert(blockedPacket != nullptr);
 
+        if (sendTimingReq(blockedPacket)) {
+            blockedPacket = nullptr;
+            DPRINTF(P2S_L, "P2S COMPLETE: send back to scheduler\n");
+        }
+        // might fail again, wait for another req retry
+    }
+    // retry req from cache bank, start writeEvent again from cache write queue
+    else if (this->portID == CB){
+        if (!owner->writeEvent.scheduled()) {
+            owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1))); // 或 Cycles(1)
+        }
+    }
+    else {
+        DPRINTF(P2S, "Unknown port id!\n");
+    }
+}
 bool
 P2S_L::handleRequest(PacketPtr pkt) {
     //assertion for second request
@@ -80,9 +123,13 @@ P2S_L::handleRequest(PacketPtr pkt) {
     //     pendingControlPkt != nullptr,
     //     "P2S_L received a second control request while one is active");
     
-    if (pendingReqPkt != nullptr || p2sDone == false) return false;
-
+    if (pendingReqPkt != nullptr || p2sDone == false) {
+        // needRetry = true;
+        return false;
+    }
+    // currently working on this req
     pendingReqPkt = pkt;
+    p2sDone = false;
     const P2S_L_Payload *p2s_L_Payload = pkt->getConstPtr<P2S_L_Payload>();
     
     // fill the packet field into data members of p2s
@@ -104,7 +151,7 @@ P2S_L::handleRequest(PacketPtr pkt) {
 
 bool
 P2S_L::handleResponse(PacketPtr pkt) {
-    // fill the response to buffer
+    // TODO identiry response from dma / cache bank
     // TODO need sender state row to deal with out of order receiving
     // TBD 一個packet到底是幾byte? 可能不需要dmaRow
     const uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
@@ -155,8 +202,10 @@ P2S_L::processDMAReadEvent() {
     if (success) {
         base_dram_addr += next_row_offset_dram; // update base_dram_addr for the next round
     }
-
-
+    else {
+        // TODO store the request and stall
+        DMAPort.blockedPacket = pkt;
+    }
 }
 void
 P2S_L::processBitSliceEvent() {
@@ -238,19 +287,15 @@ P2S_L::processWriteEvent() {
         }
         else {
             // p2s is stalled, need to wait for cache bank notify to retry
+            // do nothing and wait until notification
+            DPRINTF(P2S, "Cache bank busy, stalling writeEvent.\n");
         }
     }
     else if (p2sDone) {
-        // send p2s_done to scheduler
+        // send p2s_done to scheduler(might return false, but instPort will handle it)
+        panic_if(pendingReqPkt == nullptr);
         pendingReqPkt->makeResponse();
-        if (instPort.sendTimingResp(pendingReqPkt)) {
-            DPRINTF(
-            P2S_L,
-            "CONTROL COMPLETE: final CacheBank write accepted\n");
-
-            pendingControlPkt = nullptr;
-            p2sDone = false;
-        }
+        instPort.sendPacket(pendingReqPkt);
     }
 }
 
