@@ -231,7 +231,7 @@ namespace gem5
             {
                 private:
                     P2S_R_T *owner;
-
+                    PacketPtr blockedPacket;
                 public:
                     CPUSidePort(const std::string& name, P2S_R_T *owner);
                     void sendPacket(PacketPtr pkt);

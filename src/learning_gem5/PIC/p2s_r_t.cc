@@ -11,9 +11,9 @@ namespace gem5
 {
 P2S_R_T::P2S_R_T(const P2S_R_TParams *params) :
     ClockedObject(params),
-    instPort(params.name + ".cpu_port", this, nullptr),
-    DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA, nullptr),
-    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB, nullptr),
+    instPort(params.name + ".cpu_port", this),
+    DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA),
+    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
     requestorId(system.getRequestorId(this, "P2S_R_T")),
     pendingReqPkt(nullptr),
     p2sDone(false),
@@ -40,7 +40,7 @@ P2S_R_T::CPUSidePort::CPUSidePort(
     P2S_R_T *owner) :
     ResponsePort(name, owner),
     owner(owner),
-    blockedPacket(blockedPacket)
+    blockedPacket(nullptr)
 {}
 bool
 P2S_R_T::CPUSidePort::recvTimingReq(PacketPtr pkt) {

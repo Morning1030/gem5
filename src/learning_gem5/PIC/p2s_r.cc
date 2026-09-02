@@ -13,11 +13,11 @@
 
 namespace gem5
 {
-P2S_R::P2S_R(P2S_RParams *params) :
+P2S_R::P2S_R(const P2S_RParams &params) :
     ClockedObject(params),
-    instPort(params.name + ".cpu_port", this, nullptr),
-    DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA, nullptr),
-    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB, nullptr),
+    instPort(params.name + ".cpu_port", this),
+    DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA),
+    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
     requestorId(system.getRequestorId(this, "P2S_R")),
     pendingReqPkt(nullptr),
     p2sDone(true),
@@ -43,11 +43,10 @@ P2S_R::getPort(const std::string &if_name, PortID idx)
 
 P2S_R::CPUSidePort::CPUSidePort(
     const std::string &name,
-    P2S_R *owner,
-    PacketPtr blockedPacket) :
+    P2S_R *owner) :
     ResponsePort(name, owner),
     owner(owner),
-    blockedPacket(blockedPacket)
+    blockedPacket(nullptr)
 {}
 bool
 P2S_R::CPUSidePort::recvTimingReq(PacketPtr pkt) {
@@ -81,12 +80,12 @@ P2S_R::CPUSidePort::recvRespRetry() {
 
 P2S_R::MemSidePort::MemSidePort(
     const std::string &name,
-    P2S_R *owner,
+    P2S_R *owner
     PICPortID picPortID) :
     RequestPort(name, owner),
     owner(owner),
     portID(picPortID),
-    blockedPacket(blockedPacket)
+    blockedPacket(nullptr)
 {}
 bool
 P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
@@ -102,12 +101,12 @@ P2S_R::MemSidePort::recvTimingResp(PacketPtr pkt) {
 void
 P2S_R::MemSidePort::recvReqRetry()
 {
-    if (this->portID == DMA) {
+    if (this->portID == PICPortID::DMA) {
         assert(blockedPacket != nullptr);
 
         if (sendTimingReq(blockedPacket)) {
             blockedPacket = nullptr;
-            DPRINTF(P2S_R, "P2S COMPLETE: send back to scheduler\n");
+            DPRINTF(P2S_R, "DMA request accepted on retry\n");
         }
         // might fail again, wait for another req retry
     }
@@ -235,7 +234,7 @@ P2S_R::processDMAReadEvent() {
     // DMARPayload *dmaRPayload = new DMARPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
     // pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRPayload));
     DMARPayload dmaRPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
-    pkt->setData(reinterpret_cast<uint8_t*>(&dmaRPayload))
+    pkt->setData(reinterpret_cast<uint8_t*>(&dmaRPayload));
     bool success = DMAPort.sendTimingReq(pkt);
     if (success) {
 
@@ -266,7 +265,7 @@ P2S_R::processLoadBufferEvent() {
 void
 P2S_R::processBitSliceEvent() {
     // extract bits from raw data
-    uint64_t bitSlice = extractBits(regArray, curEnqBlockInBufColPtr, bit_ptr)
+    uint64_t bitSlice = extractBits(regArray, curEnqBlockInBufColPtr, bit_ptr);
 
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
@@ -274,15 +273,15 @@ P2S_R::processBitSliceEvent() {
     
     // pack into packets
     RequestPtr request = std::make_shared<Request>(
-        pioAddr + offset,            // the target MMIO address of cache bank
-        sizeof(p2sWritePayload),     // store address + bitSlice
-        0,                           // TODO request flag?
+        0,            // the target MMIO address of cache bank (TODO)
+        sizeof(P2SWritePayload),     // store address + bitSlice
+        0,                           // flags
         requestorId
     );
 
     // TODO how to couple p2sWritePayload with Packet?
     PacketPtr bitSlicePkt = new Packet(request, MemCmd::WriteReq);
-    pkt->allocate();
+    bitSlicePkt->allocate();
     // P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
     // bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
     P2SWritePayload p2sWritePayload{arrayAddrEnq, bitSlice};
@@ -347,7 +346,7 @@ P2S_R::processWriteEvent() {
         pendingReqPkt->makeResponse();
         if (instPort.sendTimingResp(pendingReqPkt)) {
             DPRINTF(
-            P2S_R_T,
+            P2S_R,
             "CONTROL COMPLETE: final CacheBank write accepted\n");
 
             pendingReqPkt = nullptr;
@@ -357,14 +356,14 @@ P2S_R::processWriteEvent() {
 }
 
 uint64_t
-P2S_R::extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim=8) {
-    uint64_t extractedBit 0;
+P2S_R::extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim) {
+    uint64_t extractedBit = 0;
     uint64_t bitSlice = 0;
 
     assert(row < dim);
 
     // for each element in the array
-    for (j = 0; j < 64; j++) {
+    for (int j = 0; j < 64; j++) {
         // here take regArray as regArray.transpose
         extractedBit = (arr[j][row] >> bit) & 0x1;
         bitSlice |= (extractedBit << j);
