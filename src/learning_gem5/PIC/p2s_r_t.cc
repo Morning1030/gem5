@@ -11,9 +11,9 @@ namespace gem5
 {
 P2S_R_T::P2S_R_T(const P2S_R_TParams *params) :
     ClockedObject(params),
-    instPort(params.name + ".cpu_port", this),
+    instPort(params.name + ".inst_port", this),
     DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA),
-    CacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
+    cacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
     requestorId(system.getRequestorId(this, "P2S_R_T")),
     pendingReqPkt(nullptr),
     p2sDone(false),
@@ -31,7 +31,7 @@ P2S_R_T::getPort(const std::string &if_name, PortID idx)
         return DMAPort;
 
     if (if_name == "cb_port")
-        return CacheBankPort;
+        return cacheBankPort;
 
     return ClockedObject::getPort(if_name, idx);
 }
@@ -260,7 +260,7 @@ void
 P2S_R_T::processWriteEvent() {
     if (!bitSliceQueue.empty()) {
         PacketPtr pkt = bitSliceQueue.front();
-        bool success = CacheBankPort.sendTimingReq(pkt);
+        bool success = cacheBankPort.sendTimingReq(pkt);
         if (success) {
             bitSliceQueue.pop_front();
             schedule(writeEvent, clockEdge(Cycles(1)));

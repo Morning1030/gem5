@@ -45,7 +45,6 @@ namespace gem5
                     PacketPtr blockedPacket;
                 public:
                     CPUSidePort(const std::string& name, P2S_L *owner);
-                    // TODO fix sendPacket, sendTimingReq, sendTimingResp, recvReqRetry, and RecvRespRetry
                     void sendPacket(PacketPtr pkt);
 
                 // there are three modes: Atomic, Functional and Timing
@@ -76,7 +75,7 @@ namespace gem5
             // direct port
             CPUSidePort instPort;
             MemSidePort DMAPort;
-            MemSidePort CacheBankPort;
+            MemSidePort cacheBankPort;
 
             // request and control
             RequestorID requestorId;
@@ -156,7 +155,7 @@ namespace gem5
             // direct port
             CPUSidePort instPort;
             MemSidePort DMAPort;
-            MemSidePort CacheBankPort;
+            MemSidePort cacheBankPort;
 
             // request and control
             RequestorID requestorId;
@@ -262,7 +261,7 @@ namespace gem5
             // direct port
             CPUSidePort instPort;
             MemSidePort DMAPort;
-            MemSidePort CacheBankPort;
+            MemSidePort cacheBankPort;
 
             // request and control
             RequestorID requestorId;
