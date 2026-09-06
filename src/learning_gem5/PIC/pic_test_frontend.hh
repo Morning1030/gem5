@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <string>
 #include <vector>
 
 #include "learning_gem5/PIC/pic_function_builder.hh"
@@ -23,13 +24,19 @@ class PicTestFrontend : public ClockedObject
     const Cycles startDelay;
     const Cycles interCommandGap;
     const bool exitOnFinish;
+    const std::string trace;
+    const uint8_t accBitWidthCode;
+
     EventFunctionWrapper sendEvent;
 
     std::deque<PicSetRequest> requests;
+
     bool waitingForTransport = false;
-    // first query starts the table lookup and the second returns its result
+
+    // First queued QUERY starts the lookup and the second returns its result.
     bool waitingForQueuedQueryResult = false;
     uint8_t queuedQueryCommandId = 0;
+
     uint64_t completedRequests = 0;
 
     void append(const std::vector<PicSetRequest> &writes);
@@ -39,6 +46,7 @@ class PicTestFrontend : public ClockedObject
 
   public:
     PicTestFrontend(const PicTestFrontendParams &params);
+
     void startup() override;
 };
 
