@@ -24,3 +24,23 @@ DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
 # output checker for P2S_L/P2S_R/P2S_R_T.
 SimObject('P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
 Source('p2s_real_golden_sink.cc')
+
+
+# ACC implementation
+SimObject('ACC/Accumulator.py', sim_objects=['Accumulator'])
+Source('ACC/accumulator.cc')
+DebugFlag('Accumulator', 'PolymorPIC standalone accumulator')
+
+# ACC E2E test-only components
+SimObject('ACC/AccMockBank.py', sim_objects=['AccMockBank'])
+Source('ACC/acc_mock_bank.cc')
+SimObject('ACC/AccMmioBridge.py', sim_objects=['AccMmioBridge'])
+Source('ACC/acc_mmio_bridge.cc')
+
+
+# MAC functional model.
+Source('Mac/pic_mac.cc')
+
+# Test-only MAC golden/unit test.
+SimObject('Mac/MacTest.py', sim_objects=['MacTest'])
+Source('Mac/mac_test.cc')
