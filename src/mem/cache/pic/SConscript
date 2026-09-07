@@ -10,6 +10,7 @@ Import('*')
 
 # mod: p2s_arbiter
 SimObject('pic_dma_engine.py', sim_objects=['DMAEngine'])
+SimObject('access_bank_arb.py', sim_objects=['AccessBankArb'])
 
 # only list .cc files here; .hh files are automatically included by the build system
 Source('pic_dma_engine.cc')
@@ -17,3 +18,6 @@ Source('access_bank_arb.cc')
 
 # use -debug-flags=PICDMA to open the debug output for the DMA engine
 DebugFlag('PICDMA', 'DMA request generation, page split, responses')
+
+# use -debug-flags=PICBankArb to open the debug output for the bank arbiter
+DebugFlag('PICBankArb', 'Bank access arbiter: P2S req/resp, grants, blocks')

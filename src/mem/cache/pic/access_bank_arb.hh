@@ -74,6 +74,61 @@
  * AccessBankArb::tick() mirrors this: Grant is returned at fire time with
  * a committedThisCycle flag callers may ignore for a write-only (P2S-style)
  * client.
+ *
+ * mod: p2s_arbiter
+ * ---------------------------------------------------------------------
+ * SimObject conversion -- P2S <-> AccessBankArb port wiring
+ * ---------------------------------------------------------------------
+ * AccessBankArb is now a ClockedObject with a real gem5 port for each of
+ * the three P2S engines (p2s_side, a VectorResponsePort -- modeled on
+ * DMAEngine's p2s_side in pic_dma_engine.hh). This replaces an earlier
+ * approach where P2S_L/R/R_T held a raw pointer to a shared AccessBankArb
+ * and called postRequest()/submitP2SWrite() directly as plain C++ calls
+ * (a direct Decoupled-style wire, matching the RTL literally) -- that
+ * worked when P2S was one module, but doesn't fit three independent
+ * SimObject instances needing to reach one shared arbiter, so the link is
+ * now a normal gem5 request/response port pair instead:
+ *
+ *   p2s_side[0] <-> P2S_L.cb_port      p2s_side[1] <-> P2S_R.cb_port
+ *   p2s_side[2] <-> P2S_R_T.cb_port
+ *
+ * Port index doubles as (BankArbClient - kClientP2S_L), i.e. index 0/1/2
+ * map to kClientP2S_L/kClientP2S_R/kClientP2S_R_T. Client ids 0-3
+ * (load_post_process/bankFetch_module/accumulator/autoLoadVec) have no
+ * gem5 SimObject yet and stay unconnected -- postRequest()/tick() still
+ * accept them by id for whenever that changes.
+ *
+ * Request: a P2S engine sends a MemCmd::WriteReq packet carrying a
+ * P2SWritePayload (pic_dpm_types.hh) on its cb_port. handleRequest()
+ * unpacks it into a ReqPackage and calls submitP2SWrite(); the packet is
+ * held in pendingReqPkt until granted. Only one not-yet-granted request
+ * per client is allowed at a time (postRequest() returns false on a
+ * second one), matching the RTL's single Decoupled register per client --
+ * a P2S engine must wait for its response before sending the next write.
+ *
+ * Response: fires at *grant* (tick() returning a Grant for that client),
+ * not at bank-commit -- see the "fire vs. commit" paragraph above. The
+ * held packet is turned into a plain WriteResp (makeResponse(), no
+ * payload -- P2S needs nothing back but the ack) and sent out that
+ * client's p2s_side port.
+ *
+ * Bank side ("cache banks" in the req/resp flow this was built for): per
+ * the file-header design above, this is deliberately left as the
+ * existing functional stub -- bankReadyVec defaults every bank to
+ * always-ready, so a granted write commits the same cycle. There is no
+ * cache-bank SimObject in the tree yet (bank state today lives only
+ * inside PICLLCTags, reached by plain function calls, never by ports),
+ * and the RTL-documented fire semantics mean P2S never actually observes
+ * bank-commit latency anyway. setBankReady()/setArrayAddrToBank() remain
+ * the hooks for wiring in a real SRAM-timing model later without
+ * disturbing the P2S-facing protocol above.
+ *
+ * Driving tick(): the SimObject schedules its own tickEvent one cycle
+ * out whenever a request arrives or a grant leaves work behind (another
+ * client still pending, or still Blocked on a bank) -- see
+ * processTickEvent() in access_bank_arb.cc. tick()/postRequest()/
+ * submitP2SWrite() themselves are untouched and still public, so the
+ * arbiter logic stays unit-testable without constructing a SimObject.
  */
 
 #ifndef __MEM_CACHE_PIC_ACCESS_BANK_ARB_HH__
@@ -82,7 +137,14 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <unordered_map>
 #include <vector>
+
+#include "mem/cache/pic/pic_dpm_types.hh"
+#include "mem/packet.hh"
+#include "mem/port.hh"
+#include "params/AccessBankArb.hh"
+#include "sim/clocked_object.hh"
 
 namespace gem5
 {
@@ -134,13 +196,70 @@ static constexpr unsigned kNumBankArbClients = 7;
  * dequeued immediately, matching how P2S treats io.accessArray.fire as
  * "write done"), but the arbiter then freezes every other client in
  * Block state until that specific write actually lands.
+ *
+ * mod: p2s_arbiter -- now the SimObject P2S_L/P2S_R/P2S_R_T connect their
+ * cb_port to (p2s_side, a VectorResponsePort); see the "SimObject
+ * conversion" section of the file header comment for the port protocol.
+ * The arbiter state machine below (postRequest/tick/the Access-Block
+ * fields) is unchanged from the plain-C++-class version.
  */
-class AccessBankArb
+class AccessBankArb : public ClockedObject
 {
   public:
-    explicit AccessBankArb(unsigned num_banks,
-                            unsigned num_clients = kNumBankArbClients);
+    // mod: p2s_arbiter
+    // Must come before anything else that names Params -- see the
+    // identical note in pic_dma_engine.hh's DMAEngine class.
+    typedef AccessBankArbParams Params;
 
+    explicit AccessBankArb(const Params &p);
+
+    Port &getPort(const std::string &if_name,
+                  PortID idx = InvalidPortID) override;
+
+  private:
+    /**
+     * mod: p2s_arbiter
+     * Port on the P2S-facing side that receives bit-plane WRITE requests.
+     * One instance per connection (vector port); id doubles as
+     * (BankArbClient - kClientP2S_L) -- see the file header comment.
+     * Modeled directly on DMAEngine::P2SPort (pic_dma_engine.hh).
+     */
+    class P2SPort : public ResponsePort
+    {
+      private:
+        int id;
+        AccessBankArb *owner;
+        bool needRetry;
+        PacketPtr blockedPacket;
+
+      public:
+        P2SPort(const std::string &name, int id, AccessBankArb *owner) :
+            ResponsePort(name), id(id), owner(owner), needRetry(false),
+            blockedPacket(nullptr)
+        { }
+
+        /** Send @p pkt (already turned into a response) back to this
+         *  port's P2S engine, buffering it if the port refuses. */
+        void sendPacket(PacketPtr pkt);
+
+        /** Not address-decoded -- a private point-to-point link to one
+         *  P2S engine, not a bus-visible memory range. */
+        AddrRangeList getAddrRanges() const override;
+
+        /** Send a retry to the P2S engine if one is owed and we're free
+         *  to accept a new request now (called once this port's client
+         *  has been granted, freeing its one pending-request slot). */
+        void trySendRetry();
+
+      protected:
+        Tick recvAtomic(PacketPtr pkt) override
+        { panic("recvAtomic unimpl."); }
+        void recvFunctional(PacketPtr pkt) override { }
+        bool recvTimingReq(PacketPtr pkt) override;
+        void recvRespRetry() override;
+    };
+
+  public:
     /**
      * Assert io.accessArray(clientId).valid with @p req.
      * Returns false if that client already has an outstanding,
@@ -202,6 +321,8 @@ class AccessBankArb
 
     void commit(unsigned clientId, const ReqPackage &req, unsigned bankId);
 
+    // ---- Arbiter state machine (unchanged from the plain-class version) ----
+
     unsigned numClients;
     std::vector<bool> reqValid;
     std::vector<ReqPackage> reqPkg;
@@ -216,6 +337,38 @@ class AccessBankArb
 
     std::vector<bool> bankReadyVec;
     std::function<unsigned(uint32_t)> arrayAddrToBankFn;
+
+    // mod: p2s_arbiter
+    // ---- P2S port-facing glue (new; declared after the arbiter state
+    // above so the constructor's member-init list can stay in the same
+    // relative order as before with these appended at the end) ----
+
+    /** Handle one bit-plane WRITE request from P2S port index @p portIdx
+     *  (0/1/2 = P2S_L/P2S_R/P2S_R_T). Unpacks the P2SWritePayload and
+     *  posts it to the arbiter under clientId = kClientP2S_L + portIdx;
+     *  the packet itself is held in pendingReqPkt until granted. Returns
+     *  false if that client already has an outstanding request (mirrors
+     *  postRequest()'s valid-held-high case) -- caller should set
+     *  needRetry and wait for trySendRetry(). */
+    bool handleRequest(PacketPtr pkt, int portIdx);
+
+    /** One arbiter clock edge: calls tick(), and if it granted a client,
+     *  turns that client's held request packet into a response and sends
+     *  it out the matching p2s_side port, then frees that port to accept
+     *  a new request via trySendRetry(). Reschedules itself one cycle out
+     *  while any client is pending or the arbiter is still Blocked. */
+    void processTickEvent();
+
+    /** Send @p pkt out p2s_side port index @p portIdx. */
+    void sendResponse(PacketPtr pkt, int portIdx);
+
+    std::vector<P2SPort> p2sPorts;
+
+    /** clientId (kClientP2S_L..kClientP2S_R_T) -> the P2S write-request
+     *  packet held until that client is granted; see handleRequest(). */
+    std::unordered_map<unsigned, PacketPtr> pendingReqPkt;
+
+    EventFunctionWrapper tickEvent;
 };
 
 } // namespace gem5
