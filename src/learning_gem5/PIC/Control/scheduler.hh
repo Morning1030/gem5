@@ -14,18 +14,14 @@
 namespace gem5
 {
 
-// datapayload for switch
-struct QueryPayload
-{
-    uint32_t setID;
-    uint32_t wayID;
+struct LSPayload
+{   uint64_t src;
+    uint64_t dst;
+    uint16_t row;                   
+    uint16_t byte_per_row;
+    uint16_t offset
 };
 
-struct RespPayload
-{
-    uint64_t addr;
-    uint32_t state;
-};
 struct P2S_L_Payload
 {
     uint64_t base_dramAddr_to_load;
@@ -34,7 +30,7 @@ struct P2S_L_Payload
     uint8_t _L_block_row;           // 8 bits
     uint8_t precision;              // 3 bits
 };
-// datapayload for p2s
+
 struct P2S_R_Payload
 {
     uint64_t dramAddr;
@@ -45,15 +41,7 @@ struct P2S_R_Payload
     uint8_t precision;
     uint8_t bufNum;                                                 // 2 bits
 };
-struct AccPayload
-{
-    uint64_t base_src_picAddr;
-    uint64_t dest_picAddr;
-    uint32_t row_num;
-    uint8_t src_arrayNum;
-    uint8_t bitWidth;
-};
-// datapayload for exe/cal
+
 struct CalPayload
 {
     uint64_t _L_vec_fetch_addr;     // SET_SRC
@@ -68,10 +56,28 @@ struct CalPayload
     bool signed_R_last_exist;
     bool accWidth;
 };
+
+struct AccPayload
+{
+    uint64_t base_src_picAddr;
+    uint64_t dest_picAddr;
+    uint32_t row_num;
+    uint8_t src_arrayNum;
+    uint8_t bitWidth;
+};
+
 struct SwitchPayload
 {
   bool opType;
   uint8_t nLevels;
+};
+
+struct QueryPayload
+{
+  // added clientID to identify which client does the query come from to avoid redundant ports
+  QryTabClient clientID;  
+  uint8_t cmdID;
+  bool is_finish;
 };
 
 class Scheduler : public ClockedObject
@@ -145,7 +151,7 @@ class Scheduler : public ClockedObject
         EventFunctionWrapper p2sREvent;
         EventFunctionWrapper p2sRTEvent;
         EventFunctionWrapper calEvent;
-        EventFunctionWrapper accEvent
+        EventFunctionWrapper accEvent;
         EventFunctionWrapper switchEvent;
 
         void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);

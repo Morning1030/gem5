@@ -5,7 +5,7 @@ from m5.proxy import *
 
 class P2S_L(ClockedObject):
     type = "P2S_L"
-    cxx_header = "learning_gem5/PIC/p2s.hh"
+    cxx_header = "learning_gem5/PIC/P2S/p2s.hh"
     cxx_class = "gem5::P2S_L"
     system = Param.System(
         Parent.any, "System used to allocate P2S_L requestor ID"
@@ -18,7 +18,7 @@ class P2S_L(ClockedObject):
 
 class P2S_R(ClockedObject):
     type = "P2S_R"
-    cxx_header = "learning_gem5/PIC/p2s.hh"
+    cxx_header = "learning_gem5/PIC/P2S/p2s.hh"
     cxx_class = "gem5::P2S_R"
     system = Param.System(
         Parent.any, "System used to allocate P2S_R requestor ID"
@@ -33,7 +33,7 @@ class P2S_R(ClockedObject):
 
 class P2S_R_T(ClockedObject):
     type = "P2S_R_T"
-    cxx_header = "learning_gem5/PIC/p2s.hh"
+    cxx_header = "learning_gem5/PIC/P2S/p2s.hh"
     cxx_class = "gem5::P2S_R_T"
 
     system = Param.System(

@@ -5,7 +5,7 @@ from m5.proxy import *
 
 class Scheduler(ClockedObject):
     type = "Scheduler"
-    cxx_header = "learning_gem5/PIC/scheduler.hh"
+    cxx_header = "learning_gem5/PIC/Control/scheduler.hh"
     cxx_class = "gem5::Scheduler"
 
     inst_port = ResponsePort("Scheduler port, receives MMIO requests")

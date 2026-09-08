@@ -1,5 +1,5 @@
-#include "learning_gem5/PIC/p2s.hh"
-#include "learning_gem5/PIC/scheduler.hh"
+#include "learning_gem5/PIC/P2S/p2s.hh"
+#include "learning_gem5/PIC/Control/scheduler.hh"
 #include "sim/system.hh"
 
 #include <cstring>

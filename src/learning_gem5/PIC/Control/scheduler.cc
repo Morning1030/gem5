@@ -1,4 +1,4 @@
-#include "learning_gem5/PIC/scheduler.hh"
+#include "learning_gem5/PIC/Control/scheduler.hh"
 #include "mem/request.hh"
 #include <algorithm>
 #include <cassert>
@@ -128,7 +128,7 @@ bool
 Scheduler::handleRequest(PacketPtr pkt)
 {
     if (instQueue.size() >= maxInstQueueSize) {
-        instPort.markRequestRetry();
+        // instPort.markRequestRetry();
         return false;
     }
 
@@ -277,7 +277,7 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
         case LOAD:
             RequestPtr request = std::make_shared<Request>(
                 pioAddr + offset,    // the target MMIO address of dpm
-                sizeof(LoadPayload),
+                sizeof(LSPayload),
                 0,                  // TODO
                 requestorId
             );
@@ -285,7 +285,7 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            LoadPayload loadPayload{src, dst, row, byte_per_row, offset};
+            LSPayload loadPayload{src, dst, row, byte_per_row, offset};
             pkt->setData(reinterpret_cast<uint8_t*>(&loadPayload));
 
             nextEnqTask.funcID = LOAD;
@@ -296,7 +296,7 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
         case STORE:
             RequestPtr request = std::make_shared<Request>(
                 pioAddr + offset,    // the target MMIO address of dpm
-                sizeof(StorePayload),
+                sizeof(LSPayload),
                 0,                  // TODO
                 requestorId
             );
@@ -304,7 +304,7 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            StorePayload storePayload{src, dst, row, byte_per_row, offset};
+            LSPayload storePayload{src, dst, row, byte_per_row, offset};
             pkt->setData(reinterpret_cast<uint8_t*>(&storePayload));
 
             nextEnqTask.funcID = STORE;

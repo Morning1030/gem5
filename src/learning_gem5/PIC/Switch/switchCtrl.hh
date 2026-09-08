@@ -1,3 +1,15 @@
+// TODO redesign datapayload for switch and cannot call QueryPayload
+struct QueryPayload
+{
+    uint32_t setID;
+    uint32_t wayID;
+};
+
+struct RespPayload
+{
+    uint64_t addr;
+    uint32_t state;
+};
 class SwitchController {
       private:
         enum class SwitchType {PIC2Cache, Cache2PIC};
