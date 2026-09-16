@@ -87,10 +87,13 @@ class Scheduler : public ClockedObject
 
     struct Task
     {
+        QryTabClient clientID;
+        uint8_t cmdID;
+        
         FuncID funcID;
         PacketPtr pkt;
     };
-    enum class PortID{CC, P2SL, P2SR, P2SRT, CB};
+    enum class PortID{CC, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
 
     // to interact with MMIO request
     class CPUSidePort : public ResponsePort
@@ -181,8 +184,9 @@ class Scheduler : public ClockedObject
     MemSidePort cacheBankPort;       // cache bank direct port
     MemSidePort accPort;
     MemSidePort switchControllerPort; // switch controller direct port
-    TaskScheduler taskScheduler;
+    MemSidePort cmdStateHelperPort;
 
+    TaskScheduler taskScheduler;
     RequestorID requestorId;
 
     std::deque<PacketPtr> instQueue;
@@ -196,8 +200,12 @@ class Scheduler : public ClockedObject
     size_t maxInstQueueSize = 1000; // temporarily set to 1000
     EventFunctionWrapper decodeEvent;
 
+    bool isImmeCmd, isEnqCmd, isQueryCmd;
     void processDecodeEvent();
-    void scheduleDecodeIfNeeded();
+    void processPrepareTaskEvent();
+    void processEnqueEvent();
+    void processSetCmdEvent();
+    // void scheduleDecodeIfNeeded();
 
   public:
     Scheduler(const SchedulerParams &params);

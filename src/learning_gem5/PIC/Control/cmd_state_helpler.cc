@@ -21,7 +21,11 @@ initEvent([this]{this->processInitEvent();}, "InitEvent"),
 setFinishEvent([this]{this->processSetFinishEvent();}, "setFinishEvent"),
 checkFinishEvent([this]{this->processCheckFinishEvent();}, "checkFinishEvent"),
 setInvalidEvent([this]{this->processSetInvalidEvent();}, "setInvalidEvent")
-{}
+{
+    for (int i = 0; i < CMDID_MAX; i++) {
+        cmd_state_table[i].VALID = false;
+    }
+}
 
 Port&
 CmdStateHelper::getPort(const std::string &if_name, PortID idx)
@@ -116,12 +120,14 @@ CmdStateHelper::processArbiterEvent() {
 }
 void
 CmdStateHelper::processInitEvent() {
+    assert(cmd_state_table[req_cmdID].VALID == false,"The cmdID is inited!");
     cmd_state_table[req_cmdID].VALID = true;
     cmd_state_table[req_cmdID].FINISH = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
 }
 void
 CmdStateHelper::processSetFinishEvent() {
+    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
     cmd_state_table[req_cmdID].VALID = true;
     cmd_state_table[req_cmdID].FINISH = true;
 
@@ -132,6 +138,7 @@ CmdStateHelper::processSetFinishEvent() {
 }
 void
 CmdStateHelper::processCheckFinishEvent() {
+    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
     // Resp includes correct information
     pendingReqPkt->makeResponse();
 
@@ -146,6 +153,7 @@ CmdStateHelper::processCheckFinishEvent() {
 }
 void
 CmdStateHelper::processSetInvalidEvent() {
+    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
     cmd_state_table[req_cmdID].VALID = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
     // assert(table_read_out_wire.VALID === false.B,"The cmdID is inited!")

@@ -9,6 +9,7 @@
 #include "params/cmd_state_helper.hh"
 #include "sim/clocked_object.hh"
 
+#define CMDID_MAX 256
 namespace gem5
 {
     enum class QryTabClient
@@ -56,11 +57,11 @@ namespace gem5
             CPUSidePort instPort;
             QryTabClient client_num;
 
-            std::vector<CmdTableEntry>cmd_state_table;
+            std::vector<CmdTableEntry>cmd_state_table(CMDID_MAX);
             uint8_t req_cmdID;
 
             // Round Robin Arbiter functions
-            std::vector<std::queue<PacketPtr>query_req>(QryTabClient::client_num);
+            std::vector<std::deque<PacketPtr>>query_req(QryTabClient::client_num);
             PacketPtr pendingReqPkt;
             uint8_t RRArbiterLastChoose;
             

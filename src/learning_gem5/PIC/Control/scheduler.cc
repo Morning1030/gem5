@@ -18,9 +18,13 @@ Scheduler::Scheduler(const SchedulerParams *params) :
     cacheBankPort(params->name + ".cb_port", this),
     accPort(params->name + ".acc_port", this),
     switchControllerPort(params->name + ".sc_port", this),
+    cmdStateHelperPort(params->name + ".csh_port", this),
     taskScheduler(this),
     requestorId(system.getRequestorId(this, "Scheduler")),
     decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent"),
+    prepareTaskEvent([this]{this->processPrepareTaskEvent();}, "prepareTaskEvent"),
+    enqueEvent([this]{this->processEnqueEvent();}, "enqueEvent"),
+    setCmdEvent([this]{this->processSetCmdEvent();}, "setCmdEvent")
 {}
 
 Port&
@@ -50,7 +54,9 @@ Scheduler::getPort(const std::string &if_name, PortID idx)
     else if (if_name == "sc_port") {
         return switchControllerPort;
     }
-
+    else if (if_name == "csh_port") {
+        return cmdStateHelperPort;
+    }
     return ClockedObject::getPort(if_name, idx);
 }
 Scheduler::CPUSidePort::CPUSidePort(
@@ -157,14 +163,17 @@ Scheduler::handleResponse(PICPortID portID, PacketPtr pkt)
             DPRINTFS(Scheduler, this, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
             break;
         case PICPortID::P2SL:
+            isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SL completion response");
             DPRINTFS(Scheduler, this, "P2SL COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
             break;
         case PICPortID::P2SR:
+            isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SR completion response");
             DPRINTFS(Scheduler, this, "P2SR COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
             break;
         case PICPortID::P2SRT:
+            isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SRT completion response");
             DPRINTFS(Scheduler, this, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
             break;
@@ -172,11 +181,31 @@ Scheduler::handleResponse(PICPortID portID, PacketPtr pkt)
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
             DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
             break;
+        case PICPortID::ACC:
+            isEnqCmd = true;
+            panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
+            DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            break;
+        case PICPortID::SC:
+            // TODO: fill the resp from switchController to the registers
+            panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
+            DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            break;
+        case PICPortID::CSH:
+            isQueryCmd = true;
+            // TODO: depends on what kind of query it is
+            panic_if(!pkt->isResponse(),"Scheduler expected CSH completion response");
+            DPRINTFS(Scheduler, this, "CSH COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            break;
         default:
             DPRINTF(Scheduler, this, "receive response but not from any known port.\n");
     }
-    delete pkt;
-    currState = TaskState::IDLE;
+    // only enq cmd has something to do with currState and resp
+    if (isEnqCmd) {
+        delete pkt;
+        currState = TaskState::IDLE;
+    }
+
     return true;
 }
 
@@ -225,10 +254,13 @@ Scheduler::processDecodeEvent()
             case 0x00:
                 src = dataPayload;
                 DPRINTF(Scheduler, "SET_SRC to %#x\n", src);
+                delete pkt;
+                break;
             // SET_DST
             case 0x02:
                 dst = dataPayload;
                 DPRINTF(Scheduler, "SET_DST to %#x\n", dst);
+                delete pkt;
                 break;
 
             // SET_SIZE
@@ -237,15 +269,16 @@ Scheduler::processDecodeEvent()
                 byte_per_row = (dataPayload >> 11) & 0x7FF;     // 11 bit
                 offset = (dataPayload >> 22)& 0x3FFF            // 15 bit
                 DPRINTF(Scheduler, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
+                delete pkt;
                 break;
 
             // SET_PARAM
             case 0x06:
-                taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
+                schedule(prepareTaskEvent, clockEdge(Cycles(1)));
+                // taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
                 break;
             default:
     }
-    // TODO make pkt into response / delete it
 
     // waiting for instructions, self looping at each cycle
     if (taskScheduler.currState == IDLE && !instQueue.empty()) {
@@ -267,12 +300,19 @@ Scheduler::TaskScheduler::TaskScheduler(Scheduler *owner)
     switchEvent([this]{this->processSwitchEvent();}, "switchEvent")
 {}
 
+// prepare task and enqueue the task
+// :=set_d_resp
 void
-Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset)
+Scheduler::processPrepareTaskEvent()
 {
     uint64_t dataPayload = paramPkt->getLE<uint64_t>();
+    delete paramPkt;                                               // maybe like this?
+
+
     Task nextEnqTask;
     FUncID funcID = (dataPayload >> 60)& 0xF;                      // funcID is bit 60 ~ bit 63
+    uint8_t cmdID = dataPayload & 0xFF;                            // cmdID is bit 0 ~ bit 7
+
     switch(funcID):
         case LOAD:
             RequestPtr request = std::make_shared<Request>(
@@ -290,7 +330,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = LOAD;
             nextEnqTask.pkt = pkt;
-            taskScheduler->nextTask.push_back(nextEnqTask);
+            nextEnqTask.cmdID = cmdID;
+            // nextEnqTask.client = 
+
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
 
         case STORE:
@@ -309,7 +351,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = STORE;
             nextEnqTask.pkt = pkt;
-            taskScheduler->nextTask.push_back(nextEnqTask);
+            nextEnqTask.cmdID = cmdID;
+            // nextEnqTask.client = 
+
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
 
         case P2S_L:
@@ -331,7 +375,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = P2S_L;
             nextEnqTask.pkt = pkt;
-            taskScheduler->nextTask.push_back(nextEnqTask);
+            nextEnqTask.cmdID = cmdID;
+            // nextEnqTask.client = 
+
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
 
@@ -354,7 +400,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = P2S_R;
             nextEnqTask.pkt = pkt;
-            taskScheduler->nextTask.push_back(nextEnqTask);
+            nextEnqTask.cmdID = cmdID;
+            // nextEnqTask.client = 
+
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
 
@@ -377,7 +425,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = P2S_R_T;
             nextEnqTask.pkt = pkt;
-            taskScheduler->nextTask.push_back(nextEnqTask);
+            nextEnqTask.cmdID = cmdID;
+            // nextEnqTask.client = 
+
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
 
@@ -408,8 +458,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = CAL;
             nextEnqTask.pkt = pkt;
+            nextEnqTask.cmdID = cmdID;
+            nextEnqTask.client = QryTabClient::EXE;
 
-            taskScheduler->nextTask.push_back(nextEnqTask);
             DPRINTF(Scheduler, "SET_PARAM CAL\n");
             break;
 
@@ -432,8 +483,9 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
 
             nextEnqTask.funcID = ACC;
             nextEnqTask.pkt = pkt;
+            nextEnqTask.cmdID = cmdID;
+            nextEnqTask.client = QryTabClient::ACC;
 
-            taskScheduler->nextTask.push_back(nextEnqTask);
             DPRINTF(Scheduler, "SET_PARAM ACC\n");
             break;
         case SWITCH:
@@ -461,9 +513,61 @@ Scheduler::TaskScheduler::prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t
             taskScheduler->nextImmTask.push_back(nextEnqTask);
             DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
             break;
-    //      case QUERY
-    triggerTS();
+
+        case QUERY:
+            immQuery = (dataPayload >> 8) &0x1;
+            if (immQuery) {
+                // TODO go gather the response result from the switch
+                // and combine together with query result
+            }
+            else {
+                // request whether cmdID is done by sending the packet immediately
+                RequestPtr request = std::make_shared<Request>(
+                    pioAddr + offset,    // TODO
+                    sizeof(QueryPayload),
+                    0,                  // TODO
+                    requestorId
+                );
+
+                PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
+                pkt->allocate();
+                // check if_finish, actually don't care
+                QueryPayload queryPayload{QryTabClient::READER, cmdID, false};
+                pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
+                cmdStateHelperPort.sendPacket(pkt);
+                return;         // maybe like this? TBD
+            }
+    // for most case, proceed to enqueue state
+    if (nextEnqTask != NULL && !scheduled(enqueEvent)) {
+        schedule(enqueEvent, clockEdge(Cycles(1)));
+    }
 }
+void
+Scheduler::processEnqueEvent() {
+    taskScheduler->nextTask.push_back(nextEnqTask);
+    if () {
+        schedule(setCmdEvent, clockEdge(Cylces(1)));
+    }
+}
+void
+Scheduler::processSetCmdEvent(){
+    // request whether cmdID is done by sending the packet immediately
+    RequestPtr request = std::make_shared<Request>(
+        0,    // TODO
+        sizeof(QueryPayload),
+        0,                  // TODO
+        requestorId
+    );
+
+    PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
+    pkt->allocate();
+
+    QueryPayload queryPayload{nextEnqTask.client, nextEnqTask.cmdID, false};    // to init the cmd_state
+    pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
+    cmdStateHelperPort.sendPacket(pkt);
+}
+
+// dequeue from the queue and execute
 void
 Scheduler::TaskScheduler::triggerTS()
 {
@@ -560,7 +664,7 @@ Scheduler::TaskScheduler::processP2SRTEvent() {
 void
 Scheduler::TaskScheduler::processCalEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->cacheBankPortPort.sendTimingReq(nextTask.front());
+    bool success = owner->cacheBankPort.sendTimingReq(nextTask.front());
     if (success) {
         nextTask.pop_front();
     }

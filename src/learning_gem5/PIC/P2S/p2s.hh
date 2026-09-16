@@ -112,6 +112,7 @@ namespace gem5
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             P2S_L(const P2S_LParams &params);
             bool handleRequest(PacketPtr pkt);
+            bool handleResponse(PacketPtr pkt);
             uint64_t extractBits(const std::vector<std::vector<uint8_t>> &arr, uint8_t bit);
             void processDMAReadEvent();
             void processBitSliceEvent();
@@ -215,6 +216,7 @@ namespace gem5
             P2S_R(const P2S_RParams &params);
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             bool handleRequest(PacketPtr pkt);
+            bool handleResponse(PacketPtr pkt);
             void get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf);
             void extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim);
             void processDMAReadEvent();
@@ -300,6 +302,7 @@ namespace gem5
             P2S_R_T(P2S_R_TParams &params);
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             bool handleRequest(PacketPtr pkt);
+            bool handleResponse(PacketPtr pkt);
             void get_array_relative_offset(std::vector<uint8_t> &offset,uint8_t numBuf);
             void extractBits(std::vector<uint8_t> buf, uint8_t bit);
             void processDMAReadEvent();

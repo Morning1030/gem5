@@ -45,7 +45,6 @@ P2S_L::CPUSidePort::CPUSidePort(
 {}
 bool
 P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
-    // Just forward to the memobj.
     return owner->handleRequest(pkt);
 }
 void
