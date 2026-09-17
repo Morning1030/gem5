@@ -16,8 +16,10 @@ from mat_fsm import (
     ACC_32BIT,
     ArrayMode,
     IO,
+    LoadVecState,
     MatModel,
     SetUpIO,
+    commit_wbuf_to_marray,
     initial_regs,
     main_idle,
     main_wait_L,
@@ -170,26 +172,72 @@ def test_main_idle_bitID_R_and_lastBitR_bidID():
 # main_wait_L
 # ---------------------------------------------------------------------------
 
-def test_main_wait_L_stub_not_done_stays_put():
+def test_load_vec_state_send_l_req_stalls_without_arbiter_grant():
+    """SEND_L_REQ (a): request_vec_fire=False -> stalls, register/mainState
+    unchanged, no writes."""
     regs = initial_regs()
-    regs["_L_vec_ptr_cur"] = 0
-    io = IO(l_fetch_done=lambda: False)
+    regs["load_vec_state"] = LoadVecState.SEND_L_REQ
+    regs["_L_vec_addr"] = 100
+    io = IO(request_vec_fire=lambda: False)
     next_state = main_wait_L(regs, io)
     assert next_state == "main_wait_L"
-    assert regs["_L_vec_ptr_cur"] == 0  # not incremented while waiting
+    assert regs["load_vec_state"] == LoadVecState.SEND_L_REQ
+    assert regs["_L_vec_addr"] == 100
 
 
-def test_main_wait_L_increments_ptr_and_routes_skip_true_to_cal():
+def test_load_vec_state_send_l_req_fires_advances_to_wait_l_resp():
+    """SEND_L_REQ (b): request_vec_fire=True -> _L_vec_addr+=1,
+    -> WAIT_L_RESP. mainState stays main_wait_L (only START_NEXT leaves)."""
     regs = initial_regs()
-    regs["_L_vec_ptr_cur"] = 3
+    regs["load_vec_state"] = LoadVecState.SEND_L_REQ
     regs["_L_vec_addr"] = 100
-    regs["skip_read_M_array"] = True
-    io = IO(l_fetch_done=lambda: True)
+    io = IO(request_vec_fire=lambda: True)
     next_state = main_wait_L(regs, io)
-    assert regs["_L_vec_ptr_cur"] == 4
-    # CONFIRMED (Controller.scala:394): the request payload counter
-    # advances once per row requested -- previously not tracked at all.
+    assert next_state == "main_wait_L"
+    assert regs["load_vec_state"] == LoadVecState.WAIT_L_RESP
     assert regs["_L_vec_addr"] == 101
+
+
+def test_load_vec_state_wait_l_resp_stalls_without_response():
+    """WAIT_L_RESP (a): response_vec_fire=False -> stalls."""
+    regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.WAIT_L_RESP
+    io = IO(response_vec_fire=lambda: False)
+    next_state = main_wait_L(regs, io)
+    assert next_state == "main_wait_L"
+    assert regs["load_vec_state"] == LoadVecState.WAIT_L_RESP
+
+
+def test_load_vec_state_wait_l_resp_fires_advances_to_start_next():
+    """WAIT_L_RESP (b): response_vec_fire=True -> START_NEXT. No data
+    register is touched here (bare ack -- see LoadVecState docstring)."""
+    regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.WAIT_L_RESP
+    io = IO(response_vec_fire=lambda: True)
+    next_state = main_wait_L(regs, io)
+    assert next_state == "main_wait_L"
+    assert regs["load_vec_state"] == LoadVecState.START_NEXT
+
+
+def test_load_vec_state_start_next_always_advances_regardless_of_gates():
+    """START_NEXT: no gating condition -- fires even if both handshake
+    gates would refuse, since it doesn't consult them at all."""
+    regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.START_NEXT
+    regs["skip_read_M_array"] = True
+    io = IO(request_vec_fire=lambda: False, response_vec_fire=lambda: False)
+    next_state = main_wait_L(regs, io)
+    assert next_state == "cal"  # left main_wait_L despite both gates refusing
+    assert regs["load_vec_state"] == LoadVecState.SEND_L_REQ  # reset for next time
+
+
+def test_load_vec_state_start_next_increments_ptr_and_routes_skip_true_to_cal():
+    regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.START_NEXT
+    regs["_L_vec_ptr_cur"] = 3
+    regs["skip_read_M_array"] = True
+    next_state = main_wait_L(regs, IO())
+    assert regs["_L_vec_ptr_cur"] == 4
     assert next_state == "cal"
     # CONFIRMED (Controller.scala:408): cleared unconditionally after use
     # -- previously MISSING. Regression-relevant: without this clear, a
@@ -198,13 +246,82 @@ def test_main_wait_L_increments_ptr_and_routes_skip_true_to_cal():
     assert regs["skip_read_M_array"] is False
 
 
-def test_main_wait_L_routes_skip_false_to_pre_read_M_array():
+def test_load_vec_state_start_next_routes_skip_false_to_pre_read_M_array():
     regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.START_NEXT
     regs["skip_read_M_array"] = False
-    io = IO(l_fetch_done=lambda: True)
-    next_state = main_wait_L(regs, io)
+    next_state = main_wait_L(regs, IO())
     assert next_state == "pre_read_M_array"
     assert regs["skip_read_M_array"] is False
+
+
+def test_main_wait_L_full_round_trip_no_stall_takes_exactly_three_cycles():
+    """Integration-level check: with both gates firing immediately, a
+    fresh main_wait_L entry (load_vec_state defaults to SEND_L_REQ) takes
+    exactly 3 step() calls to leave -- one per sub-state, per the
+    always-one-state-per-call convention used throughout this file."""
+    regs = initial_regs()
+    regs["_L_vec_ptr_cur"] = 0
+    regs["_L_vec_addr"] = 100
+    io = IO()  # both gates default to always-fire
+
+    assert regs["load_vec_state"] == LoadVecState.SEND_L_REQ
+    assert main_wait_L(regs, io) == "main_wait_L"       # cycle 1: SEND_L_REQ fires
+    assert regs["load_vec_state"] == LoadVecState.WAIT_L_RESP
+    assert regs["_L_vec_addr"] == 101
+
+    assert main_wait_L(regs, io) == "main_wait_L"       # cycle 2: WAIT_L_RESP fires
+    assert regs["load_vec_state"] == LoadVecState.START_NEXT
+
+    next_state = main_wait_L(regs, io)                  # cycle 3: START_NEXT
+    assert next_state == "pre_read_M_array"
+    assert regs["load_vec_state"] == LoadVecState.SEND_L_REQ  # reset for next visit
+    assert regs["_L_vec_ptr_cur"] == 1
+
+
+def test_main_wait_L_arbiter_stall_extends_send_l_req():
+    """Arbiter-contention case: request_vec_fire refuses for a few
+    cycles before granting -- main_wait_L (and load_vec_state) must stay
+    parked at SEND_L_REQ for exactly that long, not advance early."""
+    regs = initial_regs()
+    calls_before_grant = 3
+    call_count = {"n": 0}
+
+    def request_vec_fire():
+        call_count["n"] += 1
+        return call_count["n"] > calls_before_grant
+
+    io = IO(request_vec_fire=request_vec_fire)
+
+    for _ in range(calls_before_grant):
+        assert main_wait_L(regs, io) == "main_wait_L"
+        assert regs["load_vec_state"] == LoadVecState.SEND_L_REQ
+
+    assert main_wait_L(regs, io) == "main_wait_L"  # the grant cycle
+    assert regs["load_vec_state"] == LoadVecState.WAIT_L_RESP
+
+
+def test_main_wait_L_response_stall_extends_wait_l_resp():
+    """Fetch-latency case: response_vec_fire refuses for a few cycles
+    before AutoLoadL finishes -- mirrors the arbiter-stall test above for
+    the other handshake gate."""
+    regs = initial_regs()
+    regs["load_vec_state"] = LoadVecState.WAIT_L_RESP
+    calls_before_response = 2
+    call_count = {"n": 0}
+
+    def response_vec_fire():
+        call_count["n"] += 1
+        return call_count["n"] > calls_before_response
+
+    io = IO(response_vec_fire=response_vec_fire)
+
+    for _ in range(calls_before_response):
+        assert main_wait_L(regs, io) == "main_wait_L"
+        assert regs["load_vec_state"] == LoadVecState.WAIT_L_RESP
+
+    assert main_wait_L(regs, io) == "main_wait_L"  # the response-arrives cycle
+    assert regs["load_vec_state"] == LoadVecState.START_NEXT
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +819,114 @@ def test_scenario_D_second_bit_slice_cal_sweep_not_skipped():
         f"expected bit-slice 2's cal sweep to run all 4 iterations "
         f"(_R_block_row=3 -> EndPtr=3 -> addr 0,1,2,3), got {cal_visits}"
     )
+
+
+# ---------------------------------------------------------------------------
+# cal() Datapath Spec -- C-array SRAM / vec_buf / rBuf / wBuf / M-array
+# ---------------------------------------------------------------------------
+
+def test_cal_reads_rVec_from_cArraySram_on_mac_lanes():
+    """cal() latches rVec from cArraySram (spec section 3), 0 on non-Mac
+    lanes."""
+    regs = _cal_regs(end_ptr=0)  # arrayMode = [MAC, MEM, MAC, MEM]
+    regs["cArraySram"][0][0] = 0xAAAA
+    regs["cArraySram"][2][0] = 0xBBBB
+
+    cal(regs, IO())
+
+    assert regs["rVec"] == [0xAAAA, 0, 0xBBBB, 0]
+
+
+def test_pre_read_M_array_sets_addr_wire_to_old_row():
+    """pre_read_M_array() addresses the read with the OLD row register
+    value, before incrementing it (same Reg-read subtlety as cal())."""
+    regs = initial_regs()
+    regs["is_first_slice"] = False
+    regs["read_M_Array_RowAdr_reg"] = 5
+
+    pre_read_M_array(regs, IO())
+
+    assert regs["read_M_array_addr_wire"] == 5
+    assert regs["read_M_Array_RowAdr_reg"] == 6
+
+
+def test_tick_background_unpacks_marray_row_into_rBuf():
+    """M-array read (spec sections 8/9): the addressed row unpacks into
+    WBUF_NUM_SLOTS 16-bit rBuf lanes."""
+    regs = initial_regs()
+    regs["mArraySram"][5] = 0x4444_3333_2222_1111
+    regs["_read_M_array_En_wire_prev"] = True
+    regs["_read_M_array_addr_wire_prev"] = 5
+
+    tick_background(regs, IO())
+
+    assert regs["_M_array_dout_valid"] is True
+    assert regs["rBuf"] == [0x1111, 0x2222, 0x3333, 0x4444]
+
+
+def test_tick_background_accumulate_16bit_mode():
+    """Accumulation adder, 16-bit mode (spec section 12): rBuf[idx] +
+    sum_of_mac -> wBuf[idx]."""
+    regs = initial_regs()
+    regs["write_wBuf_wire_prev"] = True
+    regs["accWidth_reg"] = ACC_16BIT
+    regs["wbuf_ptr_reg"] = 2
+    regs["rBuf"][2] = 100
+    io = IO(sum_of_mac=lambda regs, io: 5)
+
+    tick_background(regs, io)
+
+    assert regs["wBuf"][2] == 105
+    assert regs["wbuf_ptr_reg"] == 3
+
+
+def test_tick_background_accumulate_32bit_mode_combines_two_lanes():
+    """Accumulation adder, 32-bit mode (spec section 13): two adjacent
+    rBuf lanes combine into one 32-bit previous value; the result splits
+    back into the same two wBuf lanes."""
+    regs = initial_regs()
+    regs["write_wBuf_wire_prev"] = True
+    regs["accWidth_reg"] = ACC_32BIT
+    regs["wbuf_ptr_reg"] = 3  # high lane; low lane is 2
+    regs["rBuf"][3] = 1
+    regs["rBuf"][2] = 2
+    io = IO(sum_of_mac=lambda regs, io: 3)
+
+    tick_background(regs, io)
+
+    assert regs["wBuf"][3] == 1
+    assert regs["wBuf"][2] == 5
+    assert regs["wbuf_ptr_reg"] == 1  # (3+2) % WBUF_NUM_SLOTS
+
+
+def test_commit_wbuf_to_marray_packs_lanes_and_advances_row():
+    """M-array writeback (spec section 11): wBuf's 4 lanes concatenate
+    into one row; write_M_Array_RowAdr_reg advances (ASSUMPTION)."""
+    regs = initial_regs()
+    regs["wBuf"] = [0x1111, 0x2222, 0x3333, 0x4444]
+    regs["write_M_Array_RowAdr_reg"] = 7
+
+    commit_wbuf_to_marray(regs)
+
+    assert regs["mArraySram"][7] == 0x4444333322221111
+    assert regs["write_M_Array_RowAdr_reg"] == 8
+
+
+def test_post_process_branch1_and_2_commit_wbuf_to_marray():
+    """Both flushing branches of post_process() (spec section 11) commit
+    wBuf into mArraySram, not just raise write_M_array_En_wire."""
+    regs = initial_regs()
+    regs["wBuf"] = [1, 2, 3, 4]
+    regs["is_wBuf_ptr_end"] = True
+    post_process(regs, IO())
+    assert regs["mArraySram"][0] == (4 << 48) | (3 << 32) | (2 << 16) | 1
+
+    regs2 = initial_regs()
+    regs2["wBuf"] = [5, 6, 7, 8]
+    regs2["is_wBuf_ptr_end"] = False
+    regs2["is_last_L_block_row"] = True
+    post_process(regs2, IO())
+    assert regs2["mArraySram"][0] == (8 << 48) | (7 << 32) | (6 << 16) | 5
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ used for `pre_check`'s point 4 in item 6.**
 | `_L_bitSlice_ID_ptr` | int | 0 | `main_idle` (reset), `pre_check` (+1 in (T,F) **only**) | `pre_check` (`bit_slice_done`) |
 | `_L_vec_addr` | int | 0 | `main_idle` (`= _L_vec_fetch_addr` input), `main_wait_L` (+1 per row requested — CONFIRMED, previously not tracked at all, see item 7) | — (datapath-side / AutoLoadL) |
 | `is_first_slice` | bool | True | `main_idle` (True), `pre_check` (False in (T,F) **only**) | `pre_read_M_array`, `cal` (mid-loop flush read gating) |
+| `load_vec_state` | enum{SEND_L_REQ,WAIT_L_RESP,START_NEXT} | **SEND_L_REQ** (`RegInit(send_L_req)`, Controller.scala:385) | `main_wait_L`'s sub-handlers: SEND_L_REQ→WAIT_L_RESP (on `request_vec.fire`), WAIT_L_RESP→START_NEXT (on `response_vec.fire`), START_NEXT→SEND_L_REQ (always, no gate) | `main_wait_L` (dispatches to the matching sub-handler each call) |
 | `arrayCacheMode_reg` | bool | **True** (`RegInit(true.B)`, Controller.scala:135) | `main_idle` (`:= False`, "Disable cache mode", :276), `pre_check` (T,T) (`:= True`, "Restore cache state", :359) | — (gates the array SRAM port's external-cache-vs-Controller-internal mux in `Mat.scala`) |
 | `skip_read_M_array` | bool | False | `main_idle` — **CONFIRMED not written here at all** (searched Controller.scala:231-280, absent; previous model explicitly reset it False, removed — provably a no-op given the FSM's reachable paths, see `pre_check`'s docstring). `post_process` (branches ②③). `main_wait_L` (**CONFIRMED `:= False` after use, Controller.scala:408 — previously MISSING entirely**, a real bug: a stale `True` would keep routing every subsequent visit straight to `cal`; see item 7) | `main_wait_L` (routes to `cal` vs `pre_read_M_array`) |
 | `write_M_Array_RowAdr_reg` | int | 0 | `main_idle` (reset), `pre_check` (reset in (T,T)/(T,F)) | — (datapath-side) |
@@ -62,7 +63,7 @@ used for `pre_check`'s point 4 in item 6.**
 | ~~`working_array_num`~~ | **REMOVED — CONFIRMED not a real external input.** It's a wire computed from `nBuf+nCal` inside `main_idle` (Controller.scala:248, `working_array_num = 4 if (nBuf+nCal)==0 else nBuf+nCal`), now done in `compute_array_mode()`. Previously modeled as a directly-settable `SetUpIO` field, which doesn't exist in `CAL_Payload`/`ISA_EXE` either |
 | `dataIn_from_M_array` | GIVEN name; plumbing-only in this control-only model |
 | C-array contents | OUT OF SCOPE — datapath black box |
-| AutoLoadL completion | GIVEN — modeled as `io.l_fetch_done: Callable[[], bool]`, stub always `True`. **CONFIRMED scope boundary** (item 7): the request/response Decoupled handshake and `load_vec_state`'s own 3-phase sub-FSM stay deliberately out of scope (that's AutoLoadL-facing machinery), but `main_wait_L`'s OWN register writes around that handshake (`_L_vec_addr += 1`, `skip_read_M_array := False`) are in scope and are tracked |
+| AutoLoadL completion | **CONFIRMED against Controller.scala:384-411 (item 8)** — `load_vec_state`, the requester-side 3-state sub-FSM, is now modeled as a real persisted register (see the register row above), not collapsed into a single stub. What stays out of scope is AutoLoadL's own separate 5-state *servicer* FSM (idle/read_mem/rev_vec/write_L/report_finish, AutoLoadL.scala) behind it, black-boxed behind two injectable gates: `io.request_vec_fire: Callable[[], bool]` (SEND_L_REQ's stall condition — arbiter grant) and `io.response_vec_fire: Callable[[], bool]` (WAIT_L_RESP's stall condition — fetch completion), both defaulting to always-fire |
 
 ## New hardware constant introduced this pass
 
@@ -181,6 +182,75 @@ the model previously treated it as an unbounded Python int.
      asserting a `post_process` branch ① reset that, with both bugs
      fixed, turns out to actually be branch ②'s accWidth-aware reset —
      see that test's docstring for the full trace).
+
+8. **`load_vec_state` — `main_wait_L`'s nested 3-state sub-FSM,
+   CONFIRMED against Controller.scala:384-411.** Previously collapsed
+   into a single `io.l_fetch_done()` stub per the original scope
+   decision (deliberate, not a bug — see the original Step 6 reasoning).
+   Promoted to a real persisted register with its own transition tests,
+   same nesting pattern as `cal`'s self-loop one level deeper:
+   `main_wait_L` now dispatches to whichever of SEND_L_REQ/WAIT_L_RESP/
+   START_NEXT `load_vec_state` currently holds, running exactly one of
+   the three per `step()` call. Consequence worth flagging: a
+   no-stall trip through `main_wait_L` now takes a minimum of 3 cycles
+   instead of 1 (Scenario A/B's traces now show `main_wait_L` three
+   times per visit) — a real behavior change from the previous
+   single-cycle stub, not a bug in either version (the stub was always
+   documented as collapsing the whole round trip into one gate).
+   AutoLoadL's own separate 5-state *servicer* FSM behind this stays
+   out of scope, now black-boxed behind two gates instead of one
+   (`io.request_vec_fire`/`io.response_vec_fire` — see the External
+   inputs table above) so the arbiter-contention and fetch-latency
+   stall cases can be tested independently
+   (`test_main_wait_L_arbiter_stall_extends_send_l_req` /
+   `test_main_wait_L_response_stall_extends_wait_l_resp`).
+
+9. **Datapath storage added (cal() Datapath Spec): C-array SRAM, vec_buf,
+   M-array SRAM, and the real rBuf/wBuf accumulation adder.** MAC itself
+   (AND/PopCount/Shift/Sign/4-way reduce -> sum_of_mac) stays out of
+   scope, built separately. What's new:
+     - `cArraySram`/`mArraySram`: real storage, addressed by the
+       existing `read_C_ArrayAddr_reg`/`read_M_Array_RowAdr_reg`.
+     - `vecBuf`: shared L vector register, written externally.
+     - `rBuf`/`wBuf`: now real 4x16-bit lanes (were an inert
+       scalar/placeholder). `tick_background`'s accumulate path now does
+       `rBuf + sum_of_mac -> wBuf` for real, 16-bit and 32-bit modes both
+       (section 12/13). ASSUMPTION: in 32-bit mode, `wbuf_ptr_reg` points
+       at the pair's HIGH lane, `idx-1` the LOW lane -- the pointer's
+       odd-landing pattern is confirmed, the high/low convention isn't.
+     - `commit_wbuf_to_marray()`: packs wBuf into one row on writeback.
+       ASSUMPTION: advances `write_M_Array_RowAdr_reg` by 1 per commit --
+       no increment site was ever traced for this register against
+       Controller.scala; flag for RTL verification.
+     - M-array depth (`MARRAY_WORDLINE_NUMS`) is an ASSUMPTION, mirrored
+       from the C-array's own depth (spec gives row width, not depth).
+
+10. **Real MAC implemented (cal() Datapath / MAC Spec), C++ only so far.**
+    Split into `mat_mac.hh/.cc` (`MatMac::sumOfMac`, stateless, takes
+    `MatDatapath` + a small `MacControl` bundle MatFSM builds each cycle
+    from its own registers). Per-lane: `AND -> PopCount -> shift ->
+    sign -> mac_dataOut`, then Adder #1 sums all four lanes. Key rules:
+      - `shift = (bitIdR[i] + lBitSliceId) & 0xF` (4-bit bias field).
+      - `rSign = signedRLastExist && bitIdR[i] == lastBitRBitId`
+        (implicitly also requires MAC mode, via the macEnable gate).
+      - `lSign = signedL && lBitSliceId == lPrecisionReg` -- `==`, not
+        `==-1`: `lPrecisionReg_` is the FINAL bit index, not a count.
+      - `negate = rSign != lSign` (XOR).
+      - Non-MAC-mode lanes are zeroed at the MAC OUTPUT
+        (`macEnable[i]`), NOT by assuming their SRAM data is 0 -- a
+        Mem-mode lane's SRAM can carry real M-array traffic.
+    `MatDatapath` gained the matching pieces: `loadVec(enable, data)`
+    (the real external L-vector load interface, replacing the old
+    test-only `setVecBuf`), and `rWire`/`rBuf` as two separate registers
+    (`latchMArrayRow()` sets both; `accumulate()` picks `rWire` when
+    fresh M-array data is valid this cycle, else `rBuf`, else 0 on
+    `isFirstSlice`). `MatDatapath::SumOfMac`/`setSumOfMac()` (the old
+    black-box seam) is gone -- `MatFSM::tickBackground()` now calls
+    `MatMac::sumOfMac()` directly and passes the result into
+    `MatDatapath::accumulate()`.
+    **NOT yet ported to `mat_fsm.py`** -- the Python model still has the
+    old placeholder `sum_of_mac` black box. Flag if Python/C++ parity is
+    wanted here too.
 
 Everything NOT listed above (state names, the six-state topology's
 non-branching edges, RegNext timing for `_M_array_dout_valid`/`write_wBuf`)

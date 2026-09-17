@@ -62,6 +62,51 @@ WBUF_NUM_SLOTS = 4
 ACC_32BIT = 32
 ACC_16BIT = 16
 
+# ---- Datapath storage constants (cal() Datapath Spec, sections 2/16) ----
+# Kept independent even though some values coincide (spec section 1/16).
+
+CARRAY_WORDLINE_NUMS = 512  # C-array SRAM depth per PolyArray.
+VECTOR_WIDTH = 64            # R vector / vec_buf width.
+ACC_LANE_WIDTH = 16          # rBuf/wBuf per-lane width.
+
+# Ties WBUF_NUM_SLOTS (RTL-confirmed) to spec section 16's recommended
+# derivation so the two can't silently drift apart.
+assert WBUF_NUM_SLOTS == VECTOR_WIDTH // ACC_LANE_WIDTH
+
+# ASSUMPTION: M-array depth isn't given by the spec; mirrored from the
+# C-array's own depth.
+MARRAY_WORDLINE_NUMS = 512
+
+
+class LoadVecState(Enum):
+    """load_vec_state (Controller.scala:384-411) -- the 3-state requester
+    sub-FSM nested inside the main_wait_L mainState, talking to AutoLoadL's
+    own (separate, out-of-scope) 5-state servicer FSM. Same nesting pattern
+    as `cal`'s self-loop, one level deeper: main_wait_L stays the active
+    mainState for as long as this sub-FSM needs, cycling through its own
+    3 states before ever handing control back to the outer machine.
+
+    SEND_L_REQ: asserts request_vec.valid every cycle; stalls until
+        request_vec.fire (AutoLoadL's arbiter grants this Mat's request --
+        can stall indefinitely under arbiter contention). On fire: loads
+        _L_vec_addr into the request, increments _L_vec_addr, -> WAIT_L_RESP.
+    WAIT_L_RESP: asserts response_vec.ready every cycle; stalls until
+        response_vec.fire (a bare ack -- the actual fetched word lands
+        directly in this Mat's vec_buf via a separate AutoLoadL-internal
+        path, never touched by Controller). On fire: -> START_NEXT.
+    START_NEXT: always advances, no gating condition. Resets
+        load_vec_state -> SEND_L_REQ, increments _L_vec_ptr_cur, routes
+        mainState (skip_read_M_array ? cal : pre_read_M_array), clears
+        skip_read_M_array. The only one of the three that leaves
+        main_wait_L.
+
+    AutoLoadL's own 5-state FSM (idle/read_mem/rev_vec/write_L/
+    report_finish) is deliberately out of scope here -- external hardware
+    this sub-FSM merely talks to via the two injectable gates below."""
+    SEND_L_REQ = auto()
+    WAIT_L_RESP = auto()
+    START_NEXT = auto()
+
 
 class ArrayMode(Enum):
     """Per-lane array mode (arrayMode_reg[i]). CONFIRMED against
@@ -112,27 +157,25 @@ class SetUpIO:
 class IO:
     set_up_io: SetUpIO = field(default_factory=SetUpIO)
 
-    # Wire carrying whatever the M-array read returns this cycle. Only
-    # ever latched into rBuf (pure plumbing) -- no control decision reads
-    # its value, only whether a read was issued at all.
-    dataIn_from_M_array: int = 0
+    # ---- Replaceable black box #1 (plan Step 6 / "reserve the interface"),
+    # now split into the two real handshake gates load_vec_state (the
+    # requester sub-FSM, modeled for real below) actually stalls on.
+    # AutoLoadL's own 5-state servicer FSM behind these two fires --
+    # idle/read_mem/rev_vec/write_L/report_finish -- stays out of scope;
+    # each callable just answers "did this Decoupled channel fire this
+    # cycle". Both default to "always fires immediately" (no arbiter
+    # contention, no fetch latency) so existing no-stall scenarios are
+    # unaffected; tests inject stalls by returning False for N calls.
+    request_vec_fire: Callable[[], bool] = field(default=lambda: True)
+    response_vec_fire: Callable[[], bool] = field(default=lambda: True)
 
-    # ---- Replaceable black box #1 (plan Step 6 / "reserve the interface")
-    # AutoLoadL completion handshake. Defaults to "always immediately
-    # done" per the plan's stub instruction.
-    l_fetch_done: Callable[[], bool] = field(default=lambda: True)
-
-    # ---- Replaceable black box #2 (plan Step 6, tightened per explicit
-    # follow-up instruction: FSM control is verified independently of the
-    # MAC/shift/signed datapath). This is called from tick_background()
-    # purely to keep the wiring point alive for later -- its return value
-    # is stored into wBuf[wbuf_ptr_reg] and NEVER read by any control
-    # decision (is_wBuf_ptr_end etc. are pointer/counter-driven only).
-    # Default: an inert placeholder, deliberately not "a simple sum" --
-    # using a real number here would invite someone to accidentally start
-    # depending on it for control, which is exactly what we're avoiding.
-    sum_of_mac: Callable[[dict, "IO"], object] = field(
-        default=lambda regs, io: None
+    # Black-box MAC datapath (AND -> PopCount -> Shift -> Sign -> 4-way
+    # reduce, spec sections 5-7): done by someone else, out of scope here.
+    # Its return value now feeds the real accumulation adder in
+    # tick_background() (spec sections 10/12/13), so it's read by
+    # arithmetic -- never by any control decision. Default 0 (identity).
+    sum_of_mac: Callable[[dict, "IO"], int] = field(
+        default=lambda regs, io: 0
     )
 
 
@@ -159,9 +202,7 @@ def initial_regs() -> Dict:
         "lastBitR_bidID": 0,
         "signed_L": False,
         "signed_R_last_exist": False,
-        # CONFIRMED: WBUF_NUM_SLOTS (segNum_in_per_word), not a placeholder
-        # -- was [None]*4096, an arbitrary oversized upper bound.
-        "wBuf": [None] * WBUF_NUM_SLOTS,
+        "wBuf": [0] * WBUF_NUM_SLOTS,
         "wbuf_ptr_reg": 0,
         "_L_vec_ptr_cur": 0,
         "_L_block_row": 0,
@@ -169,6 +210,12 @@ def initial_regs() -> Dict:
         "_L_bitSlice_ID_ptr": 0,
         "_L_vec_addr": 0,
         "is_first_slice": True,
+        # RegInit(send_L_req) (Controller.scala:385). main_idle never
+        # explicitly resets this -- see main_wait_L's docstring for why
+        # that's provably fine (START_NEXT always resets it before
+        # main_wait_L is ever exited, so it's guaranteed SEND_L_REQ on
+        # every fresh entry by construction).
+        "load_vec_state": LoadVecState.SEND_L_REQ,
         # CONFIRMED: RegInit(true.B) (Controller.scala:135) -- normal
         # cache mode is the reset default. main_idle drives it False on
         # exec ("Disable cache mode"); pre_check's (T,T) branch restores
@@ -177,22 +224,35 @@ def initial_regs() -> Dict:
         "skip_read_M_array": False,
         "write_M_Array_RowAdr_reg": 0,
         "read_M_Array_RowAdr_reg": 0,
-        "rBuf": None,
+        "rBuf": [0] * WBUF_NUM_SLOTS,  # 4x 16-bit lanes (spec section 9).
         "write_wBuf": False,          # RegNext of write_wBuf_wire
+
+        # ---- datapath storage (spec sections 3/4/8) --------------------
+        # C-array SRAM, one per PolyArray. Read-only here -- loaded
+        # separately, out of scope.
+        "cArraySram": [[0] * CARRAY_WORDLINE_NUMS for _ in range(NUM_ARRAYS)],
+        # Shared Mat-level L vector buffer. Written externally (AutoLoadL
+        # response, out of scope).
+        "vecBuf": 0,
+        # M-array SRAM (depth is an ASSUMPTION, see MARRAY_WORDLINE_NUMS).
+        "mArraySram": [0] * MARRAY_WORDLINE_NUMS,
 
         # ---- one-cycle-delay shadow copies (explicit RegNext plumbing,
         # per the plan's tick_background() sketch using *_prev names) ----
         "_read_M_array_En_wire_prev": False,
         "write_wBuf_wire_prev": False,
+        "_read_M_array_addr_wire_prev": 0,  # RegNext of the addr below.
 
         # ---- wires (combinational; recomputed every step()) -----------
         "write_wBuf_wire": False,
         "read_M_array_En_wire": False,
+        "read_M_array_addr_wire": 0,
         "write_M_array_En_wire": False,
         "_M_array_dout_valid": False,
         "is_wBuf_ptr_end": False,
         "is_last_L_block_row": False,
         "read_C_ArrayEn": [False] * NUM_ARRAYS,
+        "rVec": [0] * NUM_ARRAYS,  # per-PolyArray R vector, this cycle.
     }
 
 
@@ -227,6 +287,18 @@ def compute_array_mode(nBuf: int, nCal: int) -> List[ArrayMode]:
     return modes
 
 
+def commit_wbuf_to_marray(regs: Dict) -> None:
+    """Pack wBuf's 4x16-bit lanes into one row and write it into mArraySram
+    (spec section 11). ASSUMPTION: advances write_M_Array_RowAdr_reg by 1
+    per commit -- not confirmed against Controller.scala (no increment
+    site was ever traced for this register)."""
+    word = 0
+    for i in range(WBUF_NUM_SLOTS):
+        word |= (regs["wBuf"][i] & 0xFFFF) << (i * ACC_LANE_WIDTH)
+    regs["mArraySram"][regs["write_M_Array_RowAdr_reg"] % MARRAY_WORDLINE_NUMS] = word
+    regs["write_M_Array_RowAdr_reg"] += 1
+
+
 # ---------------------------------------------------------------------------
 # Background logic -- Step 3. Runs every step() call regardless of state.
 # ---------------------------------------------------------------------------
@@ -244,21 +316,29 @@ def tick_background(regs: Dict, io: IO) -> None:
     # pre_read_M_array's test focus (b).
     regs["_M_array_dout_valid"] = regs["_read_M_array_En_wire_prev"]
     if regs["_M_array_dout_valid"]:
-        # pure plumbing latch -- not a computed value, no control decision
-        # reads rBuf.
-        regs["rBuf"] = io.dataIn_from_M_array
+        # Unpack the addressed M-array row into rBuf's 4x16-bit lanes.
+        row = regs["mArraySram"][
+            regs["_read_M_array_addr_wire_prev"] % MARRAY_WORDLINE_NUMS
+        ]
+        for i in range(WBUF_NUM_SLOTS):
+            regs["rBuf"][i] = (row >> (i * ACC_LANE_WIDTH)) & 0xFFFF
 
     # ---- RegNext: wBuf accumulate pipeline ----------------------------
     regs["write_wBuf"] = regs["write_wBuf_wire_prev"]
     if regs["write_wBuf"]:
-        # spec: "do_wbuf_accumulate" -- CONTROL-ONLY here (explicit
-        # instruction to separate FSM control from the MAC/shift/signed
-        # datapath). Only the pointer movement is control-relevant;
-        # the stored value is an inert placeholder from the black-box
-        # hook (see IO.sum_of_mac docstring).
+        # Accumulation adder (sections 10/12/13): rBuf + sum_of_mac -> wBuf.
         idx = regs["wbuf_ptr_reg"]
-        if 0 <= idx < len(regs["wBuf"]):
-            regs["wBuf"][idx] = io.sum_of_mac(regs, io)
+        mac_result = io.sum_of_mac(regs, io)
+        if regs["accWidth_reg"] == ACC_32BIT:
+            # wbuf_ptr_reg always lands on an odd index in 32-bit mode;
+            # ASSUMPTION: idx = high lane, idx-1 = low lane of the pair.
+            idx_high, idx_low = idx, (idx + WBUF_NUM_SLOTS - 1) % WBUF_NUM_SLOTS
+            prev32 = (regs["rBuf"][idx_high] << 16) | (regs["rBuf"][idx_low] & 0xFFFF)
+            result32 = (prev32 + mac_result) & 0xFFFFFFFF
+            regs["wBuf"][idx_high] = (result32 >> 16) & 0xFFFF
+            regs["wBuf"][idx_low] = result32 & 0xFFFF
+        else:
+            regs["wBuf"][idx] = (regs["rBuf"][idx] + mac_result) & 0xFFFF
         # CONFIRMED (Controller.scala:138,214): buf_ptr_inc is
         # accWidth-dependent (+2 packs two 16b halves into one 32b
         # accumulator per element; +1 for standalone 16b elements) -- was
@@ -367,43 +447,76 @@ def main_idle(regs: Dict, io: IO) -> str:
     return "main_wait_L"
 
 
-def main_wait_L(regs: Dict, io: IO) -> str:
-    """CONFIRMED against Controller.scala:384-411. This state is really a
-    3-phase sub-FSM (load_vec_state: send_L_req -> wait_L_resp ->
-    start_next) around the request_vec/response_vec Decoupled handshake
-    to AutoLoadL. Per this file's own stated design (IO.l_fetch_done
-    docstring, "Replaceable black box #1"), that handshake -- and the
-    load_vec_state register itself -- stays deliberately out of scope
-    here; io.l_fetch_done() stands in for "has AutoLoadL's response come
-    back", collapsing send_L_req+wait_L_resp into one gate. What IS in
-    scope (it's Controller's own state, not AutoLoadL's) is start_next's
-    three writes, which this file already had two of:
-      - _L_vec_ptr_cur += 1                          (already correct)
-      - mainState := skip_read_M_array ? cal : pre_read_M_array
-                                                       (already correct)
-      - skip_read_M_array := false.B                 (was MISSING -- a
-        real bug: without this clear, a True left by post_process's
-        branch (3) would keep routing every SUBSEQUENT main_wait_L visit
-        straight to cal, skipping pre_read_M_array's M-array prefetch,
-        even on visits where nothing re-armed skip_read_M_array).
-    Also added (send_L_req's write, in scope since it's plumbing
-    -- not part of the AutoLoadL handshake being stubbed):
-      - _L_vec_addr += 1
-    """
-    if not io.l_fetch_done():
-        return "main_wait_L"
-
-    regs["_L_vec_ptr_cur"] += 1
+def process_send_l_req(regs: Dict, io: IO) -> None:
+    """load_vec_state == SEND_L_REQ (Controller.scala:386-390). Stalls
+    (register unchanged) until request_vec.fire; AutoLoadL's arbiter
+    contention is exactly what's black-boxed behind io.request_vec_fire."""
+    if not io.request_vec_fire():
+        return
     # CONFIRMED (Controller.scala:394, send_L_req): the request payload
     # counter advances once per row requested. Not consumed by any
     # control decision in this file (datapath-side / AutoLoadL-facing),
     # tracked here for register-write fidelity.
     regs["_L_vec_addr"] += 1
+    regs["load_vec_state"] = LoadVecState.WAIT_L_RESP
+
+
+def process_wait_l_resp(regs: Dict, io: IO) -> None:
+    """load_vec_state == WAIT_L_RESP (Controller.scala:391-393). Stalls
+    until response_vec.fire -- a bare ack, no data (the fetched word
+    lands in vec_buf via a separate AutoLoadL-internal path). AutoLoadL's
+    own fetch-latency internals are what's black-boxed behind
+    io.response_vec_fire."""
+    if not io.response_vec_fire():
+        return
+    regs["load_vec_state"] = LoadVecState.START_NEXT
+
+
+def process_start_next(regs: Dict, io: IO) -> str:
+    """load_vec_state == START_NEXT (Controller.scala:395-407). Always
+    advances -- no gating condition, unlike the other two. The only one
+    of the three states that actually leaves main_wait_L."""
+    # CONFIRMED: resets back to SEND_L_REQ, primed for the next row if
+    # main_wait_L is re-entered later.
+    regs["load_vec_state"] = LoadVecState.SEND_L_REQ
+    regs["_L_vec_ptr_cur"] += 1
 
     next_state = "cal" if regs["skip_read_M_array"] else "pre_read_M_array"
-    # CONFIRMED (Controller.scala:408): cleared unconditionally after use.
+    # CONFIRMED (Controller.scala:408): cleared unconditionally after use
+    # -- a real bug if missing: without this clear, a True left by
+    # post_process's branch (3) would keep routing every SUBSEQUENT
+    # main_wait_L visit straight to cal, skipping pre_read_M_array's
+    # M-array prefetch, even on visits where nothing re-armed it.
     regs["skip_read_M_array"] = False
     return next_state
+
+
+LOAD_VEC_STATE_HANDLERS = {
+    LoadVecState.SEND_L_REQ: process_send_l_req,
+    LoadVecState.WAIT_L_RESP: process_wait_l_resp,
+}
+
+
+def main_wait_L(regs: Dict, io: IO) -> str:
+    """CONFIRMED against Controller.scala:384-411. This mainState is
+    really a dispatcher for load_vec_state, its own nested 3-state
+    sub-FSM (send_L_req -> wait_L_resp -> start_next) around the
+    request_vec/response_vec Decoupled handshake to AutoLoadL -- same
+    nesting pattern as `cal`'s self-loop, one level deeper: this handler
+    runs exactly ONE of load_vec_state's three states per step() call
+    (matching the one-cycle-per-call convention used throughout this
+    file), and mainState only actually leaves "main_wait_L" on the cycle
+    where load_vec_state was (at entry) START_NEXT.
+
+    AutoLoadL's own 5-state servicer FSM (idle/read_mem/rev_vec/write_L/
+    report_finish) stays out of scope, black-boxed behind
+    io.request_vec_fire/io.response_vec_fire -- see LoadVecState's
+    docstring and each sub-handler above."""
+    if regs["load_vec_state"] == LoadVecState.START_NEXT:
+        return process_start_next(regs, io)
+
+    LOAD_VEC_STATE_HANDLERS[regs["load_vec_state"]](regs, io)
+    return "main_wait_L"
 
 
 def pre_read_M_array(regs: Dict, io: IO) -> str:
@@ -419,6 +532,7 @@ def pre_read_M_array(regs: Dict, io: IO) -> str:
     # spec (pre_read_M_array.b, GIVEN): read_M_array_En_wire=true,
     # read_M_Array_RowAdr_reg+1; dout_valid becomes visible on the
     # FOLLOWING tick_background() call (RegNext), not this one.
+    regs["read_M_array_addr_wire"] = regs["read_M_Array_RowAdr_reg"]
     regs["read_M_array_En_wire"] = True
     regs["read_M_Array_RowAdr_reg"] += 1
     return "cal"
@@ -461,13 +575,21 @@ def cal(regs: Dict, io: IO) -> str:
     regs["read_C_ArrayEn"] = [
         regs["arrayMode_reg"][i] == ArrayMode.MAC for i in range(NUM_ARRAYS)
     ]
+    # Latch each PolyArray's R vector (spec section 3), 0 on non-Mac lanes.
+    regs["rVec"] = [
+        regs["cArraySram"][i][old_addr % CARRAY_WORDLINE_NUMS]
+        if regs["read_C_ArrayEn"][i] else 0
+        for i in range(NUM_ARRAYS)
+    ]
 
     # CONFIRMED (docstring point 2): gated on old_addr != 0 too.
     if regs["is_wBuf_ptr_end"] and old_addr != 0:
         regs["write_M_array_En_wire"] = True
+        commit_wbuf_to_marray(regs)
         if regs["is_first_slice"]:
             regs["read_M_array_En_wire"] = False
         else:
+            regs["read_M_array_addr_wire"] = regs["read_M_Array_RowAdr_reg"]
             regs["read_M_array_En_wire"] = True
             regs["read_M_Array_RowAdr_reg"] += 1
     else:
@@ -507,11 +629,13 @@ def post_process(regs: Dict, io: IO) -> str:
         # branch (1): write_M_array_En_wire only. wbuf_ptr_reg
         # deliberately left untouched (see docstring point 1).
         regs["write_M_array_En_wire"] = True
+        commit_wbuf_to_marray(regs)
 
     elif regs["is_last_L_block_row"]:
         # branch (2): buffer not full, but no more rows remain in this
         # bit-slice's sweep -- flush the partial contents.
         regs["write_M_array_En_wire"] = True
+        commit_wbuf_to_marray(regs)
         regs["wbuf_ptr_reg"] = 1 if regs["accWidth_reg"] == ACC_32BIT else 0
         regs["skip_read_M_array"] = False
 
@@ -632,6 +756,7 @@ class MatModel:
         # Snapshot this cycle's freshly-computed wires so the NEXT
         # step()'s tick_background() sees them as "last cycle's" values.
         self.regs["_read_M_array_En_wire_prev"] = self.regs["read_M_array_En_wire"]
+        self.regs["_read_M_array_addr_wire_prev"] = self.regs["read_M_array_addr_wire"]
         self.regs["write_wBuf_wire_prev"] = self.regs["write_wBuf_wire"]
 
         self.state = next_state

@@ -6,6 +6,9 @@
 #include <functional>
 #include <vector>
 
+#include "mat_datapath.hh"
+#include "mat_mac.hh"
+
 namespace gem5
 {
 namespace mat_fsm
@@ -13,26 +16,10 @@ namespace mat_fsm
 
 // ---------------------------------------------------------------------
 // Constants -- CONFIRMED against Controller.scala; see REGISTER_TABLE.md
-// in this directory for the full citations these mirror.
+// in this directory for the full citations these mirror. NumArrays/
+// WBufNumSlots/AccWidth32Bit/AccWidth16Bit are hardware-width parameters
+// shared with the datapath -- defined in mat_datapath.hh, reused here.
 // ---------------------------------------------------------------------
-
-// GIVEN: spec lists "bitID_R[4]" and "arrayMode_reg[4]" explicitly.
-constexpr unsigned NumArrays = 4;
-
-// CONFIRMED (Controller.scala:122,132,152 / PolymorPIC_Kernal_Config's
-// segNum_in_per_word=(bitlineNums/16).toInt, default bitlineNums=64 ->
-// 4): wBuf's slot count is a fixed HARDWARE-WIDTH constant, unrelated to
-// nCal (a runtime ISA field). wbufPtrReg_ mirrors the RTL's
-// UInt(log2Ceil(segNum_in_per_word).W) -- a fixed-width register that
-// wraps on overflow like any hardware adder (see tickBackground()).
-constexpr unsigned WBufNumSlots = 4;
-
-// CONFIRMED (CalInfo.scala: ACC_32BIT=true.B/ACC_16BIT=false.B). accWidth
-// is represented as an unsigned bit-width (matching SetUpIO::accWidth)
-// rather than the RTL's raw Bool -- these are the two values every
-// accWidth-dependent comparison in this file is written against.
-constexpr unsigned AccWidth32Bit = 32;
-constexpr unsigned AccWidth16Bit = 16;
 
 /// Per-lane array mode (arrayModeReg_[i]). CONFIRMED against
 /// Controller.scala:249-252 / ModeInfo.scala -- three distinct RTL
@@ -57,6 +44,22 @@ enum class MainState
     Cal,
     PostProcess,
     PreCheck,
+};
+
+/// load_vec_state (Controller.scala:384-411) -- the 3-state requester
+/// sub-FSM nested inside the MainWaitL mainState, talking to AutoLoadL's
+/// own (separate, out-of-scope) 5-state servicer FSM. Same nesting
+/// pattern as `cal`'s self-loop, one level deeper: MainWaitL stays the
+/// active mainState for as long as this sub-FSM needs, cycling through
+/// its own 3 states before ever handing control back to the outer
+/// machine. See mainWaitL()/processSendLReq()/processWaitLResp()/
+/// processStartNext() in mat_fsm.cc for the per-state behavior (ported
+/// 1:1 from mat_fsm.py's LoadVecState/process_send_l_req/etc.).
+enum class LoadVecState
+{
+    SendLReq,
+    WaitLResp,
+    StartNext,
 };
 
 /// The one-time command setup fields consumed by mainIdle() (mirrors
@@ -84,8 +87,9 @@ struct SetUpIO
  * each state's control dataflow (what gets read/written/compared, and
  * which state comes next) matches the RTL (Controller.scala), independent
  * of (a) how many real hardware cycles a state would take, and (b) the
- * actual MAC/shift/signed-arithmetic datapath -- that stays a swappable
- * black box (see sumOfMac()) that no control decision here ever inspects.
+ * actual MAC/shift/signed-arithmetic datapath -- that lives in
+ * MatDatapath (mat_datapath.hh, see datapath()) and no control decision
+ * here ever inspects it.
  *
  * Deliberately introduces NO gem5 event/tick concepts (no ClockedObject,
  * no EventFunctionWrapper, no per-cycle scheduling) -- per the original
@@ -103,15 +107,12 @@ struct SetUpIO
 class MatFSM
 {
   public:
-    using LFetchDone = std::function<bool()>;
-    // Black-box datapath hook (mirrors IO.sum_of_mac): called from
-    // tickBackground() purely to keep the wiring point alive for a later
-    // real datapath. Its return value is stored into wBuf_[wbufPtrReg_]
-    // and NEVER read by any control decision (isWBufPtrEnd_ etc. are
-    // pointer/counter-driven only). Takes `const MatFSM &` rather than
-    // a mutable reference so the hook cannot accidentally influence
-    // control state -- stronger than the Python model could enforce.
-    using SumOfMac = std::function<int(const MatFSM &)>;
+    // Requester-side handshake gates load_vec_state stalls on (mirrors
+    // mat_fsm.py's IO.request_vec_fire/response_vec_fire). AutoLoadL's
+    // own 5-state servicer FSM behind these stays out of scope -- see
+    // LoadVecState's doc comment above.
+    using RequestVecFire = std::function<bool()>;
+    using ResponseVecFire = std::function<bool()>;
 
     MatFSM();
 
@@ -151,6 +152,7 @@ class MatFSM
     bool skipReadMArray() const { return skipReadMArray_; }
     uint64_t writeMArrayRowAdrReg() const { return writeMArrayRowAdrReg_; }
     uint64_t readMArrayRowAdrReg() const { return readMArrayRowAdrReg_; }
+    LoadVecState loadVecState() const { return loadVecState_; }
 
     // ---- Wire accessors (valid immediately after step(); combinational,
     // recomputed every call -- mirrors the *_wire fields in regs) ------
@@ -161,6 +163,15 @@ class MatFSM
     bool isWBufPtrEnd() const { return isWBufPtrEnd_; }
     bool isLastLBlockRow() const { return isLastLBlockRow_; }
     const std::array<bool, NumArrays> &readCArrayEn() const { return readCArrayEn_; }
+
+    // ---- Datapath accessor (mat_datapath.hh) ---------------------------
+    // The storage + arithmetic half of the Mat (C-array/M-array SRAM,
+    // vecBuf, rBuf/wBuf, the accumulation adder). MatFSM owns every
+    // address register/enable/timing decision and simply calls into this
+    // when it wants an effect applied -- see tickBackground()/cal()/
+    // postProcess() in mat_fsm.cc.
+    MatDatapath &datapath() { return datapath_; }
+    const MatDatapath &datapath() const { return datapath_; }
 
     // ---- Test-only mutators (mirror the Python tests setting `regs[...]`
     // directly to drive a state handler in isolation without running the
@@ -180,10 +191,13 @@ class MatFSM
     void setLPrecisionRegForTest(uint64_t v) { lPrecisionReg_ = v; }
     void setAccWidthRegForTest(unsigned v) { accWidthReg_ = v; }
     void setReadMArrayRowAdrRegForTest(uint64_t v) { readMArrayRowAdrReg_ = v; }
+    void setLoadVecStateForTest(LoadVecState v) { loadVecState_ = v; }
 
-    // ---- Replaceable black boxes (mirrors IO.l_fetch_done / IO.sum_of_mac) ----
-    void setLFetchDone(LFetchDone cb) { lFetchDone_ = std::move(cb); }
-    void setSumOfMac(SumOfMac cb) { sumOfMac_ = std::move(cb); }
+    // ---- Replaceable black boxes (mirrors IO.request_vec_fire /
+    // IO.response_vec_fire). The MAC black box (IO.sum_of_mac) lives on
+    // MatDatapath now -- see datapath().setSumOfMac().
+    void setRequestVecFire(RequestVecFire cb) { requestVecFire_ = std::move(cb); }
+    void setResponseVecFire(ResponseVecFire cb) { responseVecFire_ = std::move(cb); }
 
     /// Test/debug helper mirroring MatModel.run_until(): steps until
     /// `state() == target`, returning the full state-sequence trace
@@ -204,9 +218,23 @@ class MatFSM
     MainState postProcess(const SetUpIO &setUpIo);
     MainState preCheck(const SetUpIO &setUpIo);
 
+    // load_vec_state's three sub-handlers (mainWaitL's own dispatch
+    // target) -- ported 1:1 from mat_fsm.py's process_send_l_req/
+    // process_wait_l_resp/process_start_next. The first two return void
+    // (they only ever stall or advance loadVecState_, never leave
+    // MainWaitL); processStartNext returns the mainState to leave to,
+    // since it's the only one of the three that ever does.
+    void processSendLReq(const SetUpIO &setUpIo);
+    void processWaitLResp(const SetUpIO &setUpIo);
+    MainState processStartNext(const SetUpIO &setUpIo);
+
     static std::array<ArrayMode, NumArrays> computeArrayMode(unsigned nBuf, unsigned nCal);
 
     MainState state_ = MainState::MainIdle;
+    // RegInit(send_L_req) (Controller.scala:385). mainIdle() never
+    // explicitly resets this -- see mainWaitL()'s doc comment in
+    // mat_fsm.cc for why that's provably fine.
+    LoadVecState loadVecState_ = LoadVecState::SendLReq;
 
     // ---- persisted registers (see REGISTER_TABLE.md) ------------------
     uint64_t cArrayEndPtr_ = 0;
@@ -221,9 +249,6 @@ class MatFSM
     int lastBitRBidId_ = 0;
     bool signedL_ = false;
     bool signedRLastExist_ = false;
-    // Inert placeholder storage -- values never read by any control
-    // decision (see sumOfMac_ docstring above).
-    std::array<int, WBufNumSlots> wBuf_{};
     unsigned wbufPtrReg_ = 0;
     uint64_t lVecPtrCur_ = 0;
     uint64_t lBlockRow_ = 0;
@@ -236,25 +261,30 @@ class MatFSM
     bool skipReadMArray_ = false;
     uint64_t writeMArrayRowAdrReg_ = 0;
     uint64_t readMArrayRowAdrReg_ = 0;
-    int rBuf_ = 0;
     bool writeWBuf_ = false;  // RegNext of writeWBufWire_
+
+    // The storage + arithmetic half of the Mat -- see MatDatapath's own
+    // doc comment in mat_datapath.hh.
+    MatDatapath datapath_;
 
     // ---- one-cycle-delay shadow copies (explicit RegNext plumbing, per
     // mat_fsm.py's tick_background() using *_prev fields) --------------
     bool readMArrayEnWirePrev_ = false;
     bool writeWBufWirePrev_ = false;
+    uint64_t mArrayReadAddrWirePrev_ = 0;
 
     // ---- wires (combinational; recomputed every step()) ---------------
     bool writeWBufWire_ = false;
     bool readMArrayEnWire_ = false;
+    uint64_t mArrayReadAddrWire_ = 0;
     bool writeMArrayEnWire_ = false;
     bool mArrayDoutValid_ = false;
     bool isWBufPtrEnd_ = false;
     bool isLastLBlockRow_ = false;
     std::array<bool, NumArrays> readCArrayEn_{};
 
-    LFetchDone lFetchDone_ = []() { return true; };
-    SumOfMac sumOfMac_ = [](const MatFSM &) { return 0; };
+    RequestVecFire requestVecFire_ = []() { return true; };
+    ResponseVecFire responseVecFire_ = []() { return true; };
 };
 
 } // namespace mat_fsm

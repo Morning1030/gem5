@@ -190,41 +190,172 @@ void test_main_idle_bitID_R_and_lastBitR_bidID()
 // mirroring the Python tests calling the state functions in isolation.
 // -----------------------------------------------------------------------
 
-void test_main_wait_L_stub_not_done_stays_put()
+void test_load_vec_state_send_l_req_stalls_without_arbiter_grant()
 {
+    // SendLReq (a): requestVecFire refuses -> stalls, no writes.
     MatFSM fsm;
     fsm.setStateForTest(MainState::MainWaitL);
-    fsm.setLFetchDone([]() { return false; });
+    fsm.setLoadVecStateForTest(LoadVecState::SendLReq);
+    fsm.setLVecAddrForTest(100);
+    fsm.setRequestVecFire([]() { return false; });
     SetUpIO io;
     const MainState next = fsm.step(io);
     CHECK(next == MainState::MainWaitL);
-    CHECK(fsm.lVecPtrCur() == 0);
+    CHECK(fsm.loadVecState() == LoadVecState::SendLReq);
+    CHECK(fsm.lVecAddr() == 100);
 }
 
-void test_main_wait_L_increments_ptr_and_routes_skip_true_to_cal()
+void test_load_vec_state_send_l_req_fires_advances_to_wait_l_resp()
+{
+    // SendLReq (b): fires -> lVecAddr_+=1, -> WaitLResp. mainState stays
+    // MainWaitL (only StartNext leaves).
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::SendLReq);
+    fsm.setLVecAddrForTest(100);
+    fsm.setRequestVecFire([]() { return true; });
+    SetUpIO io;
+    const MainState next = fsm.step(io);
+    CHECK(next == MainState::MainWaitL);
+    CHECK(fsm.loadVecState() == LoadVecState::WaitLResp);
+    CHECK(fsm.lVecAddr() == 101);
+}
+
+void test_load_vec_state_wait_l_resp_stalls_without_response()
 {
     MatFSM fsm;
     fsm.setStateForTest(MainState::MainWaitL);
-    fsm.setLVecPtrCurForTest(3);
-    fsm.setLVecAddrForTest(100);
+    fsm.setLoadVecStateForTest(LoadVecState::WaitLResp);
+    fsm.setResponseVecFire([]() { return false; });
+    SetUpIO io;
+    const MainState next = fsm.step(io);
+    CHECK(next == MainState::MainWaitL);
+    CHECK(fsm.loadVecState() == LoadVecState::WaitLResp);
+}
+
+void test_load_vec_state_wait_l_resp_fires_advances_to_start_next()
+{
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::WaitLResp);
+    fsm.setResponseVecFire([]() { return true; });
+    SetUpIO io;
+    const MainState next = fsm.step(io);
+    CHECK(next == MainState::MainWaitL);
+    CHECK(fsm.loadVecState() == LoadVecState::StartNext);
+}
+
+void test_load_vec_state_start_next_always_advances_regardless_of_gates()
+{
+    // StartNext: no gating condition -- fires even if both handshake
+    // gates would refuse, since it doesn't consult them at all.
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::StartNext);
     fsm.setSkipReadMArrayForTest(true);
-    fsm.setLFetchDone([]() { return true; });
+    fsm.setRequestVecFire([]() { return false; });
+    fsm.setResponseVecFire([]() { return false; });
+    SetUpIO io;
+    const MainState next = fsm.step(io);
+    CHECK(next == MainState::Cal);  // left MainWaitL despite both gates refusing
+    CHECK(fsm.loadVecState() == LoadVecState::SendLReq);  // reset for next time
+}
+
+void test_load_vec_state_start_next_increments_ptr_and_routes_skip_true_to_cal()
+{
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::StartNext);
+    fsm.setLVecPtrCurForTest(3);
+    fsm.setSkipReadMArrayForTest(true);
     SetUpIO io;
     const MainState next = fsm.step(io);
     CHECK(fsm.lVecPtrCur() == 4);
-    CHECK(fsm.lVecAddr() == 101);
     CHECK(next == MainState::Cal);
     CHECK(fsm.skipReadMArray() == false);  // cleared after use
 }
 
-void test_main_wait_L_routes_skip_false_to_pre_read_M_array()
+void test_load_vec_state_start_next_routes_skip_false_to_pre_read_M_array()
 {
     MatFSM fsm;
     fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::StartNext);
     fsm.setSkipReadMArrayForTest(false);
-    fsm.setLFetchDone([]() { return true; });
     SetUpIO io;
     CHECK(fsm.step(io) == MainState::PreReadMArray);
+}
+
+void test_main_wait_L_full_round_trip_no_stall_takes_exactly_three_cycles()
+{
+    // Integration-level check: with both gates firing immediately, a
+    // fresh MainWaitL entry (loadVecState_ defaults to SendLReq) takes
+    // exactly 3 step() calls to leave -- one per sub-state, per the
+    // always-one-state-per-call convention used throughout this class.
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLVecPtrCurForTest(0);
+    fsm.setLVecAddrForTest(100);
+    SetUpIO io;  // both gates default to always-fire
+
+    CHECK(fsm.loadVecState() == LoadVecState::SendLReq);
+    CHECK(fsm.step(io) == MainState::MainWaitL);       // cycle 1: SendLReq fires
+    CHECK(fsm.loadVecState() == LoadVecState::WaitLResp);
+    CHECK(fsm.lVecAddr() == 101);
+
+    CHECK(fsm.step(io) == MainState::MainWaitL);       // cycle 2: WaitLResp fires
+    CHECK(fsm.loadVecState() == LoadVecState::StartNext);
+
+    const MainState next = fsm.step(io);               // cycle 3: StartNext
+    CHECK(next == MainState::PreReadMArray);
+    CHECK(fsm.loadVecState() == LoadVecState::SendLReq);  // reset for next visit
+    CHECK(fsm.lVecPtrCur() == 1);
+}
+
+void test_main_wait_L_arbiter_stall_extends_send_l_req()
+{
+    // Arbiter-contention case: requestVecFire refuses for a few cycles
+    // before granting -- MainWaitL (and loadVecState_) must stay parked
+    // at SendLReq for exactly that long, not advance early.
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    const int callsBeforeGrant = 3;
+    int callCount = 0;
+    fsm.setRequestVecFire([&callCount]() {
+        ++callCount;
+        return callCount > callsBeforeGrant;
+    });
+    SetUpIO io;
+
+    for (int i = 0; i < callsBeforeGrant; ++i) {
+        CHECK(fsm.step(io) == MainState::MainWaitL);
+        CHECK(fsm.loadVecState() == LoadVecState::SendLReq);
+    }
+    CHECK(fsm.step(io) == MainState::MainWaitL);  // the grant cycle
+    CHECK(fsm.loadVecState() == LoadVecState::WaitLResp);
+}
+
+void test_main_wait_L_response_stall_extends_wait_l_resp()
+{
+    // Fetch-latency case: responseVecFire refuses for a few cycles
+    // before AutoLoadL finishes -- mirrors the arbiter-stall test above
+    // for the other handshake gate.
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::MainWaitL);
+    fsm.setLoadVecStateForTest(LoadVecState::WaitLResp);
+    const int callsBeforeResponse = 2;
+    int callCount = 0;
+    fsm.setResponseVecFire([&callCount]() {
+        ++callCount;
+        return callCount > callsBeforeResponse;
+    });
+    SetUpIO io;
+
+    for (int i = 0; i < callsBeforeResponse; ++i) {
+        CHECK(fsm.step(io) == MainState::MainWaitL);
+        CHECK(fsm.loadVecState() == LoadVecState::WaitLResp);
+    }
+    CHECK(fsm.step(io) == MainState::MainWaitL);  // the response-arrives cycle
+    CHECK(fsm.loadVecState() == LoadVecState::StartNext);
 }
 
 void test_pre_read_M_array_first_slice_no_read()
@@ -566,6 +697,294 @@ void test_scenario_C_wBuf_fills_exactly_mid_cal()
     // model's own scenario docstring note about this ambiguity.
 }
 
+// ---------------------------------------------------------------------
+// cal() Datapath Spec -- C-array SRAM / vecBuf / rBuf / wBuf / M-array
+// ---------------------------------------------------------------------
+
+void test_cal_reads_rVec_from_cArraySram_on_mac_lanes()
+{
+    MatFSM fsm;
+    primeCal(fsm, 0);
+    fsm.datapath().setCArrayWordForTest(0, 0, 0xAAAA);
+    fsm.datapath().setCArrayWordForTest(2, 0, 0xBBBB);
+    SetUpIO io;
+
+    fsm.runStateHandlerOnlyForTest(io);
+
+    const auto &rVec = fsm.datapath().rVec();
+    CHECK(rVec[0] == 0xAAAA);
+    CHECK(rVec[1] == 0);
+    CHECK(rVec[2] == 0xBBBB);
+    CHECK(rVec[3] == 0);
+}
+
+void test_pre_read_M_array_sets_addr_wire_to_old_row()
+{
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::PreReadMArray);
+    fsm.setIsFirstSliceForTest(false);
+    fsm.setReadMArrayRowAdrRegForTest(5);
+    SetUpIO io;
+
+    fsm.runStateHandlerOnlyForTest(io);
+
+    CHECK(fsm.readMArrayRowAdrReg() == 6);
+    // step() would latch mArrayReadAddrWire_ into rBuf next cycle; verify
+    // that round trip end to end via a real M-array read below.
+}
+
+void test_marray_read_unpacks_into_rBuf()
+{
+    MatFSM fsm;
+    fsm.datapath().setMArrayWordForTest(5, 0x4444333322221111ULL);
+    fsm.setStateForTest(MainState::PreReadMArray);
+    fsm.setIsFirstSliceForTest(false);
+    fsm.setReadMArrayRowAdrRegForTest(5);
+    SetUpIO io;
+
+    fsm.step(io);  // issues the read, addressed at row 5
+    fsm.step(io);  // RegNext: dout_valid, rBuf unpacked
+
+    CHECK(fsm.mArrayDoutValid() == true);
+    const auto &rBuf = fsm.datapath().rBuf();
+    CHECK(rBuf[0] == 0x1111);
+    CHECK(rBuf[1] == 0x2222);
+    CHECK(rBuf[2] == 0x3333);
+    CHECK(rBuf[3] == 0x4444);
+}
+
+void test_accumulate_adder_16bit_mode()
+{
+    // MatDatapath::accumulate() is a plain function of its arguments now
+    // (macResult is just passed in) -- test it directly, no FSM needed.
+    MatDatapath dp;
+    std::array<int16_t, WBufNumSlots> rBuf{};
+    rBuf[2] = 100;
+    dp.setRBufForTest(rBuf);
+
+    dp.accumulate(/*idx=*/2, AccWidth16Bit, /*isFirstSlice=*/false,
+                  /*freshMArrayValid=*/false, /*macResult=*/5);
+
+    CHECK(dp.wBuf()[2] == 105);
+}
+
+void test_accumulate_adder_32bit_mode_combines_two_lanes()
+{
+    MatDatapath dp;
+    std::array<int16_t, WBufNumSlots> rBuf{};
+    rBuf[3] = 1;
+    rBuf[2] = 2;
+    dp.setRBufForTest(rBuf);
+
+    dp.accumulate(/*idx=*/3, AccWidth32Bit, /*isFirstSlice=*/false,
+                  /*freshMArrayValid=*/false, /*macResult=*/3);
+
+    CHECK(dp.wBuf()[3] == 1);
+    CHECK(dp.wBuf()[2] == 5);
+}
+
+void test_accumulate_uses_zero_previous_on_first_slice()
+{
+    // Rule 8/16: first-slice override -- previous partial sum is 0
+    // regardless of whatever stale rBuf_/rWire_ contents remain from an
+    // earlier command.
+    MatDatapath dp;
+    std::array<int16_t, WBufNumSlots> rBuf{};
+    rBuf[1] = 999;  // stale, must NOT be used
+    dp.setRBufForTest(rBuf);
+
+    dp.accumulate(/*idx=*/1, AccWidth16Bit, /*isFirstSlice=*/true,
+                  /*freshMArrayValid=*/false, /*macResult=*/5);
+
+    CHECK(dp.wBuf()[1] == 5);
+}
+
+void test_accumulate_prefers_fresh_rWire_over_rBuf()
+{
+    // Rule 8/15: when fresh M-array data landed THIS cycle, use rWire_,
+    // not the older latched rBuf_.
+    MatDatapath dp;
+    std::array<int16_t, WBufNumSlots> rWire{};
+    rWire[0] = 10;
+    dp.setRWireForTest(rWire);
+    std::array<int16_t, WBufNumSlots> rBuf{};
+    rBuf[0] = 999;  // stale, must NOT be used
+    dp.setRBufForTest(rBuf);
+
+    dp.accumulate(/*idx=*/0, AccWidth16Bit, /*isFirstSlice=*/false,
+                  /*freshMArrayValid=*/true, /*macResult=*/1);
+
+    CHECK(dp.wBuf()[0] == 11);
+}
+
+void test_latch_marray_row_updates_both_rWire_and_rBuf()
+{
+    MatDatapath dp;
+    dp.setMArrayWordForTest(2, 0x4444333322221111ULL);
+
+    dp.latchMArrayRow(2);
+
+    CHECK(dp.rWire()[0] == 0x1111);
+    CHECK(dp.rBuf()[0] == 0x1111);
+    CHECK(dp.rWire()[3] == 0x4444);
+    CHECK(dp.rBuf()[3] == 0x4444);
+}
+
+void test_load_vec_writes_vecBuf_only_when_enabled()
+{
+    MatDatapath dp;
+    dp.loadVec(false, 0xDEAD);
+    CHECK(dp.vecBuf() == 0);
+
+    dp.loadVec(true, 0xBEEF);
+    CHECK(dp.vecBuf() == 0xBEEF);
+}
+
+// ---------------------------------------------------------------------
+// MatMac (cal() Datapath / MAC Spec)
+// ---------------------------------------------------------------------
+
+void test_mac_shift_combines_bitIdR_and_lBitSliceId()
+{
+    // Rule 1: shift = bitIdR[i] + lBitSliceId.
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0x1);  // read into rVec via readCArray below
+    dp.readCArray(0, {true, false, false, false});
+    dp.loadVec(true, 0x1);  // AND = 0x1, popcount = 1
+
+    MacControl ctrl;
+    ctrl.macEnable = {true, false, false, false};
+    ctrl.bitIdR[0] = 3;
+    ctrl.lBitSliceId = 2;
+    // shift = 3+2 = 5 -> 1 << 5 = 32
+
+    CHECK(MatMac::sumOfMac(dp, ctrl) == 32);
+}
+
+void test_mac_rSign_negates_when_lane_holds_R_sign_bit()
+{
+    // Rule 2: rSign only when signedRLastExist && bitIdR[i]==lastBitRBitId
+    // (and the lane is MAC-enabled).
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0x1);
+    dp.readCArray(0, {true, false, false, false});
+    dp.loadVec(true, 0x1);
+
+    MacControl ctrl;
+    ctrl.macEnable = {true, false, false, false};
+    ctrl.signedRLastExist = true;
+    ctrl.bitIdR[0] = 0;      // no shift, isolates the sign effect
+    ctrl.lastBitRBitId = 0;  // this lane holds R's sign bit
+
+    CHECK(MatMac::sumOfMac(dp, ctrl) == -1);
+}
+
+void test_mac_lSign_negates_when_L_reaches_its_last_bit()
+{
+    // Rule 3: lSign uses ==, not ==-1 -- lPrecisionReg_ IS the final index.
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0x1);
+    dp.readCArray(0, {true, false, false, false});
+    dp.loadVec(true, 0x1);
+
+    MacControl ctrl;
+    ctrl.macEnable = {true, false, false, false};
+    ctrl.signedL = true;
+    ctrl.lBitSliceId = 0;    // no shift, isolates the sign effect
+    ctrl.lPrecisionReg = 0;  // ==, so lSign true here
+
+    CHECK(MatMac::sumOfMac(dp, ctrl) == -1);
+}
+
+void test_mac_both_signs_cancel_to_positive()
+{
+    // Rule 4: negate = rSign XOR lSign -- both signed -> positive result.
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0x1);
+    dp.readCArray(0, {true, false, false, false});
+    dp.loadVec(true, 0x1);
+
+    MacControl ctrl;
+    ctrl.macEnable = {true, false, false, false};
+    ctrl.signedRLastExist = true;
+    ctrl.bitIdR[0] = 0;
+    ctrl.lastBitRBitId = 0;
+    ctrl.signedL = true;
+    ctrl.lBitSliceId = 0;    // no shift, isolates the sign effect
+    ctrl.lPrecisionReg = 0;  // ==, so lSign true too
+
+    CHECK(MatMac::sumOfMac(dp, ctrl) == 1);
+}
+
+void test_mac_non_mac_lane_output_zero_even_with_nonzero_sram()
+{
+    // Rule 6/8: a non-MAC-mode lane's SRAM may hold real (nonzero) data
+    // (M-array traffic reusing that PolyArray's port) -- the MAC OUTPUT
+    // must still be forced to 0, not derived from the SRAM being zero.
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0xFFFFFFFFFFFFFFFFULL);
+    dp.readCArray(0, {true, false, false, false});  // lane 0 reads, but...
+    dp.loadVec(true, 0xFFFFFFFFFFFFFFFFULL);
+
+    MacControl ctrl;
+    ctrl.macEnable = {false, false, false, false};  // ...is NOT MAC-mode
+
+    CHECK(MatMac::sumOfMac(dp, ctrl) == 0);
+}
+
+void test_mac_reduces_all_four_lanes()
+{
+    // Adder #1: four independently shifted/signed lanes, summed.
+    MatDatapath dp;
+    dp.setCArrayWordForTest(0, 0, 0x1);
+    dp.setCArrayWordForTest(1, 0, 0x1);
+    dp.setCArrayWordForTest(2, 0, 0x1);
+    dp.setCArrayWordForTest(3, 0, 0x1);
+    dp.readCArray(0, {true, true, true, true});
+    dp.loadVec(true, 0x1);
+
+    MacControl ctrl;
+    ctrl.macEnable = {true, true, true, true};
+    // no shift/sign -- each lane contributes popcount(1)=1
+    CHECK(MatMac::sumOfMac(dp, ctrl) == 4);
+}
+
+void test_full_pipeline_cal_step_computes_real_mac_into_wbuf()
+{
+    // End-to-end through fsm.step()'s real tickBackground -> MacControl ->
+    // MatMac -> accumulate wiring (not manually poking MatDatapath), to
+    // catch wiring bugs the isolated unit tests above wouldn't.
+    MatFSM fsm;
+    primeCal(fsm, 0);  // arrayModeReg = [Mac, IdleMac, Mac, IdleMac]
+    fsm.setAccWidthRegForTest(AccWidth16Bit);
+    fsm.setWbufPtrRegForTest(0);
+    fsm.datapath().setCArrayWordForTest(0, 0, 0x3);
+    fsm.datapath().setCArrayWordForTest(2, 0, 0x5);
+    fsm.datapath().loadVec(true, 0x7);
+    SetUpIO io;
+
+    fsm.step(io);  // cal fires writeWBufWire_, reads rVec via lanes 0/2
+    fsm.step(io);  // RegNext: MatMac + accumulate
+
+    // popcount(0x3&0x7)=2, popcount(0x5&0x7)=2, no shift/sign -> sum=4;
+    // first slice -> previous=0 -> wBuf[0] = 0+4 = 4.
+    CHECK(fsm.datapath().wBuf()[0] == 4);
+}
+
+void test_post_process_commits_wbuf_to_marray()
+{
+    MatFSM fsm;
+    fsm.setStateForTest(MainState::PostProcess);
+    fsm.setIsWBufPtrEndForTest(true);
+    std::array<int16_t, WBufNumSlots> wBuf = {0x1111, 0x2222, 0x3333, 0x4444};
+    fsm.datapath().setWBufForTest(wBuf);
+    SetUpIO io;
+
+    fsm.runStateHandlerOnlyForTest(io);
+
+    CHECK(fsm.datapath().mArrayWord(0) == 0x4444333322221111ULL);
+}
+
 } // namespace
 
 int
@@ -580,9 +999,16 @@ main()
         {"test_main_idle_array_mode_branch_else", test_main_idle_array_mode_branch_else},
         {"test_main_idle_array_mode_working_array_num_zero_case_defaults_to_4", test_main_idle_array_mode_working_array_num_zero_case_defaults_to_4},
         {"test_main_idle_bitID_R_and_lastBitR_bidID", test_main_idle_bitID_R_and_lastBitR_bidID},
-        {"test_main_wait_L_stub_not_done_stays_put", test_main_wait_L_stub_not_done_stays_put},
-        {"test_main_wait_L_increments_ptr_and_routes_skip_true_to_cal", test_main_wait_L_increments_ptr_and_routes_skip_true_to_cal},
-        {"test_main_wait_L_routes_skip_false_to_pre_read_M_array", test_main_wait_L_routes_skip_false_to_pre_read_M_array},
+        {"test_load_vec_state_send_l_req_stalls_without_arbiter_grant", test_load_vec_state_send_l_req_stalls_without_arbiter_grant},
+        {"test_load_vec_state_send_l_req_fires_advances_to_wait_l_resp", test_load_vec_state_send_l_req_fires_advances_to_wait_l_resp},
+        {"test_load_vec_state_wait_l_resp_stalls_without_response", test_load_vec_state_wait_l_resp_stalls_without_response},
+        {"test_load_vec_state_wait_l_resp_fires_advances_to_start_next", test_load_vec_state_wait_l_resp_fires_advances_to_start_next},
+        {"test_load_vec_state_start_next_always_advances_regardless_of_gates", test_load_vec_state_start_next_always_advances_regardless_of_gates},
+        {"test_load_vec_state_start_next_increments_ptr_and_routes_skip_true_to_cal", test_load_vec_state_start_next_increments_ptr_and_routes_skip_true_to_cal},
+        {"test_load_vec_state_start_next_routes_skip_false_to_pre_read_M_array", test_load_vec_state_start_next_routes_skip_false_to_pre_read_M_array},
+        {"test_main_wait_L_full_round_trip_no_stall_takes_exactly_three_cycles", test_main_wait_L_full_round_trip_no_stall_takes_exactly_three_cycles},
+        {"test_main_wait_L_arbiter_stall_extends_send_l_req", test_main_wait_L_arbiter_stall_extends_send_l_req},
+        {"test_main_wait_L_response_stall_extends_wait_l_resp", test_main_wait_L_response_stall_extends_wait_l_resp},
         {"test_pre_read_M_array_first_slice_no_read", test_pre_read_M_array_first_slice_no_read},
         {"test_pre_read_M_array_not_first_slice_issues_read", test_pre_read_M_array_not_first_slice_issues_read},
         {"test_cal_normal_loop_write_wBuf_and_read_C_ArrayEn", test_cal_normal_loop_write_wBuf_and_read_C_ArrayEn},
@@ -600,6 +1026,23 @@ main()
         {"test_scenario_A_minimal_single_pass", test_scenario_A_minimal_single_pass},
         {"test_scenario_B_multiple_bit_slices_loops_to_wait_L", test_scenario_B_multiple_bit_slices_loops_to_wait_L},
         {"test_scenario_C_wBuf_fills_exactly_mid_cal", test_scenario_C_wBuf_fills_exactly_mid_cal},
+        {"test_cal_reads_rVec_from_cArraySram_on_mac_lanes", test_cal_reads_rVec_from_cArraySram_on_mac_lanes},
+        {"test_pre_read_M_array_sets_addr_wire_to_old_row", test_pre_read_M_array_sets_addr_wire_to_old_row},
+        {"test_marray_read_unpacks_into_rBuf", test_marray_read_unpacks_into_rBuf},
+        {"test_accumulate_adder_16bit_mode", test_accumulate_adder_16bit_mode},
+        {"test_accumulate_adder_32bit_mode_combines_two_lanes", test_accumulate_adder_32bit_mode_combines_two_lanes},
+        {"test_accumulate_uses_zero_previous_on_first_slice", test_accumulate_uses_zero_previous_on_first_slice},
+        {"test_accumulate_prefers_fresh_rWire_over_rBuf", test_accumulate_prefers_fresh_rWire_over_rBuf},
+        {"test_latch_marray_row_updates_both_rWire_and_rBuf", test_latch_marray_row_updates_both_rWire_and_rBuf},
+        {"test_load_vec_writes_vecBuf_only_when_enabled", test_load_vec_writes_vecBuf_only_when_enabled},
+        {"test_mac_shift_combines_bitIdR_and_lBitSliceId", test_mac_shift_combines_bitIdR_and_lBitSliceId},
+        {"test_mac_rSign_negates_when_lane_holds_R_sign_bit", test_mac_rSign_negates_when_lane_holds_R_sign_bit},
+        {"test_mac_lSign_negates_when_L_reaches_its_last_bit", test_mac_lSign_negates_when_L_reaches_its_last_bit},
+        {"test_mac_both_signs_cancel_to_positive", test_mac_both_signs_cancel_to_positive},
+        {"test_mac_non_mac_lane_output_zero_even_with_nonzero_sram", test_mac_non_mac_lane_output_zero_even_with_nonzero_sram},
+        {"test_mac_reduces_all_four_lanes", test_mac_reduces_all_four_lanes},
+        {"test_full_pipeline_cal_step_computes_real_mac_into_wbuf", test_full_pipeline_cal_step_computes_real_mac_into_wbuf},
+        {"test_post_process_commits_wbuf_to_marray", test_post_process_commits_wbuf_to_marray},
     };
 
     for (auto &[name, fn] : tests) {

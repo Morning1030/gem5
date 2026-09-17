@@ -61,24 +61,27 @@ MatFSM::tickBackground(const SetUpIO &setUpIo)
     // spec: mArrayDoutValid_ is RegNext of readMArrayEnWire_.
     mArrayDoutValid_ = readMArrayEnWirePrev_;
     if (mArrayDoutValid_) {
-        // Pure plumbing latch -- dataIn_from_M_array is datapath-side and
-        // out of scope for this control-only model (mirrors
-        // mat_fsm.py's IO.dataIn_from_M_array default of 0); no control
-        // decision anywhere reads rBuf_.
-        rBuf_ = 0;
+        datapath_.latchMArrayRow(mArrayReadAddrWirePrev_);
     }
 
     // ---- RegNext: wBuf accumulate pipeline -----------------------------
     writeWBuf_ = writeWBufWirePrev_;
     if (writeWBuf_) {
-        // CONTROL-ONLY (explicit instruction to separate FSM control
-        // from the MAC/shift/signed datapath). Only the pointer movement
-        // below is control-relevant; the stored value is an inert
-        // placeholder from the black-box hook.
-        const unsigned idx = wbufPtrReg_;
-        if (idx < WBufNumSlots) {
-            wBuf_[idx] = sumOfMac_(*this);
-        }
+        // Gather MatMac's control-plane inputs from this FSM's own
+        // registers (section 12) -- readCArrayEn_ still holds the LAST
+        // cal() cycle's per-lane gate, matching the R data that cal()
+        // read on that same cycle (writeWBufWire_'s RegNext delay).
+        MacControl ctrl;
+        ctrl.lBitSliceId = static_cast<unsigned>(lBitSliceIdPtr_);
+        ctrl.bitIdR = bitIdR_;
+        ctrl.lastBitRBitId = lastBitRBidId_;
+        ctrl.signedL = signedL_;
+        ctrl.signedRLastExist = signedRLastExist_;
+        ctrl.lPrecisionReg = static_cast<unsigned>(lPrecisionReg_);
+        ctrl.macEnable = readCArrayEn_;
+
+        const int macResult = MatMac::sumOfMac(datapath_, ctrl);
+        datapath_.accumulate(wbufPtrReg_, accWidthReg_, isFirstSlice_, mArrayDoutValid_, macResult);
         // CONFIRMED (Controller.scala:138,214): buf_ptr_inc is
         // accWidth-dependent (+2 packs two 16b halves into one 32b
         // accumulator per element; +1 for standalone 16b elements).
@@ -182,37 +185,91 @@ MatFSM::mainIdle(const SetUpIO &setUpIo)
     return MainState::MainWaitL;
 }
 
-MainState
-MatFSM::mainWaitL(const SetUpIO & /*setUpIo*/)
+// mod: load_vec_state -- ported 1:1 from mat_fsm.py's
+// process_send_l_req(). load_vec_state == SendLReq
+// (Controller.scala:386-390). Stalls (register unchanged) until
+// request_vec.fire; AutoLoadL's arbiter contention is exactly what's
+// black-boxed behind requestVecFire_.
+void
+MatFSM::processSendLReq(const SetUpIO & /*setUpIo*/)
 {
-    // CONFIRMED against Controller.scala:384-411. This state is really a
-    // 3-phase sub-FSM (load_vec_state: send_L_req -> wait_L_resp ->
-    // start_next) around the request_vec/response_vec Decoupled
-    // handshake to AutoLoadL. Per this class's own stated design
-    // (lFetchDone_, "black box #1"), that handshake -- and the
-    // load_vec_state register itself -- stays deliberately out of scope
-    // here; lFetchDone_() stands in for "has AutoLoadL's response come
-    // back", collapsing send_L_req+wait_L_resp into one gate. What IS in
-    // scope (it's Controller's own state, not AutoLoadL's) is
-    // start_next's three writes:
-    //   - lVecPtrCur_ += 1
-    //   - mainState := skipReadMArray_ ? Cal : PreReadMArray
-    //   - skipReadMArray_ := false   (CONFIRMED :408 -- a real bug if
-    //     missing: a stale true left by postProcess()'s branch (3) would
-    //     keep routing every SUBSEQUENT mainWaitL() visit straight to
-    //     Cal, skipping preReadMArray()'s M-array prefetch)
-    // Also in scope (plumbing, not part of the AutoLoadL handshake being
-    // stubbed): send_L_req's write, lVecAddr_ += 1 (CONFIRMED :394).
-    if (!lFetchDone_()) {
-        return MainState::MainWaitL;
+    if (!requestVecFire_()) {
+        return;
     }
-
-    lVecPtrCur_ += 1;
+    // CONFIRMED (Controller.scala:394, send_L_req): the request payload
+    // counter advances once per row requested. Not consumed by any
+    // control decision in this file (datapath-side / AutoLoadL-facing),
+    // tracked here for register-write fidelity.
     lVecAddr_ += 1;
+    loadVecState_ = LoadVecState::WaitLResp;
+}
+
+// mod: load_vec_state -- ported 1:1 from mat_fsm.py's
+// process_wait_l_resp(). load_vec_state == WaitLResp
+// (Controller.scala:391-393). Stalls until response_vec.fire -- a bare
+// ack, no data (the fetched word lands in vec_buf via a separate
+// AutoLoadL-internal path). AutoLoadL's own fetch-latency internals are
+// what's black-boxed behind responseVecFire_.
+void
+MatFSM::processWaitLResp(const SetUpIO & /*setUpIo*/)
+{
+    if (!responseVecFire_()) {
+        return;
+    }
+    loadVecState_ = LoadVecState::StartNext;
+}
+
+// mod: load_vec_state -- ported 1:1 from mat_fsm.py's
+// process_start_next(). load_vec_state == StartNext
+// (Controller.scala:395-407). Always advances -- no gating condition,
+// unlike the other two. The only one of the three that actually leaves
+// MainWaitL.
+MainState
+MatFSM::processStartNext(const SetUpIO & /*setUpIo*/)
+{
+    // CONFIRMED: resets back to SendLReq, primed for the next row if
+    // MainWaitL is re-entered later.
+    loadVecState_ = LoadVecState::SendLReq;
+    lVecPtrCur_ += 1;
 
     const MainState next = skipReadMArray_ ? MainState::Cal : MainState::PreReadMArray;
+    // CONFIRMED (Controller.scala:408): cleared unconditionally after
+    // use -- a real bug if missing: without this clear, a true left by
+    // postProcess()'s branch (3) would keep routing every SUBSEQUENT
+    // MainWaitL visit straight to Cal, skipping preReadMArray()'s
+    // M-array prefetch, even on visits where nothing re-armed it.
     skipReadMArray_ = false;
     return next;
+}
+
+MainState
+MatFSM::mainWaitL(const SetUpIO &setUpIo)
+{
+    // CONFIRMED against Controller.scala:384-411. This mainState is
+    // really a dispatcher for loadVecState_, its own nested 3-state
+    // sub-FSM (SendLReq -> WaitLResp -> StartNext) around the
+    // request_vec/response_vec Decoupled handshake to AutoLoadL -- same
+    // nesting pattern as `cal`'s self-loop, one level deeper: this
+    // handler runs exactly ONE of loadVecState_'s three states per
+    // step() call (matching the one-cycle-per-call convention used
+    // throughout this class), and mainState only actually leaves
+    // MainWaitL on the cycle where loadVecState_ was (at entry)
+    // StartNext.
+    //
+    // AutoLoadL's own 5-state servicer FSM (idle/read_mem/rev_vec/
+    // write_L/report_finish) stays out of scope, black-boxed behind
+    // requestVecFire_/responseVecFire_ -- see LoadVecState's doc comment
+    // in mat_fsm.hh and each sub-handler above.
+    if (loadVecState_ == LoadVecState::StartNext) {
+        return processStartNext(setUpIo);
+    }
+
+    if (loadVecState_ == LoadVecState::SendLReq) {
+        processSendLReq(setUpIo);
+    } else {
+        processWaitLResp(setUpIo);
+    }
+    return MainState::MainWaitL;
 }
 
 MainState
@@ -229,7 +286,9 @@ MatFSM::preReadMArray(const SetUpIO & /*setUpIo*/)
 
     // spec (b, GIVEN): readMArrayEnWire_=true, readMArrayRowAdrReg_+1;
     // dout_valid becomes visible on the FOLLOWING tickBackground() call
-    // (RegNext), not this one.
+    // (RegNext), not this one. Addressed with the OLD row value, same
+    // Reg-read subtlety as cal()'s C-array addr.
+    mArrayReadAddrWire_ = readMArrayRowAdrReg_;
     readMArrayEnWire_ = true;
     readMArrayRowAdrReg_ += 1;
     return MainState::Cal;
@@ -267,13 +326,17 @@ MatFSM::cal(const SetUpIO & /*setUpIo*/)
     for (unsigned i = 0; i < NumArrays; ++i) {
         readCArrayEn_[i] = (arrayModeReg_[i] == ArrayMode::Mac);
     }
+    datapath_.readCArray(oldAddr, readCArrayEn_);
 
     // CONFIRMED (point 2 above): gated on oldAddr != 0 too.
     if (isWBufPtrEnd_ && oldAddr != 0) {
         writeMArrayEnWire_ = true;
+        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
+        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
         if (isFirstSlice_) {
             readMArrayEnWire_ = false;
         } else {
+            mArrayReadAddrWire_ = readMArrayRowAdrReg_;
             readMArrayEnWire_ = true;
             readMArrayRowAdrReg_ += 1;
         }
@@ -315,11 +378,15 @@ MatFSM::postProcess(const SetUpIO & /*setUpIo*/)
         // branch (1): writeMArrayEnWire_ only. wbufPtrReg_ deliberately
         // left untouched.
         writeMArrayEnWire_ = true;
+        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
+        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
 
     } else if (isLastLBlockRow_) {
         // branch (2): buffer not full, but no more rows remain in this
         // bit-slice's sweep -- flush the partial contents.
         writeMArrayEnWire_ = true;
+        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
+        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
         wbufPtrReg_ = (accWidthReg_ == AccWidth32Bit) ? 1 : 0;
         skipReadMArray_ = false;
 
@@ -433,6 +500,7 @@ MatFSM::step(const SetUpIO &setUpIo)
     // Snapshot this cycle's freshly-computed wires so the NEXT step()'s
     // tickBackground() sees them as "last cycle's" values.
     readMArrayEnWirePrev_ = readMArrayEnWire_;
+    mArrayReadAddrWirePrev_ = mArrayReadAddrWire_;
     writeWBufWirePrev_ = writeWBufWire_;
 
     state_ = next;
