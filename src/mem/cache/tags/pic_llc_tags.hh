@@ -20,10 +20,20 @@
  *       (called a "Level" in the paper, Fig. 6(c))
  *
  *   Arbiter:
+ *     Per the PolymorPIC paper, the Arbiter is the path selector that
+ *     decides, per cache bank, whether the CPU or the PIC/compute path may
+ *     touch a way's data -- and enforces isolation between the two (the
+ *     PAI mechanism) so ordinary CPU/OS traffic can't land on a way that's
+ *     been allocated to AI compute. That's the half implemented here:
  *     - On every tag lookup the arbiter checks wayPICModeBitmap
  *     - If the matched way is currently in PIC mode, CPU access is blocked
  *       (access returns nullptr); the cache controller must retry later
  *     - PIC-mode ways are also excluded from replacement (findVictim)
+ *     The *other* half of the paper's Arbiter -- routing DRAM data toward
+ *     a p2s engine and routing p2s results into the right Mat, i.e. who
+ *     gets the shared physical bank port this cycle -- needs no tag/way
+ *     state at all, so it does not live here: see AccessBankArb in
+ *     mem/cache/pic/access_bank_arb.hh.
  */
 
 #ifndef __MEM_CACHE_TAGS_PIC_LLC_TAGS_HH__

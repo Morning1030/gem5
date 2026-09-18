@@ -25,6 +25,23 @@ enum class P2SDest : uint8_t
 };
 
 /**
+ * mod: p2s_arbiter
+ * Wire format for one bit-plane WRITE, carried as the data payload of the
+ * MemCmd::WriteReq packet a P2S engine sends on its cb_port. Shared here
+ * (rather than duplicated per module) because both sides of that link --
+ * learning_gem5/PIC/p2s.hh's P2S_L/P2S_R/P2S_R_T and
+ * mem/cache/pic/access_bank_arb.hh's AccessBankArb -- need the identical
+ * layout: P2S builds it, AccessBankArb::handleRequest() parses it into a
+ * ReqPackage. Mirrors bankAccessScheduler.scala's ReqPackage minus optype
+ * (P2S ever only sends WRITE, so it isn't carried on the wire).
+ */
+struct P2SWritePayload
+{
+    uint64_t arrayAddr;   //!< 17-bit array address, widened for alignment.
+    uint64_t bitSlice;    //!< 64-bit bit-plane payload.
+};
+
+/**
  * Two-dimensional DMA descriptor: @a numRows runs of @a bytesPerRow bytes,
  * each run starting @a rowStrideBytes after the previous one.
  *

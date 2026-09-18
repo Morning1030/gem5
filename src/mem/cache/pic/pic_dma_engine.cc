@@ -391,29 +391,10 @@ DMAEngine::handleResponse(PacketPtr pkt)
     delete ss;
     delete pkt;
 
-    DPRINTF(PICDMA,
-            "op %u: RESP-ACCEPT row %u remaining %u "
-            "outstanding %u rowDone=%d groupDone=%d\\n",
-            op->opId,
-            rowIdx,
-            op->rowRemaining[rowIdx],
-            op->outstanding,
-            rowDone,
-            groupDone);
-
-    //fix by david
-    if (groupDone) {
-        DPRINTF(PICDMA,
-                "op %u: GROUP-COMPLETE group %u -> return full row "
-                "to P2S[%d]\\n",
-                op->opId,
-                group,
-                static_cast<int>(op->dest));
-
+    if (groupDone)
         groupReady(*op, group);
-    }
 
-    return true;
+    return groupDone;
 }
 
 P2SOpState *
