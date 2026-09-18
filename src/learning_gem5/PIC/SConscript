@@ -1,9 +1,13 @@
 Import('*')
 
 # Scheduler
-SimObject('Scheduler.py', sim_objects=['Scheduler'])
-Source('scheduler.cc')
-DebugFlag('Scheduler', 'PolymorPIC Scheduler')
+# SimObject('Control/Scheduler.py', sim_objects=['Scheduler'])
+# Source('Control/scheduler.cc')
+# DebugFlag('Scheduler', 'PolymorPIC Scheduler')
+
+# SimObject('Control/CmdStateHelper.py', sim_objects=['CmdStateHelper'])
+# Source('Control/cmd_state_helper.cc')
+# DebugFlag('CmdStateHelper', 'PolymorPIC CmdStateHelper')
 
 SimObject('PicMmioTransport.py', sim_objects=['PicMmioTransport'])
 SimObject('PicTestFrontend.py', sim_objects=['PicTestFrontend'])
@@ -12,18 +16,18 @@ Source('pic_test_frontend.cc')
 DebugFlag('PicMmioTransport', 'Frontend-independent PolymorPIC MMIO transport')
 DebugFlag('PicTestFrontend', 'PolymorPIC P2S end-to-end test frontend')
 
-# P2S implementations
-SimObject('P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
-Source('p2s_l.cc')
-Source('p2s_r.cc')
-Source('p2s_r_t.cc')
-DebugFlag('P2S_L', 'PolymorPIC P2S_L')
-DebugFlag('P2S_R', 'PolymorPIC P2S_R')
-DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
+# # P2S implementations
+# SimObject('P2S/P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
+# Source('P2S/p2s_l.cc')
+# Source('P2S/p2s_r.cc')
+# Source('P2S/p2s_r_t.cc')
+# DebugFlag('P2S_L', 'PolymorPIC P2S_L')
+# DebugFlag('P2S_R', 'PolymorPIC P2S_R')
+# DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
 
-# output checker for P2S_L/P2S_R/P2S_R_T.
-SimObject('P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
-Source('p2s_real_golden_sink.cc')
+# # output checker for P2S_L/P2S_R/P2S_R_T.
+# SimObject('P2S/P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
+# Source('P2S/p2s_real_golden_sink.cc')
 
 
 # ACC implementation

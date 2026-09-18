@@ -30,6 +30,24 @@ system.mem_ctrl.port = system.membus.mem_side_ports
 
 system.system_port = system.membus.cpu_side_ports
 
+# PolymorPIC modules
+system.scheduler = Scheduler()
+system.p2sl = P2S_L()
+system.p2sr = P2S_R()
+system.p2srt = P2S_R_T()
+system.accumulator = Accumulator()
+system.switch_ctrl = SwitchController=()
+system.csh = CmdStateHelper()
+
+# PolymorPIC direct port wiring
+system.accumulator.inst_port = system.scheduler.acc_port
+system.p2sl.inst_port = system.scheduler.p2sl_port
+system.p2sr.inst_port = system.scheduler.p2sr_port
+system.p2srt.inst_port = system.scheduler.p2srt_port
+system.switch_ctrl.inst_port = system.scheduler.sc_port
+system.csh.inst_port = system.scheduler.csh_port
+
+
 process = Process()
 process.cmd = ["tests/test-progs/hello/bin/x86/linux/hello"]
 system.cpu.workload = process

@@ -1,4 +1,4 @@
-#include "learning_gem5/PIC/p2s_real_golden_sink.hh"
+#include "learning_gem5/PIC/P2S/p2s_real_golden_sink.hh"
 #include "base/logging.hh"
 #include "learning_gem5/PIC/p2s.hh"
 #include "sim/sim_exit.hh"
