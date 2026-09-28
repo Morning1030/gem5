@@ -23,6 +23,7 @@ PICLLCTags::PICLLCTags(const Params &p)
       numSubArraysPerMat(p.num_sub_arrays_per_mat),
       matSliceBytes(p.mat_slice_bytes),
       wayPICModeBitmap(0),
+      matBusyBitmap(p.num_banks, 0),
       blkShift(floorLog2(blkSize)),
       bankBits(floorLog2(numBanks))
       /*picStats(*this)*/
@@ -79,18 +80,18 @@ PICLLCTags::accessBlock(const PacketPtr pkt, Cycles &lat)
 
     if (blk != nullptr) {
         const unsigned way = blk->getWay();
+        const unsigned bank = getBankIndex(pkt->getAddr());
 
-        // Arbiter: if the matched way is in PIC/compute mode, deny access.
-        // The requestor will be retried after the PIC computation completes
-        // and the way is returned to cache mode via setWayPICMode().
-        if (isWayInPICMode(way)) {
+        // Arbiter: deny access while that (bank, way)'s Mat is mid-job.
+        // isMatBusy, not wayPICModeBitmap -- see setMatBusy()'s comment.
+        if (isMatBusy(bank, way)) {
             //picStats.modeBlockedAccesses++;
             DPRINTF(CacheTags,
-                    "PICLLCTags: addr %#x blocked — way %u is in PIC mode "
-                    "(bank %u)\n",
-                    pkt->getAddr(), way, getBankIndex(pkt->getAddr()));
+                    "PICLLCTags: addr %#x blocked — bank %u way %u is "
+                    "busy (Mat job in progress)\n",
+                    pkt->getAddr(), bank, way);
             lat = lookupLatency;
-            return nullptr; //all in PIC mode
+            return nullptr;
         }
 
         // Normal cache hit.
@@ -120,13 +121,14 @@ PICLLCTags::findVictim(const CacheBlk::KeyType& key,
         indexingPolicy->getPossibleEntries(key); 
 
     //step 2
-    // Remove any way currently in PIC/compute mode.
-    // Those ways hold live compute data and must not be evicted.
+    // Remove any (bank, way) whose Mat is currently mid-job. Those hold
+    // live compute data and must not be evicted. Same isMatBusy gate as
+    // accessBlock() -- see setMatBusy()'s comment.
+    const unsigned bank = getBankIndex(key.address);
     entries.erase(
         std::remove_if(entries.begin(), entries.end(),
-            [this](ReplaceableEntry *e) {
-                return isWayInPICMode(
-                    static_cast<CacheBlk*>(e)->getWay());
+            [this, bank](ReplaceableEntry *e) {
+                return isMatBusy(bank, static_cast<CacheBlk*>(e)->getWay());
             }),
         entries.end());
     
@@ -266,6 +268,35 @@ PICLLCTags::isWayInPICMode(unsigned way) const
     if (way == normalCacheWay)
         return false;
     return static_cast<bool>((wayPICModeBitmap >> way) & 1u);
+}
+
+void
+PICLLCTags::setMatBusy(unsigned bank, unsigned way, bool busy)
+{
+    fatal_if(bank >= numBanks, "PICLLCTags::setMatBusy: bank %u out of "
+             "range (%u banks)", bank, numBanks);
+    fatal_if(way >= allocAssoc, "PICLLCTags::setMatBusy: way %u out of "
+             "range (assoc=%u)", way, allocAssoc);
+    fatal_if(way == normalCacheWay, "PICLLCTags::setMatBusy: way %u is "
+             "the normal cache way and has no Mat", way);
+
+    if (busy) {
+        matBusyBitmap[bank] |= (1u << way);
+    } else {
+        matBusyBitmap[bank] &= ~(1u << way);
+    }
+    DPRINTF(CacheTags, "PICLLCTags: bank %u way %u busy=%d\n",
+            bank, way, busy);
+}
+
+bool
+PICLLCTags::isMatBusy(unsigned bank, unsigned way) const
+{
+    if (way == normalCacheWay)
+        return false;
+    fatal_if(bank >= numBanks, "PICLLCTags::isMatBusy: bank %u out of "
+             "range (%u banks)", bank, numBanks);
+    return static_cast<bool>((matBusyBitmap[bank] >> way) & 1u);
 }
 
 unsigned

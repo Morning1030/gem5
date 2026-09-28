@@ -101,6 +101,18 @@ class PICLLCTags : public BaseSetAssoc
     bool isWayInPICMode(unsigned way) const;
 
     /**
+     * Per-Mat job-busy bit: true from when that Mat's FSM leaves MainIdle
+     * until it returns. This, not wayPICModeBitmap, is what accessBlock()/
+     * findVictim() check -- wayPICModeBitmap only records the Level-wide
+     * PIC/cache allocation set by an explicit SWITCH command; going idle
+     * never clears it (RTL: switch only fires on an explicit switch_req,
+     * gated on all_mat_free -- never auto-triggered by a Mat going idle).
+     * Driven externally (MatBank), not by this class.
+     */
+    void setMatBusy(unsigned bank, unsigned way, bool busy);
+    bool isMatBusy(unsigned bank, unsigned way) const;
+
+    /**
      * Return the bank index (0–3) that owns @p addr.
      *
      * Bank selection uses log2(numBanks) bits immediately above the block
@@ -199,6 +211,9 @@ class PICLLCTags : public BaseSetAssoc
      * Up to 32 ways are supported (uint32_t).
      */
     uint32_t wayPICModeBitmap;
+
+    /** matBusyBitmap[bank] bit i = way i busy (real-time access gate). */
+    std::vector<uint32_t> matBusyBitmap;
 
     /** log2(blkSize) — used to locate bank-select bits in an address. */
     const unsigned blkShift;

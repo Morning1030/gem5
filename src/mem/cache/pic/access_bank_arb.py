@@ -23,4 +23,8 @@ class AccessBankArb(ClockedObject):
         "Port(s) P2S engines send bit-plane WRITE requests on"
     )
 
+    # The one cache-wide AutoLoadL sends L-vector READ requests here
+    # (kClientAutoLoadVec).
+    autoload_side = ResponsePort("Port AutoLoadL sends READ requests on")
+
     num_banks = Param.Unsigned(4, "Number of cache banks (paper default: 4)")

@@ -24,3 +24,16 @@ DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
 # output checker for P2S_L/P2S_R/P2S_R_T.
 SimObject('P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
 Source('p2s_real_golden_sink.cc')
+
+# AutoLoadL: fetches a Mat's L vector from the cache bank
+SimObject('AutoLoadL/AutoLoadL.py', sim_objects=['AutoLoadL'])
+Source('AutoLoadL/AutoLoadL.cc')
+DebugFlag('AutoLoadL', 'PolymorPIC AutoLoadL')
+
+# MatBank: one SimObject per cache bank, owns the bank's MatFSMs
+SimObject('mat/MatBank.py', sim_objects=['MatBank'])
+Source('mat/mat_bank.cc')
+Source('mat/mat_fsm.cc')
+Source('mat/mat_datapath.cc')
+Source('mat/mat_mac.cc')
+DebugFlag('MatBank', 'PolymorPIC Mat bank / Mat FSM <-> AutoLoadL')

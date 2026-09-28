@@ -259,6 +259,38 @@ class AccessBankArb : public ClockedObject
         void recvRespRetry() override;
     };
 
+    /**
+     * Port for the single cache-wide AutoLoadL (kClientAutoLoadVec). Same
+     * one-outstanding-request/grant-fires-the-response protocol as
+     * P2SPort, but READ instead of WRITE: the response carries a data
+     * word back (see handleAutoLoadRequest()'s doc comment for what's
+     * actually in it today -- no real bank storage exists yet).
+     */
+    class AutoLoadPort : public ResponsePort
+    {
+      private:
+        AccessBankArb *owner;
+        bool needRetry;
+        PacketPtr blockedPacket;
+
+      public:
+        AutoLoadPort(const std::string &name, AccessBankArb *owner) :
+            ResponsePort(name), owner(owner), needRetry(false),
+            blockedPacket(nullptr)
+        { }
+
+        void sendPacket(PacketPtr pkt);
+        AddrRangeList getAddrRanges() const override;
+        void trySendRetry();
+
+      protected:
+        Tick recvAtomic(PacketPtr pkt) override
+        { panic("recvAtomic unimpl."); }
+        void recvFunctional(PacketPtr pkt) override { }
+        bool recvTimingReq(PacketPtr pkt) override;
+        void recvRespRetry() override;
+    };
+
   public:
     /**
      * Assert io.accessArray(clientId).valid with @p req.
@@ -352,20 +384,28 @@ class AccessBankArb : public ClockedObject
      *  needRetry and wait for trySendRetry(). */
     bool handleRequest(PacketPtr pkt, int portIdx);
 
+    /** Handle one L-row READ request from AutoLoadL. Posts it under
+     *  kClientAutoLoadVec; held in pendingReqPkt until granted. Returns
+     *  false (caller should needRetry) if a request is already
+     *  outstanding. See handleRequest()'s doc comment -- same protocol,
+     *  READ instead of WRITE. */
+    bool handleAutoLoadRequest(PacketPtr pkt);
+
     /** One arbiter clock edge: calls tick(), and if it granted a client,
      *  turns that client's held request packet into a response and sends
-     *  it out the matching p2s_side port, then frees that port to accept
-     *  a new request via trySendRetry(). Reschedules itself one cycle out
-     *  while any client is pending or the arbiter is still Blocked. */
+     *  it out the matching port, then frees that client's slot via
+     *  trySendRetry(). Reschedules itself one cycle out while any client
+     *  is pending or the arbiter is still Blocked. */
     void processTickEvent();
 
     /** Send @p pkt out p2s_side port index @p portIdx. */
     void sendResponse(PacketPtr pkt, int portIdx);
 
     std::vector<P2SPort> p2sPorts;
+    AutoLoadPort autoLoadPort;
 
-    /** clientId (kClientP2S_L..kClientP2S_R_T) -> the P2S write-request
-     *  packet held until that client is granted; see handleRequest(). */
+    /** clientId -> the request packet held until that client is granted;
+     *  see handleRequest()/handleAutoLoadRequest(). */
     std::unordered_map<unsigned, PacketPtr> pendingReqPkt;
 
     EventFunctionWrapper tickEvent;
