@@ -10,78 +10,6 @@
 namespace gem5
 {
 
-CacheBlk*
-PICTags::findVictim(const CacheBlk::KeyType& key,
-                    const std::size_t size,
-                    std::vector<CacheBlk*>& evict_blks,
-                    const uint64_t partition_id)
-{
-    std::vector<ReplaceableEntry*> entries = indexingPolicy->getPossibleEntries(key);
-
-    auto it = entries.begin();
-    while (it != entries.end()) {
-        CacheBlk* blk = static_cast<CacheBlk*>(*it);
-        if (blk && isWayPICMode(blk->getWay())) {
-            it = entries.erase(it);
-        }
-        else {
-            ++it;
-        }
-    }
-
-    if (partitionManager) {
-        partitionManager->filterByPartition(entries, partition_id);
-    }
-
-    CacheBlk* victim = entries.empty() ? nullptr :
-        static_cast<CacheBlk*>(replacementPolicy->getVictim(entries));
-
-    evict_blks.push_back(victim);
-    return victim;
-}
-
-bool
-PICTags::getSetWayValid(const uint32_t setID, const uint32_t wayID)
-{
-    for (CacheBlk &blk : blks) {
-        if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.isValid();
-        }
-    }
-    return false;
-}
-
-Addr
-PICTags::getSetWayAddr(const uint32_t setID, const uint32_t wayID)
-{
-    for (CacheBlk &blk : blks) {
-        if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.getAddr();
-        }
-    }
-    return 0;
-}
-
-bool
-PICTags::isWayPICMode(const uint32_t wayID) const
-{
-    return wayID < PIC_mode.size() && PIC_mode[wayID];
-}
-
-void
-PICTags::setWayPICMode(const uint32_t wayID, bool picMode)
-{
-    if (PIC_mode.size() < allocAssoc) {
-        PIC_mode.resize(allocAssoc, false);
-    }
-
-    panic_if(wayID >= allocAssoc,
-             "PICTags::setWayPICMode way %u out of range assoc=%u",
-             wayID, allocAssoc);
-
-    PIC_mode[wayID] = picMode;
-}
-
 #if 0
 CacheController::CacheController(CacheControllerParams *params) :
     ClockedObject(params),
@@ -123,8 +51,9 @@ CacheController::handleQueryWayState(PacketPtr pkt)
 
     const uint32_t setID = qPayload.setID;
     const uint32_t wayID = qPayload.wayID;
-    const bool valid = tags->getSetWayValid(setID, wayID);
-    const Addr addr = tags->getSetWayAddr(setID, wayID);
+    CacheBlk *blk = tags->getBlockByWaySet(wayID, setID);
+    const bool valid = blk != nullptr && blk->isValid();
+    const Addr addr = blk != nullptr ? blk->getAddr() : 0;
 
     RespPayload *respPayload = new RespPayload{valid, addr};
     pkt->makeResponse();
@@ -167,6 +96,16 @@ bool
 CacheController::handleCache2PIC(PacketPtr pkt)
 {
     const uint32_t wayID = pkt->getLE<uint32_t>();
+
+    // PICLLCTags::setWayPICMode(pic=true) requires the way already
+    // flushed (see its own doc comment) -- same writeback-then-invalidate
+    // simplification handleFlushReq() above already uses (no wait for
+    // the writeback to actually land before invalidating).
+    for (CacheBlk *blk : tags->getDirtyBlocksInWay(wayID)) {
+        PacketPtr wb_pkt = writebackBlk(blk);
+        allocateWriteBuffer(wb_pkt, curTick());
+    }
+    tags->invalidateWay(wayID);
     tags->setWayPICMode(wayID, true);
 
     if (pkt->needsResponse()) {
@@ -184,7 +123,9 @@ bool
 CacheController::handlePIC2Cache(PacketPtr pkt)
 {
     const uint32_t wayID = pkt->getLE<uint32_t>();
-    tags->setWayPICMode(wayID, true);
+    // FIXED: was setWayPICMode(wayID, true), a copy-paste bug that made
+    // this identical to handleCache2PIC() -- PIC2Cache must switch BACK.
+    tags->setWayPICMode(wayID, false);
 
     if (pkt->needsResponse()) {
         pkt->makeResponse();
