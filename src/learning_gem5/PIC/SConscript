@@ -30,10 +30,19 @@ SimObject('AutoLoadL/AutoLoadL.py', sim_objects=['AutoLoadL'])
 Source('AutoLoadL/AutoLoadL.cc')
 DebugFlag('AutoLoadL', 'PolymorPIC AutoLoadL')
 
-# MatBank: one SimObject per cache bank, owns the bank's MatFSMs
-SimObject('mat/MatBank.py', sim_objects=['MatBank'])
-Source('mat/mat_bank.cc')
+# CacheController: owns PICLLCTags. Registered so the name exists for
+# pic_cache.py to reference -- CacheController.py's base class
+# (ClockedObject, should be BaseCache) is still broken, deferred; this
+# joins scheduler.hh/p2s.hh in the known-failing build until that's fixed.
+SimObject('CacheController.py', sim_objects=['CacheController'])
+Source('cache_controller.cc')
+DebugFlag('CacheController', 'PolymorPIC CacheController')
+
+# Mat: one PIC Mat, one SimObject (retired MatBank, which batched a
+# whole bank's Mats behind one shared tick event)
+SimObject('mat/Mat.py', sim_objects=['Mat'])
+Source('mat/mat.cc')
 Source('mat/mat_fsm.cc')
 Source('mat/mat_datapath.cc')
 Source('mat/mat_mac.cc')
-DebugFlag('MatBank', 'PolymorPIC Mat bank / Mat FSM <-> AutoLoadL')
+DebugFlag('MatBank', 'PolymorPIC Mat FSM <-> AutoLoadL/CacheController')
