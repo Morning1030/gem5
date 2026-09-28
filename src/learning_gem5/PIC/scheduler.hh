@@ -45,8 +45,16 @@ struct P2S_R_Payload
     uint8_t precision;
     uint8_t bufNum;                                                 // 2 bits
 };
+struct AccPayload
+{
+    uint64_t base_src_picAddr;
+    uint64_t dest_picAddr;
+    uint32_t row_num;
+    uint8_t src_arrayNum;
+    uint8_t bitWidth;
+};
 // datapayload for exe/cal
-struct CAL_Payload
+struct CalPayload
 {
     uint64_t _L_vec_fetch_addr;     // SET_SRC
     uint64_t set_up_addr;             // SET_DST
@@ -60,56 +68,40 @@ struct CAL_Payload
     bool signed_R_last_exist;
     bool accWidth;
 };
+struct SwitchPayload
+{
+  bool opType;
+  uint8_t nLevels;
+};
 
-/*
-    uint32_t RValidNRows;
-    uint8_t nBufPerMat;
-    uint8_t nCalPerMat;
-    uint8_t baseRBit;
-    uint8_t L_Precision;
-    uint8_t L_Block_Row;
-    bool signL;
-    bool signRBitLast;
-    bool accWidth;
-    bool needL;
-*/
 class Scheduler : public ClockedObject
 {
   private:
-    // mod: p2s_arbiter -- was "PortID", colliding with the global
-    // gem5::PortID that Scheduler::getPort()'s own signature needs
-    // (unqualified PortID inside this class resolved to this enum
-    // instead, breaking the getPort() override below). scheduler.cc
-    // already expects this name -- see its DownstreamPortID:: usages --
-    // this rename just brings the header in line with it.
-    enum class DownstreamPortID{CC, P2SL, P2SR, P2SRT, CB};
+    enum class FuncID {LOAD, STORE, P2S_L, P2S_R, P2S_R_T, ACC, CAL, SWITCH, QUERY};
+
+    struct Task
+    {
+        FuncID funcID;
+        PacketPtr pkt;
+    };
+    enum class PortID{CC, P2SL, P2SR, P2SRT, CB};
 
     // to interact with MMIO request
     class CPUSidePort : public ResponsePort
     {
       private:
         Scheduler *owner;
-        PacketPtr blockedResponse = nullptr;
-
-        bool requestRetryPending = false;
-
+        PacketPtr blockedPacket;
       public:
         CPUSidePort(const std::string& name, Scheduler *owner);
         void sendPacket(PacketPtr pkt);
-        AddrRangeList getAddrRanges() const override;
-
-        bool responseBlocked() const { return blockedResponse != nullptr; }
-        void markRequestRetry() { requestRetryPending = true; }
-        void trySendRequestRetry();
 
       protected:
-        Tick recvAtomic(PacketPtr pkt) override
-        {
-            panic("Scheduler::CPUSidePort recvAtomic unimplemented.");
-        }
-        void recvFunctional(PacketPtr pkt) override;
+        Tick recvAtomic(PacketPtr pkt) override override {panic("recvAtomic unimplemented.");}
+        void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
+        AddrRangeList getAddrRanges() const override {return {};}
     };
 
     // to interact with Cache controller / DPM / cache bank
@@ -117,80 +109,62 @@ class Scheduler : public ClockedObject
     {
       private:
         Scheduler *owner;
-        DownstreamPortID portID;
-        PacketPtr blockedRequest = nullptr;
-
+        PICPortID portID;
       public:
-        MemSidePort(const std::string& name, Scheduler *owner,DownstreamPortID port_id);
+        enum class PICPortID {DMA, CB};
+        MemSidePort(const std::string& name, Scheduler *owner, PICPortID picPortID);
+        PacketPtr blockedPacket;
         bool sendPacket(PacketPtr pkt);
 
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
-        void recvRangeChange() override;
     };
 
-        // mod: p2s_arbiter -- collapsed down to just what Scheduler's
-        // synchronous SET_PARAM dispatch (see processDecodeEvent()) needs:
-        // one busy/idle flag covering the single in-flight P2S command.
-        // The old per-engine event/queue machinery here never matched
-        // scheduler.cc (dead code since before the P2S/arbiter merge) --
-        // removed rather than resynced, since nothing outside this class
-        // depended on it.
-        class TaskScheduler
+    class TaskScheduler
+    {
+      private:
+        enum TaskState
         {
-            private:
-                enum class TaskState
-                {
-                    IDLE,
-                    SWITCHING,
-                    P2SING,
-                    CALING,
-                    ACCING
-                };
-                Scheduler *owner;
-                TaskState currState;
+          IDLE,
+          LOADING,
+          STORING,
+          P2SING,
+          CALING,
+          ACCING,
+          SWITCHING
+        };
+        Scheduler *owner;
+        std::deque<Task> nextTask;
+        std::deque<Task> nextImmTask;   // switch is immTask
+        TaskState currState;
+
+        EventFunctionWrapper loadEvent;
+        EventFunctionWrapper storeEvent;
+        EventFunctionWrapper p2sLEvent;
+        EventFunctionWrapper p2sREvent;
+        EventFunctionWrapper p2sRTEvent;
+        EventFunctionWrapper calEvent;
+        EventFunctionWrapper accEvent
+        EventFunctionWrapper switchEvent;
+
+        void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);
+        void triggerTS(Task t);
+        void processLoadEvnet();
+        void processStoreEvent();
+        void processP2SLEvent();
+        void processP2SREvent();
+        void processP2SRTEvent();
+        void processCalEvent();
+        void processAccEvent();
+        void processSwitchEvent();
 
       public:
         TaskScheduler(Scheduler *owner);
-
+        void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);
         bool idle() const { return currState == TaskState::IDLE; }
-
-        // mark a P2S command as dispatched and in flight
-        void markBusy() { currState = TaskState::P2SING; }
-
         // use when a real downstream reports completion
-        void completeCurrentTask() { currState = TaskState::IDLE; }
-    };
-
-    class SwitchController
-    {
-      private:
-        enum class SwitchType {PIC2Cache, Cache2PIC};
-
-        Scheduler *owner;
-        uint32_t setID;
-        uint32_t wayID;
-        uint32_t wayStateValid;
-        Addr flushAddr;
-        SwitchType currSwitchType;
-
-        EventFunctionWrapper switchEvent;
-        EventFunctionWrapper queryEvent;
-        EventFunctionWrapper requestFlushEvent;
-        EventFunctionWrapper switch2PICEvent;
-        EventFunctionWrapper switch2CacheEvent;
-
-        void processSwitchEvent();
-        void processQueryEvent();
-        void processRequestFlushEvent();
-        void processSwitch2PICEvent();
-        void processSwitch2CacheEvent();
-        void processNextSet();
-
-      public:
-        SwitchController(Scheduler *owner);
-        bool handleResponse(PacketPtr pkt);
+        void completeCurrentTask();
     };
 
     CPUSidePort instPort;
@@ -199,35 +173,25 @@ class Scheduler : public ClockedObject
     MemSidePort p2sRPort;          // direct P2S_R command port
     MemSidePort p2sRTPort;         // direct P2S_R_T command port
     MemSidePort cacheBankPort;       // cache bank direct port
+    MemSidePort accPort;
+    MemSidePort switchControllerPort; // switch controller direct port
+    TaskScheduler taskScheduler;
 
-    // gem5 transaction identity for requests generated by Scheduler
-    // (the P2S_L/P2S_R/P2S_R_T dispatch packets built in processDecodeEvent())
     RequestorID requestorId;
 
-    TaskScheduler taskScheduler;
-    SwitchController switchController;
-
-        std::deque<PacketPtr> instQueue;
-        // register file data to store the params
-        uint64_t src;                   // SET_SRC
-        uint64_t dst;                   // SET_DST
-        uint16_t row;                   // SET_SIZE
-        uint16_t byte_per_row;          // SET_SIZE
-        uint16_t offset;                // SET_SIZE
-
-        // the SET_PARAM MMIO write that launched the P2S command currently
-        // in flight -- held unanswered until the targeted P2S engine
-        // reports completion (see handleResponse()), so a hung cb_port/
-        // arbiter shows up as this never getting acked instead of the
-        // test frontend exiting early.
-        PacketPtr pendingCommandPkt = nullptr;
+    std::deque<PacketPtr> instQueue;
+    // register file data to store the params
+    uint64_t src;                   // SET_SRC
+    uint64_t dst;                   // SET_DST
+    uint16_t row;                   // SET_SIZE
+    uint16_t byte_per_row;          // SET_SIZE
+    uint16_t offset;                // SET_SIZE
 
     size_t maxInstQueueSize = 1000; // temporarily set to 1000
     EventFunctionWrapper decodeEvent;
 
     void processDecodeEvent();
     void scheduleDecodeIfNeeded();
-    void dispatchSetParam(PacketPtr pkt, uint64_t dataPayload);
 
   public:
     Scheduler(const SchedulerParams &params);
@@ -238,8 +202,7 @@ class Scheduler : public ClockedObject
     void sendRangeChange();
     void handleFunctional(PacketPtr pkt);
     bool handleRequest(PacketPtr pkt);
-    bool handleResponse(DownstreamPortID portID, PacketPtr pkt);
-
+    bool handleResponse(PortID portID, PacketPtr pkt);
     void startup() override;
 };
 
