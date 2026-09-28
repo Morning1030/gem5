@@ -12,10 +12,12 @@ class Mat(ClockedObject):
         Parent.any, "System used to allocate Mat requestor ID"
     )
 
-    # This Mat's (bank, way) coordinate -- way 0 has no Mat (reserved
-    # normal-cache way), so way is always >= 1. Needed to report busy
-    # into tags's (bank, way) coordinate and to compute this Mat's own
-    # L row addresses.
+    # This Mat's (bank, way) coordinate. Ways below pic_cache.py's
+    # FIRST_PIC_WAY have no Mat at all (permanently reserved for normal
+    # cache use -- a hardware upper bound, not just "nothing switched
+    # there yet"; see pic_cache.py's own comment), so way is always >=
+    # FIRST_PIC_WAY. Needed to report busy into tags's (bank, way)
+    # coordinate and to compute this Mat's own L row addresses.
     bank_index = Param.Unsigned(0, "Cache bank index this Mat lives in")
     way = Param.Unsigned(1, "Way index within its bank")
 

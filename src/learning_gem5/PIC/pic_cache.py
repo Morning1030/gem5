@@ -5,13 +5,29 @@
 #   system.pic_cache = PICCache(system)
 #
 # and always gets the same real topology (Section 4.1.3 of the paper):
-# 4 banks, 16 ways each (way 0 = the reserved normal-cache way, no Mat;
-# ways 1-15 = PIC-capable, one Mat SimObject each -> 60 Mats total), one
-# cache-wide AutoLoadL, one AccessBankArb, one PICLLCTags/CacheController
-# owning the tag/data store. Bank/way counts are module constants, not
-# constructor arguments -- this is fixed hardware, not a test knob (see
-# NUM_BANKS/NUM_WAYS/FIRST_PIC_WAY below). Only per-command Mat cal()
-# parameters (nBuf/nCal/accWidth/...) are meant to vary call to call.
+# 4 banks, 16 ways each. Ways below FIRST_PIC_WAY are PERMANENTLY plain
+# cache ways -- no Mat, no PolyArray at all (Bank.scala's pic=false
+# branch); this isn't "nothing has switched them yet", the RTL's own
+# SWITCH precondition (activate_pre_check's valid_op) makes it
+# impossible to ever reach the last FIRST_PIC_WAY-many ways, so their
+# data lives ONLY in CacheController's own tag/data store. Ways >=
+# FIRST_PIC_WAY are PIC-capable, one Mat SimObject each -> 60 Mats at
+# the default split -- their data lives ONLY in that Mat (same physical
+# SRAM whether the way is in cache mode or PIC mode, see mat.hh);
+# CacheController must forward a cache-mode access to that Mat rather
+# than keep its own copy. The split itself (how many ways fall below
+# FIRST_PIC_WAY) is DERIVED from cache geometry parameters (RTL:
+# in_bank_first_matID/pic_avail_levels depend on waysPerSet/
+# cacheSizeBytes/numBanks), not an architectural constant -- 1 vs 15 is
+# just where this file's fixed default config lands, so comments/code
+# here say "way < FIRST_PIC_WAY", never a literal "way 0"/"way 1-15".
+#
+# One cache-wide AutoLoadL, one AccessBankArb, one PICLLCTags/
+# CacheController pair for the metadata + FIRST_PIC_WAY-and-below data.
+# Bank/way counts are module constants, not constructor arguments --
+# this is fixed hardware, not a test knob (see NUM_BANKS/NUM_WAYS/
+# FIRST_PIC_WAY below). Only per-command Mat cal() parameters (nBuf/
+# nCal/accWidth/...) are meant to vary call to call.
 #
 # This file defines no SimObject of its own -- it's a plain Python
 # assembly helper, gem5's usual pattern for packaging a reusable
@@ -35,7 +51,10 @@ from m5.objects import (
 # mistaken for "the real cache" at a different size.
 NUM_BANKS = 4
 NUM_WAYS = 16
-FIRST_PIC_WAY = 1  # way 0 = reserved normal-cache way, no Mat
+# Ways below this are permanently plain cache (no Mat) -- derived from
+# cache geometry (in_bank_first_matID/pic_avail_levels), not a constant;
+# see the file header comment. 1 is where the default config above lands.
+FIRST_PIC_WAY = 1
 
 # PICLLCTags/BaseTags geometry implied by the same fixed config:
 # 512-wordline SRAM per Mat sub-array -> 512 sets; 4 sub-arrays/Mat x
@@ -58,7 +77,8 @@ class PICCache:
     """
 
     def __init__(self, system, **mat_cal_params):
-        # ---- Tag/data store -------------------------------------------
+        # ---- Tags: metadata for every way, real block data only for
+        # ---- ways < FIRST_PIC_WAY (see the file header comment) --------
         # BaseTags's size/block_size/assoc/tag_latency/warmup_percentage/
         # sequential_access/replacement_policy/partitioning_manager
         # normally proxy from the owning BaseCache (Parent.xxx) -- but
@@ -82,11 +102,22 @@ class PICCache:
             partitioning_manager=NULL,
         )
 
-        # ---- CacheController --------------------------------------------
+        # ---- CacheController ---------------------------------------------
         # Constructible (the name now exists -- see SConscript), but
         # NOT wired to pic_tags: CacheController.py has no `tags` param
         # (it isn't BaseCache-derived yet). Blocked on the same deferred
         # base-class fix; left disconnected rather than silently faked.
+        #
+        # Once wired, its job for a way < FIRST_PIC_WAY access is to
+        # service it from pic_tags's own CacheBlk data directly (that's
+        # the only real data store those ways have). For a way >=
+        # FIRST_PIC_WAY access, it must NOT read/write its own copy --
+        # pic_tags.isMatBusy(bank, way) (already checked by
+        # accessBlock()/findVictim(), see pic_llc_tags.cc) blocks CPU
+        # access outright while that Mat is mid-job; when not busy, the
+        # access has to be forwarded to that Mat's own storage over
+        # cache_port (also not built yet -- see mat.hh) rather than read
+        # from any CacheController-local copy.
         system.cache_controller = CacheController()
 
         # ---- Shared L-vector fetch + bank-access arbitration -------------
