@@ -11,7 +11,7 @@ namespace gem5
 
 AccMockBank::BankSidePort::BankSidePort(
     const std::string &name, AccMockBank *owner)
-    : ResponsePort(name, owner), owner(owner)
+    : ResponsePort(name), owner(owner)
 {
 }
 

@@ -14,6 +14,19 @@ constexpr uint64_t MmioWindowSize = 0x100ULL;
 constexpr unsigned MmioAccessSize = sizeof(uint64_t);
 constexpr uint64_t RetryResponse = UINT64_MAX;
 
+// internal address
+constexpr uint64_t InternalBase       = 0x20000000ULL;
+constexpr uint64_t InternalWindowSize = 0x1000ULL;
+constexpr uint64_t AccModuleAddr           = InternalBase + 0 * InternalWindowSize;  // 0x20000000
+constexpr uint64_t CmdStateHelperAddr      = InternalBase + 1 * InternalWindowSize;  // 0x20001000
+constexpr uint64_t P2SLModuleAddr          = InternalBase + 2 * InternalWindowSize;  // 0x20002000
+constexpr uint64_t P2SRModuleAddr          = InternalBase + 3 * InternalWindowSize;  // 0x20003000
+constexpr uint64_t P2SRTModuleAddr         = InternalBase + 4 * InternalWindowSize;  // 0x20004000
+constexpr uint64_t CacheControllerAddr     = InternalBase + 5 * InternalWindowSize;  // 0x20005000
+constexpr uint64_t CacheBankAddr           = InternalBase + 6 * InternalWindowSize;  // 0x20006000
+constexpr uint64_t SwitchControllerAddr    = InternalBase + 7 * InternalWindowSize;  // 0x20007000
+
+
 enum class SetRegister : uint64_t
 {
     Src = 0x00,
@@ -22,18 +35,16 @@ enum class SetRegister : uint64_t
     Param = 0x18
 };
 
-enum class ModuleId : uint8_t
-{
-    Load = 0,
-    P2SL = 1,
-    P2SR = 2,
-    P2SRTInternal = 3,
-    Im2Col = 4,
-    Acc = 5,
-    Exe = 6,
-    Store = 7,
-    Switch = 8,
-    Query = 9
+enum class ModuleID : uint8_t{
+    LOAD,
+    STORE,
+    P2S_L,
+    P2S_R,
+    P2S_R_T,
+    CAL,
+    ACC,
+    SWITCH,
+    QUERY
 };
 
 constexpr uint64_t
@@ -83,7 +94,7 @@ unpackSize(uint64_t value)
 
 struct ParamFields
 {
-    ModuleId module;
+    ModuleID module;
     uint8_t commandId;
     uint64_t others;
 };
@@ -99,16 +110,16 @@ validParam(ParamFields value)
 constexpr uint64_t
 packParam(ParamFields value)
 {
-    return ((value.others & mask(52)) << 12) |
-           (static_cast<uint64_t>(value.commandId) << 4) |
-           (static_cast<uint8_t>(value.module) & mask(4));
+    return (static_cast<uint64_t>(value.module) << 60) |
+           ((value.others & mask(52)) << 8) |
+           (static_cast<uint64_t>(value.commandId) & mask(8));
 }
 
 constexpr ParamFields
 unpackParam(uint64_t value)
 {
     return {
-        static_cast<ModuleId>(value & mask(4)),
+        static_cast<ModuleID>(value & mask(4)),
         static_cast<uint8_t>((value >> 4) & mask(8)),
         (value >> 12) & mask(52)
     };
@@ -220,19 +231,18 @@ packQueryResponse(QueryResponse value)
            (static_cast<uint64_t>(value.endPicMatId & mask(6)) << 9);
 }
 
-inline const char *moduleName(ModuleId module)
+inline const char *moduleName(ModuleID module)
 {
     switch (module) {
-      case ModuleId::Load: return "LOAD";
-      case ModuleId::P2SL: return "P2SL";
-      case ModuleId::P2SR: return "P2SR";
-      case ModuleId::P2SRTInternal: return "P2SRT_INTERNAL";
-      case ModuleId::Im2Col: return "IM2COL";
-      case ModuleId::Acc: return "ACC";
-      case ModuleId::Exe: return "EXE";
-      case ModuleId::Store: return "STORE";
-      case ModuleId::Switch: return "SWITCH";
-      case ModuleId::Query: return "QUERY";
+      case ModuleID::LOAD: return "LOAD";
+      case ModuleID::STORE: return "STORE";
+      case ModuleID::P2S_L: return "P2S_L";
+      case ModuleID::P2S_R: return "P2S_R";
+      case ModuleID::P2S_R_T: return "P2S_R_T";;
+      case ModuleID::CAL: return "CAL";
+      case ModuleID::ACC: return "ACC";
+      case ModuleID::SWITCH: return "SWITCH";
+      case ModuleID::QUERY: return "QUERY";
       default: return "UNKNOWN";
     }
 }

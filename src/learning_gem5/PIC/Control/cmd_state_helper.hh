@@ -6,13 +6,14 @@
 #include <string>
 #include <vector>
 #include "mem/port.hh"
-#include "params/cmd_state_helper.hh"
+#include "params/CmdStateHelper.hh"
 #include "sim/clocked_object.hh"
 
-#define CMDID_MAX 256
+
 namespace gem5
 {
-    enum class QryTabClient
+    constexpr uint16_t CmdIdMax = 256;
+    enum class QryTabClient : uint8_t
     {
         MAIN_SETTER,
         READER,
@@ -55,13 +56,14 @@ namespace gem5
                     AddrRangeList getAddrRanges() const override {return {};}
             };
             CPUSidePort instPort;
-            QryTabClient client_num;
+            uint8_t client_num;
 
-            std::vector<CmdTableEntry>cmd_state_table(CMDID_MAX);
+            std::vector<CmdTableEntry>cmd_state_table;
             uint8_t req_cmdID;
 
             // Round Robin Arbiter functions
-            std::vector<std::deque<PacketPtr>>query_req(QryTabClient::client_num);
+            std::vector<std::deque<PacketPtr>>query_req;
+            size_t maxQueryReqSize = 1000;
             PacketPtr pendingReqPkt;
             uint8_t RRArbiterLastChoose;
             
@@ -74,9 +76,13 @@ namespace gem5
         public:
             CmdStateHelper(const CmdStateHelperParams &params);
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
+            bool handleRequest(PacketPtr pkt);
+            void processArbiterEvent();
+            void processInitEvent();
             void processSetFinishEvent();
             void processCheckFinishEvent();
             void processSetInvalidEvent();
-    }
+    };
     
 }
+#endif // __LEARNING_GEM5_CMD_STATE_HELPER_HH__

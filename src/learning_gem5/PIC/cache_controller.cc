@@ -83,7 +83,7 @@ PICTags::setWayPICMode(const uint32_t wayID, bool picMode)
 }
 
 #if 0
-CacheController::CacheController(CacheControllerParams *params) :
+CacheController::CacheController(CacheControllerParams &params) :
     ClockedObject(params),
     instPort(params.name + ".cpu_port", this),
     memPort(params.name + ".mem_port", this)

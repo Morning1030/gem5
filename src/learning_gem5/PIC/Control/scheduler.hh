@@ -19,15 +19,15 @@ struct LSPayload
     uint64_t dst;
     uint16_t row;                   
     uint16_t byte_per_row;
-    uint16_t offset
+    uint16_t offset;
 };
 
 struct P2S_L_Payload
 {
     uint64_t base_dramAddr_to_load;
     uint64_t base_picAddr_to_store;
-    uint32_t next_row_offset_elem;  // the low 15 bits
-    uint8_t _L_block_row;           // 8 bits
+    uint16_t next_row_offset_elem;  // the low 15 bits
+    uint16_t _L_block_row;           // 8 bits
     uint8_t precision;              // 3 bits
 };
 
@@ -35,9 +35,9 @@ struct P2S_R_Payload
 {
     uint64_t dramAddr;
     uint64_t base_arrayID_to_store; // Which subarray to put the first selected bit map
-    uint32_t next_row_offset_bytes;                                 // 15bits
-    uint32_t nRows                          ;                        // Read how many rows
-    uint32_t nCols;                                                 // Number of columns to read, max 1024
+    uint16_t next_row_offset_bytes;                                 // 15bits
+    uint16_t nRows                          ;                        // Read how many rows
+    uint16_t nCols;                                                 // Number of columns to read, max 1024
     uint8_t precision;
     uint8_t bufNum;                                                 // 2 bits
 };
@@ -83,17 +83,15 @@ struct QueryPayload
 class Scheduler : public ClockedObject
 {
   private:
-    enum class FuncID {LOAD, STORE, P2S_L, P2S_R, P2S_R_T, ACC, CAL, SWITCH, QUERY};
-
     struct Task
     {
         QryTabClient clientID;
         uint8_t cmdID;
         
-        FuncID funcID;
+        ModuleID moduleID;
         PacketPtr pkt;
     };
-    enum class PortID{CC, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
+    enum class PICPortID{CC, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
 
     // to interact with MMIO request
     class CPUSidePort : public ResponsePort
@@ -106,11 +104,11 @@ class Scheduler : public ClockedObject
         void sendPacket(PacketPtr pkt);
 
       protected:
-        Tick recvAtomic(PacketPtr pkt) override override {panic("recvAtomic unimplemented.");}
+        Tick recvAtomic(PacketPtr pkt) override {panic("recvAtomic unimplemented.");}
         void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
-        AddrRangeList getAddrRanges() const override {return {};}
+        AddrRangeList getAddrRanges() const override {return owner-> }
     };
 
     // to interact with Cache controller / DPM / cache bank
@@ -157,7 +155,6 @@ class Scheduler : public ClockedObject
         EventFunctionWrapper accEvent;
         EventFunctionWrapper switchEvent;
 
-        void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);
         void triggerTS(Task t);
         void processLoadEvnet();
         void processStoreEvent();
@@ -170,12 +167,11 @@ class Scheduler : public ClockedObject
 
       public:
         TaskScheduler(Scheduler *owner);
-        void prepareTask(PacketPtr paramPkt, uint64_t src, uint64_t dst, uint16_t row, uint16_t byte_per_row, uint16_t offset);
         bool idle() const { return currState == TaskState::IDLE; }
         // use when a real downstream reports completion
         void completeCurrentTask();
     };
-
+    AddrRangeList mmioRange;
     CPUSidePort instPort;
     MemSidePort cacheControllerPort; // cache controller direct port
     MemSidePort p2sLPort;          // direct P2S_L command port
@@ -196,6 +192,8 @@ class Scheduler : public ClockedObject
     uint16_t row;                   // SET_SIZE
     uint16_t byte_per_row;          // SET_SIZE
     uint16_t offset;                // SET_SIZE
+    PacketPtr paramPkt;
+    Task nextEnqTask;
 
     size_t maxInstQueueSize = 1000; // temporarily set to 1000
     EventFunctionWrapper decodeEvent;
@@ -212,7 +210,7 @@ class Scheduler : public ClockedObject
 
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
-    AddrRangeList getAddrRanges() const;
+    AddrRangeList getAddrRanges() const {return {mmioRange};};
     void sendRangeChange();
     void handleFunctional(PacketPtr pkt);
     bool handleRequest(PacketPtr pkt);

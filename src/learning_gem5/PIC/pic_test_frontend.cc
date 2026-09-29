@@ -17,11 +17,8 @@ PicTestFrontend::PicTestFrontend(const PicTestFrontendParams &params)
       interCommandGap(params.inter_command_gap),
       exitOnFinish(params.exit_on_finish),
       trace(params.trace),
-      accBitWidthCode(
-          static_cast<uint8_t>(params.acc_bit_width_code)),
-      sendEvent(
-          [this] { submitNext(); },
-          name() + ".send_event")
+      accBitWidthCode(static_cast<uint8_t>(params.acc_bit_width_code)),
+      sendEvent([this] { processSendEvent(); }, name() + ".send_event")
 {
     panic_if(
         transport == nullptr,
@@ -46,9 +43,7 @@ PicTestFrontend::PicTestFrontend(const PicTestFrontendParams &params)
 void
 PicTestFrontend::startup()
 {
-    schedule(
-        sendEvent,
-        clockEdge(startDelay));
+    schedule(sendEvent, clockEdge(startDelay));
 }
 
 void
@@ -142,13 +137,11 @@ PicTestFrontend::buildProtocolSmokeTrace()
 }
 
 void
-PicTestFrontend::submitNext()
+PicTestFrontend::processSendEvent()
 {
-    panic_if(
-        waitingForTransport,
-        "%s attempted to submit while waiting for a response",
-        name());
-
+    // panic_if(
+    //     waitingForTransport,
+    //     "%s attempted to submit while waiting for a response", name());
 
     if (requests.empty()) {
 
@@ -160,38 +153,33 @@ PicTestFrontend::submitNext()
 
         return;
     }
-
-
-    waitingForTransport = true;
-
+    // waitingForTransport = true;
 
     transport->submit(
         requests.front(),
+        // TBD 應該改成recvTimingResp再forward給handleResponse
         [this](const PicSetResponse &response) {
             handleResponse(response);
         });
+    requests.pop_front();
+    DPRINTF(PicTestFrontend, "submit req to picMMIOTransport");
+    schedule(sendEvent, clockEdge(Cycles(1)));
 }
 
 void
 PicTestFrontend::handleResponse(
     const PicSetResponse &response)
 {
-    panic_if(
-        !waitingForTransport ||
-        requests.empty(),
-        "%s received an unexpected transport completion",
-        name());
+    // panic_if(
+    //     !waitingForTransport ||
+    //     requests.empty(),
+    //     "%s received an unexpected transport completion",
+    //     name());
 
+    // waitingForTransport = false;
 
-    waitingForTransport = false;
-
-
-    const PicSetRequest &request =
-        requests.front();
-
-
+    const PicSetRequest &request = requests.front();
     bool consumeRequest = true;
-
 
     if (request.reg == SetRegister::Param) {
 
@@ -199,7 +187,7 @@ PicTestFrontend::handleResponse(
             unpackParam(request.value);
 
 
-        if (param.module == ModuleId::Query) {
+        if (param.module == ModuleID::QUERY) {
 
             const QueryResponse query =
                 unpackQueryResponse(
@@ -252,14 +240,10 @@ PicTestFrontend::handleResponse(
         }
     }
 
-
     if (consumeRequest) {
-
         requests.pop_front();
-
         ++completedRequests;
     }
-
 
     if (requests.empty()) {
 
@@ -269,22 +253,14 @@ PicTestFrontend::handleResponse(
             static_cast<unsigned long long>(
                 completedRequests));
 
-
         if (exitOnFinish) {
-
-            exitSimLoop(
-                name() +
-                " completed the PIC protocol smoke test");
+            exitSimLoop(name() + " completed the PIC protocol smoke test");
         }
-
 
         return;
     }
 
-
-    schedule(
-        sendEvent,
-        clockEdge(interCommandGap));
+    // schedule(sendEvent, clockEdge(interCommandGap));
 }
 
 } // namespace pic

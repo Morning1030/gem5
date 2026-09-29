@@ -20,3 +20,7 @@ class AccMmioBridge(ClockedObject):
     acc_port = RequestPort(
         "Test-only control path forwarding one packed ACC request"
     )
+
+    csh_port = RequestPort(
+        "Test-only control path forwarding one packed ACC request"
+    )

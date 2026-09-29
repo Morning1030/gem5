@@ -33,7 +33,7 @@ void
 Scheduler::SwitchController::processQueryEvent()
 {
     size_t pktSize = std::max(sizeof(QueryPayload), sizeof(RespPayload));
-    RequestorID requestorId = system.getRequestorId(this, "Scheduler");
+    RequestorID requestorId = params.system->getRequestorId(this, "Scheduler");
 
     RequestPtr request = std::make_shared<Request>(
         pioAddr + offset                    // the target MMIO address of cache controller

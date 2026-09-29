@@ -14,7 +14,7 @@ namespace gem5
 
 Accumulator::ControlPort::ControlPort(
     const std::string &name, Accumulator *owner)
-    : ResponsePort(name, owner), owner(owner)
+    : ResponsePort(name), owner(owner)
 {
 }
 
@@ -67,7 +67,7 @@ Accumulator::ControlPort::sendResponse(PacketPtr pkt)
 
 Accumulator::BankPort::BankPort(
     const std::string &name, Accumulator *owner)
-    : RequestPort(name, owner), owner(owner)
+    : RequestPort(name), owner(owner)
 {
 }
 

@@ -5,9 +5,10 @@ Import('*')
 # Source('Control/scheduler.cc')
 # DebugFlag('Scheduler', 'PolymorPIC Scheduler')
 
-# SimObject('Control/CmdStateHelper.py', sim_objects=['CmdStateHelper'])
-# Source('Control/cmd_state_helper.cc')
-# DebugFlag('CmdStateHelper', 'PolymorPIC CmdStateHelper')
+SimObject('Control/CmdStateHelper.py', sim_objects=['CmdStateHelper'])
+Source('Control/cmd_state_helper.cc')
+DebugFlag('CmdStateHelper', 'PolymorPIC CmdStateHelper')
+DebugFlag('QUERY', 'PolymorPIC CmdStateHelper')
 
 SimObject('PicMmioTransport.py', sim_objects=['PicMmioTransport'])
 SimObject('PicTestFrontend.py', sim_objects=['PicTestFrontend'])
@@ -40,6 +41,7 @@ SimObject('ACC/AccMockBank.py', sim_objects=['AccMockBank'])
 Source('ACC/acc_mock_bank.cc')
 SimObject('ACC/AccMmioBridge.py', sim_objects=['AccMmioBridge'])
 Source('ACC/acc_mmio_bridge.cc')
+DebugFlag('AccMmioBridge', 'PolymorPIC AccMmioBridge')
 
 
 # MAC functional model.

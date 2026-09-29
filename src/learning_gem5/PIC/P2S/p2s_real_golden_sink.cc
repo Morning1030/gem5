@@ -9,7 +9,7 @@ namespace gem5
 P2SRealGoldenSink::SinkPort::SinkPort(
     const std::string &name,
     P2SRealGoldenSink *owner)
-    : ResponsePort(name, owner),
+    : ResponsePort(name),
       owner(owner)
 {
 }

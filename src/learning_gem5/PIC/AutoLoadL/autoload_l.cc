@@ -13,7 +13,7 @@ AutoLoadL::AutoLoadL(const AutoLoadLParams &params) :
 ClockedObject(params),
 instPort(params.name + "inst_port", this),
 cacheBankPort(params.name + "cb_port", this),
-requestorId(system.getRequestorId(this, "AutoLoadL")),
+requestorId(params.system->getRequestorId(this, "AutoLoadL")),
 pendingReqPkt(nullptr),
 loadReqEvent([this]{this->processLoadReqEvent();}, "loadReqEvent"),
 recvRespEvent([this]{this->processRecvRespEvent();}, "recvRespEvent"),
@@ -34,7 +34,7 @@ AutoLoadL::getPort(const std::string &if_name, PortID idx)
 AutoLoadL::CPUSidePort::CPUSidePort(
     const std::string &name,
     AutoLoadL* owner) :
-    ResponsePort(name, owner),
+    ResponsePort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}
@@ -74,7 +74,7 @@ AutoLoadL::CPUSidePort::recvRespRetry()
 AutoLoadL::MemSidePort::MemSidePort(
     const std::string &name,
     AutoLoadL *owner) :
-    RequestPort(name, owner),
+    RequestPort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}

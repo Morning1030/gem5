@@ -59,7 +59,7 @@ class CacheController : public BaseCache
     PICTags *tags;
 
   public:
-    CacheController(CacheControllerParams *params);
+    CacheController(CacheControllerParams &params);
 
     bool handleQueryWayState(PacketPtr pkt);
     bool handleFlushReq(PacketPtr pkt);

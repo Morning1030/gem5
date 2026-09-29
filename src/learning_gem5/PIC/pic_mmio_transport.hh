@@ -19,29 +19,25 @@ namespace gem5
 {
 namespace pic
 {
+using Completion = std::function<void(const PicSetResponse &)>;
 
 class PicMmioTransport : public ClockedObject
 {
-  public:
-    using Completion = std::function<void(const PicSetResponse &)>;
-
-    void submit(PicSetRequest request, Completion completion);
-    bool idle() const;
-    std::size_t queuedRequests() const;
-
   private:
-    class CommandPort : public RequestPort
+    class MemSidePort : public RequestPort
     {
       private:
-        PicMmioTransport &owner;
+        PicMmioTransport *owner;
 
       public:
-        CommandPort(const std::string &name, PicMmioTransport &owner);
+        MemSidePort(const std::string &name, PicMmioTransport *owner);
+        PacketPtr blockedPacket = nullptr;
+        void sendPacket(PacketPtr);
 
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
-        void recvRangeChange() override;
+        void recvRangeChange() override {};
     };
 
     struct PendingRequest
@@ -50,7 +46,7 @@ class PicMmioTransport : public ClockedObject
         Completion completion;
     };
 
-    CommandPort commandPort;
+    MemSidePort mmioPort;
     System *const system;
     RequestorID requestorId;
     const Cycles requestGap;
@@ -58,24 +54,27 @@ class PicMmioTransport : public ClockedObject
     EventFunctionWrapper sendEvent;
 
     std::deque<PendingRequest> pending;
-    PacketPtr blockedPacket = nullptr;
+
+    void scheduleSend(Cycles delay);
+    void processSendEvent();
+    bool trySend(PacketPtr pkt);
+    bool handleResponse(PacketPtr pkt);
+
+  public:
+    PicMmioTransport(const PicMmioTransportParams &params);
+    // ~PicMmioTransport() override;
+
+    Port &getPort(const std::string &ifName,
+                  PortID idx = InvalidPortID) override;
+
+    void submit(PicSetRequest request, Completion completion);
+    
+    bool idle() const;
+    std::size_t queuedRequests() const;
     PacketPtr inFlightPacket = nullptr;
     bool waitingForResponse = false;
     uint64_t completedRequests = 0;
     uint64_t protocolRetries = 0;
-
-    void scheduleSend(Cycles delay);
-    void sendNext();
-    bool trySend(PacketPtr pkt);
-    bool handleTimingResp(PacketPtr pkt);
-    void handleReqRetry();
-
-  public:
-    PicMmioTransport(const PicMmioTransportParams &params);
-    ~PicMmioTransport() override;
-
-    Port &getPort(const std::string &ifName,
-                  PortID idx = InvalidPortID) override;
 };
 
 } // namespace pic

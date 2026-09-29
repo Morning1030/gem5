@@ -8,6 +8,11 @@ class Scheduler(ClockedObject):
     cxx_header = "learning_gem5/PIC/Control/scheduler.hh"
     cxx_class = "gem5::Scheduler"
 
+    addr_range = Param.AddrRange(
+        AddrRange(0x10028000, size='0x100'),
+        "MMIO address range for PIC command registers"
+    )
+
     inst_port = ResponsePort("Scheduler port, receives MMIO requests")
     cc_port = RequestPort("Scheduler port, send request to cache controller")
     p2sl_port = RequestPort("Scheduler direct command port to P2S_L")

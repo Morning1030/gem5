@@ -14,7 +14,7 @@ P2S_L::P2S_L(const P2S_LParams &params) :
     instPort(params.name + ".inst_port", this),
     DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA),
     cacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
-    requestorId(system.getRequestorId(this, "P2S_L")),
+    requestorId(params.system->getRequestorId(this, "P2S_L")),
     pendingReqPkt(nullptr),
     p2sDone(true),
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
@@ -39,12 +39,12 @@ P2S_L::getPort(const std::string &if_name, PortID idx)
 P2S_L::CPUSidePort::CPUSidePort(
     const std::string &name,
     P2S_L *owner) :
-    ResponsePort(name, owner),
+    ResponsePort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}
 bool
-P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt){
+P2S_L::CPUSidePort::recvTimingReq(PacketPtr pkt) {
     return owner->handleRequest(pkt);
 }
 void
@@ -77,7 +77,7 @@ P2S_L::MemSidePort::MemSidePort(
     const std::string &name,
     P2S_L *owner,
     PICPortID picPortID) :
-    RequestPort(name, owner),
+    RequestPort(name),
     owner(owner),
     portID(picPortID),
     blockedPacket(nullptr)

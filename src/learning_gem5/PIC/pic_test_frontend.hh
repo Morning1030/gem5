@@ -31,7 +31,7 @@ class PicTestFrontend : public ClockedObject
 
     std::deque<PicSetRequest> requests;
 
-    bool waitingForTransport = false;
+    // bool waitingForTransport = false;
 
     // First queued QUERY starts the lookup and the second returns its result.
     bool waitingForQueuedQueryResult = false;
@@ -41,7 +41,7 @@ class PicTestFrontend : public ClockedObject
 
     void append(const std::vector<PicSetRequest> &writes);
     void buildProtocolSmokeTrace();
-    void submitNext();
+    void processSendEvent();
     void handleResponse(const PicSetResponse &response);
 
   public:

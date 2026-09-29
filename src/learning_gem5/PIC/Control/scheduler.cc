@@ -1,3 +1,4 @@
+#include "learning_gem5/PIC/pic_protocol.hh"
 #include "learning_gem5/PIC/Control/scheduler.hh"
 #include "mem/request.hh"
 #include <algorithm>
@@ -5,22 +6,23 @@
 #include "debug/Scheduler.hh"
 #include "mem/packet_access.hh"
 
-#define MMIOBase 0x10028000ULL
+#define MmioBase 0x10028000ULL
 namespace gem5
 {
-Scheduler::Scheduler(const SchedulerParams *params) :
+Scheduler::Scheduler(const SchedulerParams &params) :
     ClockedObject(params),
-    instPort(params->name + ".inst_port", this),
-    cacheControllerPort(params->name + ".cc_port", this),
-    p2sLPort(params->name + ".p2sl_port", this),
-    p2sRPort(params->name + ".p2sr_port", this),
-    p2sRTPort(params->name + ".p2srt_port", this),
-    cacheBankPort(params->name + ".cb_port", this),
-    accPort(params->name + ".acc_port", this),
-    switchControllerPort(params->name + ".sc_port", this),
-    cmdStateHelperPort(params->name + ".csh_port", this),
+    mmioRange(params.addr_range),
+    instPort(params.name + ".inst_port", this),
+    cacheControllerPort(params.name + ".cc_port", this),
+    p2sLPort(params.name + ".p2sl_port", this),
+    p2sRPort(params.name + ".p2sr_port", this),
+    p2sRTPort(params.name + ".p2srt_port", this),
+    cacheBankPort(params.name + ".cb_port", this),
+    accPort(params.name + ".acc_port", this),
+    switchControllerPort(params.name + ".sc_port", this),
+    cmdStateHelperPort(params.name + ".csh_port", this),
     taskScheduler(this),
-    requestorId(system.getRequestorId(this, "Scheduler")),
+    requestorId(params.system->getRequestorId(this, "Scheduler")),
     decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent"),
     prepareTaskEvent([this]{this->processPrepareTaskEvent();}, "prepareTaskEvent"),
     enqueEvent([this]{this->processEnqueEvent();}, "enqueEvent"),
@@ -62,7 +64,7 @@ Scheduler::getPort(const std::string &if_name, PortID idx)
 Scheduler::CPUSidePort::CPUSidePort(
     const std::string& name,
     Scheduler *owner) :
-    ResponsePort(name, owner),
+    ResponsePort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}
@@ -98,7 +100,7 @@ Scheduler::MemSidePort::MemSidePort(
     const std::string& name,
     Scheduler *owner,
     PICPortID port_id) : 
-    RequestPort(name, owner),
+    RequestPort(name),
     owner(owner),
     portID(picPortID),
     blockedPacket(nullptr)
@@ -144,8 +146,12 @@ Scheduler::handleRequest(PacketPtr pkt)
     instQueue.push_back(pkt);
 
     // TODO prevent from decoding every cycle
+    // if (!instQueue.empty() && taskScheduler.idle() &&
+    //     !instPort.responseBlocked() && !decodeEvent.scheduled()) { 
+    //     schedule(decodeEvent, clockEdge(Cycles(1)));
+    // }
     if (!instQueue.empty() && taskScheduler.idle() &&
-        !instPort.responseBlocked() && !decodeEvent.scheduled()) { 
+        !decodeEvent.scheduled()) { 
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
     return true;
@@ -219,12 +225,12 @@ Scheduler::processDecodeEvent()
     instQueue.pop_front();
 
     const Addr pktAddr = pkt->getAddr();
-    const uint64_t offset = pktAddr - pic::MMIOBase;
+    const uint64_t MMIOOffset = pktAddr - pic::MmioBase;
 
     // The current public protocol is one 64-bit write per SET register.
     if (!pkt->isWrite() || pkt->getSize() != pic::MmioAccessSize ||
-        pktAddr < MMIOBase ||
-        pktAddr >= MMIOBase + pic::MmioWindowSize) {
+        pktAddr < pic::MmioBase ||
+        pktAddr >= pic::MmioBase + pic::MmioWindowSize) {
         warn("%s received malformed PIC MMIO request addr=%#llx size=%u\n",
              name(), static_cast<unsigned long long>(pktAddr),
              pkt->getSize());
@@ -239,45 +245,46 @@ Scheduler::processDecodeEvent()
     }
 
     const uint64_t dataPayload = pkt->getLE<uint64_t>();
-    uint64_t responseData = 0;
 
     DPRINTF(Scheduler, "Decoding request addr=%#llx value=%#llx\n",
             static_cast<unsigned long long>(pktAddr),
             static_cast<unsigned long long>(dataPayload));
 
-    switch (offset) {
-      case static_cast<uint64_t>(pic::SetRegister::Src):
-        src = dataPayload;
-        DPRINTF(Scheduler, "SET_SRC = %#llx\n", static_cast<unsigned long long>(src));
-        break;
-            // SET_SRC
-            case 0x00:
-                src = dataPayload;
-                DPRINTF(Scheduler, "SET_SRC to %#x\n", src);
-                delete pkt;
-                break;
-            // SET_DST
-            case 0x02:
-                dst = dataPayload;
-                DPRINTF(Scheduler, "SET_DST to %#x\n", dst);
-                delete pkt;
-                break;
+    switch (MMIOOffset) {
+        // SET_SRC
+        case static_cast<uint64_t>(pic::SetRegister::Src): {
+            src = dataPayload;
+            DPRINTF(Scheduler, "SET_SRC to %#x\n", src);
+            delete pkt;
+            break;
+        }
+        // SET_DST
+        case static_cast<uint64_t>(pic::SetRegister::Dst): {
+            dst = dataPayload;
+            DPRINTF(Scheduler, "SET_DST to %#x\n", dst);
+            delete pkt;
+            break;
+        }
+        // SET_SIZE
+        case static_cast<uint64_t>(pic::SetRegister::Size): {
+            row = static_cast<uint16_t>(dataPayload & 0x7FF);                      // 11 bit LSB
+            byte_per_row = static_cast<uint16_t>((dataPayload >> 11) & 0x7FF);     // 11 bit
+            offset = static_cast<uint16_t>((dataPayload >> 22)& 0x3FFF);            // 15 bit
+            DPRINTF(AccMmioBridge, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
+            delete pkt;
+            break;
+        }
 
-            // SET_SIZE
-            case 0x04:
-                row = dataPayload & 0x7FF;                      // 11 bit LSB
-                byte_per_row = (dataPayload >> 11) & 0x7FF;     // 11 bit
-                offset = (dataPayload >> 22)& 0x3FFF            // 15 bit
-                DPRINTF(Scheduler, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
-                delete pkt;
-                break;
+        // SET_PARAM
+        case static_cast<uint64_t>(pic::SetRegister::Param): {
+            paramPkt = pkt;
+            schedule(prepareTaskEvent, clockEdge(Cycles(1)));
+            // taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
+            break;
+        }
+        default:
+            DPRINTF(AccMmioBridge, "Not identified instuction");
 
-            // SET_PARAM
-            case 0x06:
-                schedule(prepareTaskEvent, clockEdge(Cycles(1)));
-                // taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
-                break;
-            default:
     }
 
     // waiting for instructions, self looping at each cycle
@@ -309,14 +316,15 @@ Scheduler::processPrepareTaskEvent()
     delete paramPkt;                                               // maybe like this?
 
 
-    Task nextEnqTask;
-    FUncID funcID = (dataPayload >> 60)& 0xF;                      // funcID is bit 60 ~ bit 63
-    uint8_t cmdID = dataPayload & 0xFF;                            // cmdID is bit 0 ~ bit 7
+    // Task nextEnqTask;
+    ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
+    uint8_t cmdID = static_cast<uint8_t>(dataPayload & 0xFF);                            // cmdID is bit 0 ~ bit 7
 
-    switch(funcID):
-        case LOAD:
+
+    switch(moduleID) {
+        case pic::ModuleID::LOAD: {
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(LSPayload),
                 0,                  // TODO
                 requestorId
@@ -328,16 +336,17 @@ Scheduler::processPrepareTaskEvent()
             LSPayload loadPayload{src, dst, row, byte_per_row, offset};
             pkt->setData(reinterpret_cast<uint8_t*>(&loadPayload));
 
-            nextEnqTask.funcID = LOAD;
+            nextEnqTask.moduleID = pic::ModuleID::LOAD;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.client = 
+            // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
-
-        case STORE:
+            break;
+        }
+        case pic::ModuleID::STORE: {
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(LSPayload),
                 0,                  // TODO
                 requestorId
@@ -349,19 +358,19 @@ Scheduler::processPrepareTaskEvent()
             LSPayload storePayload{src, dst, row, byte_per_row, offset};
             pkt->setData(reinterpret_cast<uint8_t*>(&storePayload));
 
-            nextEnqTask.funcID = STORE;
+            nextEnqTask.moduleID = pic::ModuleID::STORE;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.client = 
+            // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
-
-        case P2S_L:
+        }
+        case pic::ModuleID::P2S_L: {
             // decode the params from SET_PARAM
-            uint8_t precision = dataPayload & 0x7;    // precision is 3 bit
+            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);    // precision is 3 bit
 
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of p2sL
+                0,    // the target MMIO address of p2sL
                 sizeof(P2S_L_Payload),
                 0,                   // TODO
                 requestorId
@@ -370,23 +379,23 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_L_Payload p2s_L_Payload{src, dst, byte_per_row, row, offset, precision};
+            P2S_L_Payload p2s_L_Payload{src, dst, byte_per_row, row, precision};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_L_Payload));
 
-            nextEnqTask.funcID = P2S_L;
+            nextEnqTask.moduleID = pic::ModuleID::P2S_L;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.client = 
+            // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
-
-        case P2S_R:
-            uint8_t precision = dataPayload & 0x7;    // TODO: but precision is 3 bit
-            uint8_t bufNum = (dataPayload >> 3) &0x3;
+        }
+        case pic::ModuleID::P2S_R: {
+            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 3) &0x3);
 
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(P2S_R_Payload),
                 0,          // TODO
                 requestorId
@@ -398,20 +407,20 @@ Scheduler::processPrepareTaskEvent()
             P2S_R_Payload p2s_R_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_Payload));
 
-            nextEnqTask.funcID = P2S_R;
+            nextEnqTask.moduleID = pic::ModuleID::P2S_R;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.client = 
+            // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
-
-        case P2S_R_T:
-            uint8_t precision = dataPayload & 0x7;
-            uint8_t bufNum = (dataPayload >> 3) &0x3;
+        }
+        case pic::ModuleID::P2S_R_T: {
+            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 3) &0x3);
 
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(P2S_R_Payload),
                     0,                  // TODO
                     requestorId
@@ -423,27 +432,27 @@ Scheduler::processPrepareTaskEvent()
             P2S_R_Payload p2s_R_T_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_T_Payload));
 
-            nextEnqTask.funcID = P2S_R_T;
+            nextEnqTask.moduleID = pic::ModuleID::P2S_R_T;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.client = 
+            // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
-
-        case CAL:
-            uint32_t R_Valid_nRols = (dataPayload >> 30) &0x3FF;
-            uint8_t nBufPerMat = (dataPayload >> 28) &0x3;
-            uint8_t nCalPerMat = (dataPayload >> 26) &0x3;
-            uint8_t Base_R_Bit = (dataPayload >> 23) &0x7;
-            uint8_t L_Precision = (dataPayload >> 20) &0x7;
-            uint8_t L_Block_Row = (dataPayload >> 12) &0xFF;
-            bool SignL = (dataPayload >> 11) &0x1;
-            bool SignR_bitLast = (dataPayload >> 10) &0x1;
-            bool accWidth = (dataPayload >> 9) &0x1;
+        }
+        case pic::ModuleID::CAL: {
+            uint32_t R_Valid_nRols = static_cast<uint32_t>((dataPayload >> 30) &0x3FF);
+            uint8_t nBufPerMat = static_cast<uint8_t>((dataPayload >> 28) &0x3);
+            uint8_t nCalPerMat = static_cast<uint8_t>((dataPayload >> 26) &0x3);
+            uint8_t Base_R_Bit = static_cast<uint8_t>((dataPayload >> 23) &0x7);
+            uint8_t L_Precision = static_cast<uint8_t>((dataPayload >> 20) &0x7);
+            uint8_t L_Block_Row = static_cast<uint8_t>((dataPayload >> 12) &0xFF);
+            bool SignL = static_cast<bool>((dataPayload >> 11) &0x1);
+            bool SignR_bitLast = static_cast<bool>((dataPayload >> 10) &0x1);
+            bool accWidth = static_cast<bool>((dataPayload >> 9) &0x1);
 
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(CalPayload),
                 0,                  // TODO
                 requestorId
@@ -456,20 +465,20 @@ Scheduler::processPrepareTaskEvent()
                 Base_R_Bit, L_Precision, L_Block_Row, SignL, SignR_bitLast, accWidth};
             pkt->setData(reinterpret_cast<uint8_t*>(&calPayload));
 
-            nextEnqTask.funcID = CAL;
+            nextEnqTask.moduleID = pic::ModuleID::CAL;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            nextEnqTask.client = QryTabClient::EXE;
+            nextEnqTask.clientID = QryTabClient::EXE;
 
             DPRINTF(Scheduler, "SET_PARAM CAL\n");
             break;
-
-        case ACC:
-            uint8_t bitWidth = (dataPayload >> 8) &0x7;  // 3 bit
-            uint8_t accRowNum = (dataPayload >> 11) &0x7FF;      // 11 bit
-            uint32_t srcNum = (dataPayload >> 22) &0x7;          // 4 bit
+        }
+        case pic::ModuleID::ACC: {
+            uint8_t bitWidth = static_cast<uint8_t>((dataPayload >> 8) &0x7);  // 3 bit
+            uint32_t accRowNum = static_cast<uint32_t>((dataPayload >> 11) &0x7FF);      // 11 bit
+            uint8_t srcNum = static_cast<uint8_t>((dataPayload >> 22) &0x7);          // 4 bit
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(AccPayload),
                 0,                  // TODO
                 requestorId
@@ -481,21 +490,22 @@ Scheduler::processPrepareTaskEvent()
             AccPayload accPayload{src, dst, accRowNum, srcNum, bitWidth};
             pkt->setData(reinterpret_cast<uint8_t*>(&accPayload));
 
-            nextEnqTask.funcID = ACC;
+            nextEnqTask.moduleID = pic::ModuleID::ACC;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            nextEnqTask.client = QryTabClient::ACC;
+            nextEnqTask.clientID = QryTabClient::ACC;
 
             DPRINTF(Scheduler, "SET_PARAM ACC\n");
             break;
-        case SWITCH:
+        }
+        case pic::ModuleID::SWITCH: {
             // decode datapayload and set wayID and switch type
             // wayID = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
             bool op = dataPayload & 0x1;   // switch type, 0 = ALLOC, 1 = FREE
             uint8_t nLevels = (dataPayload >> 1) & 0xF;
 
             RequestPtr request = std::make_shared<Request>(
-                pioAddr + offset,    // the target MMIO address of dpm
+                0,    // the target MMIO address of dpm
                 sizeof(SwitchPayload),
                 0,                  // TODO
                 requestorId
@@ -507,15 +517,15 @@ Scheduler::processPrepareTaskEvent()
             SwitchPayload switchPayload{op, nLevels};
             pkt->setData(reinterpret_cast<uint8_t*>(&switchPayload));
 
-            nextEnqTask.funcID = SWITCH;
+            nextEnqTask.moduleID = pic::ModuleID::SWITCH;
             nextEnqTask.pkt = pkt;
 
             taskScheduler->nextImmTask.push_back(nextEnqTask);
             DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
             break;
-
-        case QUERY:
-            immQuery = (dataPayload >> 8) &0x1;
+        }
+        case pic::ModuleID::QUERY: {
+            bool immQuery = static_cast<bool>((dataPayload >> 8) &0x1);
             if (immQuery) {
                 // TODO go gather the response result from the switch
                 // and combine together with query result
@@ -523,7 +533,7 @@ Scheduler::processPrepareTaskEvent()
             else {
                 // request whether cmdID is done by sending the packet immediately
                 RequestPtr request = std::make_shared<Request>(
-                    pioAddr + offset,    // TODO
+                    0,    // TODO
                     sizeof(QueryPayload),
                     0,                  // TODO
                     requestorId
@@ -537,6 +547,9 @@ Scheduler::processPrepareTaskEvent()
                 cmdStateHelperPort.sendPacket(pkt);
                 return;         // maybe like this? TBD
             }
+            break;
+        }
+    }
     // for most case, proceed to enqueue state
     if (nextEnqTask != NULL && !scheduled(enqueEvent)) {
         schedule(enqueEvent, clockEdge(Cycles(1)));
@@ -546,7 +559,7 @@ void
 Scheduler::processEnqueEvent() {
     taskScheduler->nextTask.push_back(nextEnqTask);
     if () {
-        schedule(setCmdEvent, clockEdge(Cylces(1)));
+        schedule(setCmdEvent, clockEdge(Cycles(1)));
     }
 }
 void
@@ -562,7 +575,7 @@ Scheduler::processSetCmdEvent(){
     PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
     pkt->allocate();
 
-    QueryPayload queryPayload{nextEnqTask.client, nextEnqTask.cmdID, false};    // to init the cmd_state
+    QueryPayload queryPayload{nextEnqTask.clientID, nextEnqTask.cmdID, false};    // to init the cmd_state
     pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
     cmdStateHelperPort.sendPacket(pkt);
 }
@@ -593,7 +606,7 @@ Scheduler::TaskScheduler::triggerTS()
         else {
             if (!nextTask.empty()) {
                 Task t = nextTask.front();
-                switch(t.funcID) {
+                switch(t.moduleID) {
                     case LOAD:
                         currState = LOADING;
                         schedule(loadEvent, clockEdge(Cycles(1)));

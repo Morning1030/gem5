@@ -1,10 +1,13 @@
 #include "learning_gem5/PIC/Control/cmd_state_helper.hh"
+// #include "learning_gem5/PIC/Control/scheduler.hh"
+#include "learning_gem5/PIC/ACC/acc_mmio_bridge.hh"
 #include "sim/system.hh"
 
 #include <algorithm>
 #include <cstring>
 
-#include "debug/cmd_state_helper.hh"
+#include "debug/CmdStateHelper.hh"
+#include "debug/QUERY.hh"
 
 namespace gem5
 {
@@ -12,8 +15,10 @@ namespace gem5
 CmdStateHelper::CmdStateHelper(const CmdStateHelperParams &params) :
 ClockedObject(params),
 instPort(params.name + ".inst_port", this),
-client_num(QryTabClient::total_client),
+client_num(static_cast<uint8_t>(QryTabClient::total_client)),
+cmd_state_table(CmdIdMax),
 req_cmdID(0),
+query_req(static_cast<size_t>(QryTabClient::total_client)),
 pendingReqPkt(nullptr),
 RRArbiterLastChoose(0),
 arbiterEvent([this]{this->processArbiterEvent();}, "ArbiterEvent"),
@@ -22,8 +27,8 @@ setFinishEvent([this]{this->processSetFinishEvent();}, "setFinishEvent"),
 checkFinishEvent([this]{this->processCheckFinishEvent();}, "checkFinishEvent"),
 setInvalidEvent([this]{this->processSetInvalidEvent();}, "setInvalidEvent")
 {
-    for (int i = 0; i < CMDID_MAX; i++) {
-        cmd_state_table[i].VALID = false;
+    for (int i = 0; i < CmdIdMax; i++) {
+        cmd_state_table[i].valid = false;
     }
 }
 
@@ -39,7 +44,7 @@ CmdStateHelper::getPort(const std::string &if_name, PortID idx)
 CmdStateHelper::CPUSidePort::CPUSidePort(
     const std::string& name,
     CmdStateHelper *owner) :
-    ResponsePort(name, owner),
+    ResponsePort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}
@@ -66,7 +71,7 @@ void
 CmdStateHelper::CPUSidePort::recvRespRetry()
 {
     // retry to send resp to scheduler
-    assert(blockedPacket != nullptr);
+    panic_if(blockedPacket == nullptr, "There's no blockedPacket!\n");
 
     PacketPtr pkt = blockedPacket;
     blockedPacket = nullptr;
@@ -75,12 +80,12 @@ CmdStateHelper::CPUSidePort::recvRespRetry()
 }
 bool
 CmdStateHelper::handleRequest(PacketPtr pkt) {
-    const QueryPayload *queryPayload = pkt->getConstPtr<QueryPayload>();
-    if (query_req[queryPayload->clientID].size() >= maxQueryReqSize) {
+    const pic::QueryPayload *queryPayload = pkt->getConstPtr<pic::QueryPayload>();
+    if (query_req[static_cast<uint8_t>(queryPayload->clientID)].size() >= maxQueryReqSize) {
         return false;
     }
-    else query_req[queryPayload->clientID].push_back(pkt);
-    DPRINTF(CmdStateHelper, "Got request from %d", queryPayload->clientID);
+    else query_req[static_cast<uint8_t>(queryPayload->clientID)].push_back(pkt);
+    DPRINTF(CmdStateHelper, "Got request from %d", static_cast<uint8_t>(queryPayload->clientID));
 
     // prevent from scheduling every cycle
     if (!arbiterEvent.scheduled() && !initEvent.scheduled() &&
@@ -105,12 +110,12 @@ CmdStateHelper::processArbiterEvent() {
     }
     if (chosen_id == -1) return;
     pendingReqPkt = query_req[chosen_id].front();
-    const QueryPayload *qp = pendingReqPkt->getConstPtr<QueryPayload>();
+    const pic::QueryPayload *qp = pendingReqPkt->getConstPtr<pic::QueryPayload>();
     query_req[chosen_id].pop_front();
     RRArbiterLastChoose = (chosen_id + 1) % client_num;
     
     req_cmdID = qp->cmdID;
-    if (chosen_id == QryTabClient::READER) {
+    if (chosen_id == static_cast<uint8_t>(QryTabClient::READER)) {
         schedule(checkFinishEvent, clockEdge(Cycles(1)));
     }
     else {
@@ -120,16 +125,16 @@ CmdStateHelper::processArbiterEvent() {
 }
 void
 CmdStateHelper::processInitEvent() {
-    assert(cmd_state_table[req_cmdID].VALID == false,"The cmdID is inited!");
-    cmd_state_table[req_cmdID].VALID = true;
-    cmd_state_table[req_cmdID].FINISH = false;
+    panic_if(cmd_state_table[req_cmdID].valid, "The cmdID is inited!");
+    cmd_state_table[req_cmdID].valid = true;
+    cmd_state_table[req_cmdID].finish = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
 }
 void
 CmdStateHelper::processSetFinishEvent() {
-    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
-    cmd_state_table[req_cmdID].VALID = true;
-    cmd_state_table[req_cmdID].FINISH = true;
+    panic_if(cmd_state_table[req_cmdID].valid == false,"The cmdID is not inited!");
+    cmd_state_table[req_cmdID].valid = true;
+    cmd_state_table[req_cmdID].finish = true;
 
     // just ACK resp
     pendingReqPkt->makeResponse();
@@ -138,24 +143,24 @@ CmdStateHelper::processSetFinishEvent() {
 }
 void
 CmdStateHelper::processCheckFinishEvent() {
-    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
+    panic_if(cmd_state_table[req_cmdID].valid == false, "The cmdID is not inited!");
     // Resp includes correct information
     pendingReqPkt->makeResponse();
 
-    pendingReqPkt->getPtr<QueryPayload>()->is_finish = cmd_state_table[req_cmdID].FINISH;
+    pendingReqPkt->getPtr<pic::QueryPayload>()->is_finish = cmd_state_table[req_cmdID].finish;
     instPort.sendPacket(pendingReqPkt);
 
     // cmd finiished
-    if (cmd_state_table[req_cmdID].FINISH)
+    if (cmd_state_table[req_cmdID].finish)
         schedule(setInvalidEvent, clockEdge(Cycles(1)));
     // not yet finish
     else schedule(arbiterEvent, clockEdge(Cycles(1)));
 }
 void
 CmdStateHelper::processSetInvalidEvent() {
-    assert(cmd_state_table[req_cmdID].VALID == true,"The cmdID is not inited!");
-    cmd_state_table[req_cmdID].VALID = false;
+    panic_if(cmd_state_table[req_cmdID].valid == false,"The cmdID is not inited!");
+    cmd_state_table[req_cmdID].valid = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
-    // assert(table_read_out_wire.VALID === false.B,"The cmdID is inited!")
+    // panic_if(table_read_out_wire.valid == true,"The cmdID is inited!")
 }
 }

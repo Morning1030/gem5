@@ -9,12 +9,12 @@
 #define WORDLINENUMS 512
 namespace gem5
 {
-P2S_R_T::P2S_R_T(const P2S_R_TParams *params) :
+P2S_R_T::P2S_R_T(const P2S_R_TParams &params) :
     ClockedObject(params),
     instPort(params.name + ".inst_port", this),
     DMAPort(params.name + ".dma_port", this, MemSidePort::PICPortID::DMA),
     cacheBankPort(params.name + ".cb_port", this, MemSidePort::PICPortID::CB),
-    requestorId(system.getRequestorId(this, "P2S_R_T")),
+    requestorId(params.system->getRequestorId(this, "P2S_R_T")),
     pendingReqPkt(nullptr),
     p2sDone(false),
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
@@ -38,7 +38,7 @@ P2S_R_T::getPort(const std::string &if_name, PortID idx)
 P2S_R_T::CPUSidePort::CPUSidePort(
     const std::string &name,
     P2S_R_T *owner) :
-    ResponsePort(name, owner),
+    ResponsePort(name),
     owner(owner),
     blockedPacket(nullptr)
 {}
@@ -74,7 +74,7 @@ P2S_R_T::CPUSidePort::recvRespRetry() {
 P2S_R_T::MemSidePort::MemSidePort(
     const std::string &name,
     P2S_R_T *owner) :
-    RequestPort(name, owner),
+    RequestPort(name),
     owner(owner),
     portID(picPortID),
     blockedPacket(blockedPacket)
