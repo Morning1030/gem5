@@ -80,16 +80,19 @@ PICLLCTags::accessBlock(const PacketPtr pkt, Cycles &lat)
 
     if (blk != nullptr) {
         const unsigned way = blk->getWay();
-        const unsigned bank = getBankIndex(pkt->getAddr());
 
-        // Arbiter: deny access while that (bank, way)'s Mat is mid-job.
-        // isMatBusy, not wayPICModeBitmap -- see setMatBusy()'s comment.
-        if (isMatBusy(bank, way)) {
+        // Arbiter: deny access while that way is switched into PIC mode.
+        // RTL (BankSellPIC.scala:107-127): the CPU-blocking signal is
+        // cacheLevelEnd/picActivated, driven only by SWITCH -- static,
+        // per-way, unrelated to whether a Mat happens to be mid-job right
+        // now. isMatBusy() is a different, query-only signal (see its own
+        // comment) and must not gate CPU access.
+        if (isWayInPICMode(way)) {
             //picStats.modeBlockedAccesses++;
             DPRINTF(CacheTags,
-                    "PICLLCTags: addr %#x blocked — bank %u way %u is "
-                    "busy (Mat job in progress)\n",
-                    pkt->getAddr(), bank, way);
+                    "PICLLCTags: addr %#x blocked — way %u is in PIC "
+                    "mode\n",
+                    pkt->getAddr(), way);
             lat = lookupLatency;
             return nullptr;
         }
@@ -121,14 +124,13 @@ PICLLCTags::findVictim(const CacheBlk::KeyType& key,
         indexingPolicy->getPossibleEntries(key); 
 
     //step 2
-    // Remove any (bank, way) whose Mat is currently mid-job. Those hold
-    // live compute data and must not be evicted. Same isMatBusy gate as
-    // accessBlock() -- see setMatBusy()'s comment.
-    const unsigned bank = getBankIndex(key.address);
+    // Remove any way currently switched into PIC mode. Those hold live
+    // compute data and must not be evicted. Same isWayInPICMode gate as
+    // accessBlock() -- see its own comment there.
     entries.erase(
         std::remove_if(entries.begin(), entries.end(),
-            [this, bank](ReplaceableEntry *e) {
-                return isMatBusy(bank, static_cast<CacheBlk*>(e)->getWay());
+            [this](ReplaceableEntry *e) {
+                return isWayInPICMode(static_cast<CacheBlk*>(e)->getWay());
             }),
         entries.end());
     

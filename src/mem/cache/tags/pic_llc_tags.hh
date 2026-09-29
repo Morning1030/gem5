@@ -102,12 +102,14 @@ class PICLLCTags : public BaseSetAssoc
 
     /**
      * Per-Mat job-busy bit: true from when that Mat's FSM leaves MainIdle
-     * until it returns. This, not wayPICModeBitmap, is what accessBlock()/
-     * findVictim() check -- wayPICModeBitmap only records the Level-wide
-     * PIC/cache allocation set by an explicit SWITCH command; going idle
-     * never clears it (RTL: switch only fires on an explicit switch_req,
-     * gated on all_mat_free -- never auto-triggered by a Mat going idle).
-     * Driven externally (MatBank), not by this class.
+     * until it returns. Query-only (RTL: Controller.io.busy) -- does NOT
+     * gate CPU access. accessBlock()/findVictim() check wayPICModeBitmap
+     * (via isWayInPICMode()) instead: RTL's actual CPU-blocking signal
+     * (BankSellPIC.scala:107-127, cacheLevelEnd/picActivated) is driven
+     * only by an explicit SWITCH command, never by a Mat's own busy
+     * state -- a way stays blocked through any idle gap between jobs
+     * until SWITCH says otherwise. Driven externally (Mat), not by this
+     * class.
      */
     void setMatBusy(unsigned bank, unsigned way, bool busy);
     bool isMatBusy(unsigned bank, unsigned way) const;
