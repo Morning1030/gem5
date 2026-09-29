@@ -42,6 +42,9 @@ from m5.objects import (
     CacheController,
     LRURP,
     Mat,
+    P2S_L,
+    P2S_R,
+    P2S_R_T,
     PICLLCTags,
 )
 
@@ -107,6 +110,14 @@ class PICCache:
         # NOT wired to pic_tags: CacheController.py has no `tags` param
         # (it isn't BaseCache-derived yet). Blocked on the same deferred
         # base-class fix; left disconnected rather than silently faked.
+        # Its inst_port/data_port/mem_side are also left unconnected --
+        # confirmed non-fatal by itself (gem5's PortRef.ccConnect() just
+        # skips a port with no peer; only AccessBankArb's own ctor
+        # enforces a connection COUNT, and that's unrelated to this
+        # object). Nothing in "the cache banks" has a legitimate MMIO
+        # source to hand these to yet anyway -- that's the Scheduler
+        # subsystem's job, out of scope here, same as P2S_L/R/R_T's
+        # inst_port/dma_port above.
         #
         # Once wired, its job for a way < FIRST_PIC_WAY access is to
         # service it from pic_tags's own CacheBlk data directly (that's
@@ -124,6 +135,24 @@ class PICCache:
         system.access_bank_arb = AccessBankArb(num_banks=NUM_BANKS)
         system.autoload_l = AutoLoadL(system=system)
         system.autoload_l.cb_port = system.access_bank_arb.autoload_side
+
+        # AccessBankArb.p2s_side requires exactly 3 connections (its own
+        # ctor asserts this) -- P2S_L/P2S_R/P2S_R_T are fixed clients of
+        # the SAME shared bank-access arbiter as AutoLoadL/the Mats
+        # (SysConfig.scala's 7-client RRArbiter), not test stubs, so
+        # building them here is part of the real fixed hardware, same
+        # category as NUM_BANKS/NUM_WAYS above. Their OTHER ports
+        # (inst_port from Scheduler, dma_port to DMAEngine) are a
+        # different subsystem's job to wire, out of scope for "the cache
+        # banks" -- left unconnected here (gem5 doesn't require every
+        # declared port to be connected, only AccessBankArb's own
+        # connection-count check on p2s_side).
+        system.p2s_l = P2S_L(system=system)
+        system.p2s_r = P2S_R(system=system)
+        system.p2s_r_t = P2S_R_T(system=system)
+        system.p2s_l.cb_port = system.access_bank_arb.p2s_side[0]
+        system.p2s_r.cb_port = system.access_bank_arb.p2s_side[1]
+        system.p2s_r_t.cb_port = system.access_bank_arb.p2s_side[2]
 
         # ---- The 60 PIC Mats ---------------------------------------------
         # Connection order matches the RTL's matID*numBanks+bankID
