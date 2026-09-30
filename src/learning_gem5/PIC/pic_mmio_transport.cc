@@ -130,7 +130,7 @@ PicMmioTransport::processSendEvent()
     DPRINTF(PicMmioTransport,
             "Sending %-24s addr=%#x value=%#x\n",
             requestInfo.label, address, requestInfo.value);
-    
+
     mmioPort.sendPacket(pkt);
     scheduleSend(Cycles(1));
 }

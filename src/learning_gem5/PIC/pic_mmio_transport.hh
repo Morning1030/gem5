@@ -68,7 +68,7 @@ class PicMmioTransport : public ClockedObject
                   PortID idx = InvalidPortID) override;
 
     void submit(PicSetRequest request, Completion completion);
-    
+
     bool idle() const;
     std::size_t queuedRequests() const;
     PacketPtr inFlightPacket = nullptr;

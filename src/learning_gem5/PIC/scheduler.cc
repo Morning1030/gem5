@@ -91,7 +91,7 @@ Scheduler::CPUSidePort::recvRespRetry()
 Scheduler::MemSidePort::MemSidePort(
     const std::string& name,
     Scheduler *owner,
-    PICPortID port_id) : 
+    PICPortID port_id) :
     RequestPort(name, owner),
     owner(owner),
     portID(picPortID),
@@ -139,7 +139,7 @@ Scheduler::handleRequest(PacketPtr pkt)
 
     // TODO prevent from decoding every cycle
     if (!instQueue.empty() && taskScheduler.idle() &&
-        !instPort.responseBlocked() && !decodeEvent.scheduled()) { 
+        !instPort.responseBlocked() && !decodeEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
     return true;

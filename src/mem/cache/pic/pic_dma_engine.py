@@ -5,9 +5,9 @@
 # the responses. See pic_dma_engine.hh for the port topology and the
 # "one request from P2S = one row = one response" design note.
 
+from m5.objects.ClockedObject import ClockedObject
 from m5.params import *
 from m5.proxy import *
-from m5.objects.ClockedObject import ClockedObject
 
 
 class DMAEngine(ClockedObject):
@@ -31,7 +31,8 @@ class DMAEngine(ClockedObject):
         64, "Max bytes DMAEngine puts in one physical read (<= block_bytes)"
     )
     block_bytes = Param.UInt32(
-        64, "Cache block size -- chunk ceiling; must match the LLC's block size"
+        64,
+        "Cache block size -- chunk ceiling; must match the LLC's block size",
     )
     max_outstanding = Param.UInt32(
         8, "Max concurrent in-flight physical reads DMAEngine may issue"

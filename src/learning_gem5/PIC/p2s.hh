@@ -61,7 +61,7 @@ namespace gem5
                 private:
                     // corresponds to each direct port
                     P2S_L *owner;
-                    PICPortID portID;               
+                    PICPortID portID;
                 public:
                     enum class PICPortID {DMA, CB};
                     MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
