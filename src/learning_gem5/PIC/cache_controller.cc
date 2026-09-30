@@ -62,6 +62,17 @@ PICTags::getSetWayAddr(const uint32_t setID, const uint32_t wayID)
     return 0;
 }
 
+Addr
+PICTags::getSetWayTag(const uint32_t setID, const uint32_t wayID)
+{
+    for (CacheBlk &blk : blks) {
+        if (blk.getSet() == setID && blk.getWay() == wayID) {
+            return blk.getTag();  // CacheBlk 繼承自 TaggedEntry，有 getTag()
+        }
+    }
+    return 0;
+}
+
 bool
 PICTags::isWayPICMode(const uint32_t wayID) const
 {
@@ -117,18 +128,18 @@ CacheController::CPUSidePort::recvTimingReq(PacketPtr pkt)
 bool
 CacheController::handleQueryWayState(PacketPtr pkt)
 {
-    QueryPayload qPayload{};
+    CacheWayQueryPayload qPayload{};
 
     pkt->writeData(reinterpret_cast<uint8_t*>(&qPayload));
 
     const uint32_t setID = qPayload.setID;
     const uint32_t wayID = qPayload.wayID;
     const bool valid = tags->getSetWayValid(setID, wayID);
-    const Addr addr = tags->getSetWayAddr(setID, wayID);
+    const Addr tag = tags->getSetWayTag(setID, wayID);
 
-    RespPayload *respPayload = new RespPayload{valid, addr};
+    CacheWayQueryRespPayload *respPayload = new CacheWayQueryRespPayload{tag, valid ? 1u : 0u};
     pkt->makeResponse();
-    pkt->dataDynamic(reinterpret_cast<uint8_t*>(respPayload));
+    pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
 
     cpuSidePort.schedTimingResp(pkt, curTick());
 
@@ -138,16 +149,27 @@ CacheController::handleQueryWayState(PacketPtr pkt)
 bool
 CacheController::handleFlushReq(PacketPtr pkt)
 {
-    const Addr flushAddr = pkt->getLE<Addr>();
-    CacheBlk *blk = tags->findBlock({flushAddr, pkt->isSecure()});
+    CacheFlushPayload fPayload{};
+    pkt->writeData(reinterpret_cast<uint8_t*>(&fPayload));
+    const uint32_t setID = fPayload.setID;
+    const Addr tag = fPayload.tag;
 
-    if (blk && blk->isValid()) {
-        if (blk->isDirty()) {
-            PacketPtr wb_pkt = writebackBlk(blk);
+    CacheBlk *target = nullptr;
+    for (uint32_t w = 0; w < tags->getNumWays(); w++) {
+        auto *entry = tags->findBlockBySetAndWay(setID, w);
+        CacheBlk *blk = static_cast<CacheBlk*>(entry);
+        if (blk && blk->isValid() && blk->getTag() == tag) {
+            target = blk;
+            break;
+        }
+    }
+
+    if (target) {
+        if (target->isSet(CacheBlk::DirtyBit)) {
+            PacketPtr wb_pkt = writebackBlk(target);
             allocateWriteBuffer(wb_pkt, curTick());
         }
-
-        invalidateBlock(blk);
+        invalidateBlock(target);
     }
 
     if (pkt->needsResponse()) {
@@ -184,7 +206,7 @@ bool
 CacheController::handlePIC2Cache(PacketPtr pkt)
 {
     const uint32_t wayID = pkt->getLE<uint32_t>();
-    tags->setWayPICMode(wayID, true);
+    tags->setWayPICMode(wayID, false);
 
     if (pkt->needsResponse()) {
         pkt->makeResponse();

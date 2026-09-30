@@ -23,6 +23,7 @@ class PICTags : public BaseSetAssoc
                          const uint64_t partition_id=0) override;
     bool getSetWayValid(const uint32_t setID, const uint32_t wayID);
     Addr getSetWayAddr(const uint32_t setID, const uint32_t wayID);
+    Addr getSetWayTag(const uint32_t setID, const uint32_t wayID);
     bool isWayPICMode(const uint32_t wayID) const;
     void setWayPICMode(const uint32_t wayID, bool picMode);
 
