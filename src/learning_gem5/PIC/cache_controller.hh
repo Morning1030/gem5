@@ -5,31 +5,18 @@
 #include <string>
 #include <vector>
 #include "mem/cache/base.hh"
-#include "mem/cache/tags/base_set_assoc.hh"
+#include "mem/cache/tags/pic_llc_tags.hh"
 #include "mem/packet.hh"
 #include "params/CacheController.hh"
 
 namespace gem5
 {
 
-class PICTags : public BaseSetAssoc
-{
-  public:
-    using BaseSetAssoc::BaseSetAssoc;
-
-    CacheBlk* findVictim(const CacheBlk::KeyType& key,
-                         const std::size_t size,
-                         std::vector<CacheBlk*>& evict_blks,
-                         const uint64_t partition_id=0) override;
-    bool getSetWayValid(const uint32_t setID, const uint32_t wayID);
-    Addr getSetWayAddr(const uint32_t setID, const uint32_t wayID);
-    bool isWayPICMode(const uint32_t wayID) const;
-    void setWayPICMode(const uint32_t wayID, bool picMode);
-
-  private:
-    std::vector<bool> PIC_mode; // each element indicates one way
-};
-
+// mod: consolidate on PICLLCTags -- this used to own a separate, thinner
+// PICTags class (findVictim/getSetWayValid/getSetWayAddr/isWayPICMode/
+// setWayPICMode). PICLLCTags is the more complete implementation (flush
+// protocol, per-Mat busy gate) and is now the only tag store in the PIC
+// tree; see mem/cache/tags/pic_llc_tags.hh.
 class CacheController : public BaseCache
 {
   private:
@@ -56,10 +43,10 @@ class CacheController : public BaseCache
 
     CPUSidePort cpuSidePort;
     MemSidePort memSidePort;
-    PICTags *tags;
+    PICLLCTags *tags;
 
   public:
-    CacheController(CacheControllerParams &params);
+    CacheController(CacheControllerParams *params);
 
     bool handleQueryWayState(PacketPtr pkt);
     bool handleFlushReq(PacketPtr pkt);

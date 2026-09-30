@@ -45,6 +45,7 @@ AccessBankArb::AccessBankArb(const Params &p)
       blockedClientId(0),
       blockedBankId(0),
       bankReadyVec(p.num_banks, true),
+      autoLoadPort(p.name + ".autoload_side", this),
       tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent")
 {
     fatal_if(p.num_banks == 0, "AccessBankArb: num_banks must be > 0");
@@ -81,6 +82,9 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
     if (if_name == "p2s_side" &&
         static_cast<size_t>(idx) < p2sPorts.size()) {
         return p2sPorts[idx];
+    }
+    if (if_name == "autoload_side") {
+        return autoLoadPort;
     }
     return ClockedObject::getPort(if_name, idx);
 }
@@ -159,6 +163,70 @@ AccessBankArb::P2SPort::recvRespRetry()
 }
 
 // ---------------------------------------------------------------------------
+// AutoLoadPort
+// ---------------------------------------------------------------------------
+
+void
+AccessBankArb::AutoLoadPort::sendPacket(PacketPtr pkt)
+{
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    DPRINTF(PICBankArb, "AccessBankArb: sending read resp %s to AutoLoadL\n",
+            pkt->print());
+    if (!sendTimingResp(pkt)) {
+        DPRINTF(PICBankArb, "AccessBankArb: AutoLoadL refused resp, "
+                "will retry\n");
+        blockedPacket = pkt;
+    }
+}
+
+AddrRangeList
+AccessBankArb::AutoLoadPort::getAddrRanges() const
+{
+    AddrRangeList ranges;
+    ranges.push_back(AddrRange(0, MaxAddr));
+    return ranges;
+}
+
+void
+AccessBankArb::AutoLoadPort::trySendRetry()
+{
+    if (needRetry && blockedPacket == nullptr) {
+        needRetry = false;
+        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to AutoLoadL\n");
+        sendRetryReq();
+    }
+}
+
+bool
+AccessBankArb::AutoLoadPort::recvTimingReq(PacketPtr pkt)
+{
+    DPRINTF(PICBankArb, "AccessBankArb: got read req %s from AutoLoadL\n",
+            pkt->print());
+
+    if (blockedPacket || needRetry) {
+        needRetry = true;
+        return false;
+    }
+    if (!owner->handleAutoLoadRequest(pkt)) {
+        needRetry = true;
+        return false;
+    }
+    return true;
+}
+
+void
+AccessBankArb::AutoLoadPort::recvRespRetry()
+{
+    assert(blockedPacket != nullptr);
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+    trySendRetry();
+}
+
+// ---------------------------------------------------------------------------
 // Request/response handling
 // ---------------------------------------------------------------------------
 
@@ -192,6 +260,39 @@ AccessBankArb::handleRequest(PacketPtr pkt, int portIdx)
     return true;
 }
 
+// Address domains don't line up yet: AutoLoadL sends a flat byte Addr
+// (its own "row * 8" placeholder), while req.addr elsewhere in this file
+// is the 17-bit array-address layout the bank-decode expects. Truncated
+// straight through for now -- same "no real bank storage" caveat as the
+// rest of this arbiter; needs the real AutoLoadL address encoding.
+bool
+AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
+{
+    panic_if(pkt->getSize() != sizeof(uint64_t),
+             "AccessBankArb: AutoLoadL sent a %u-byte read request, "
+             "expected %zu", pkt->getSize(), sizeof(uint64_t));
+
+    ReqPackage req;
+    req.addr = static_cast<uint32_t>(pkt->getAddr());
+    req.optype = AccessArrayType::READ;
+
+    if (!postRequest(kClientAutoLoadVec, req)) {
+        return false;
+    }
+
+    panic_if(pendingReqPkt.count(kClientAutoLoadVec) != 0,
+             "AccessBankArb: AutoLoadL already has a pending packet");
+    pendingReqPkt.emplace(kClientAutoLoadVec, pkt);
+
+    DPRINTF(PICBankArb, "AccessBankArb: AutoLoadL posted read addr=%#x\n",
+            req.addr);
+
+    if (!tickEvent.scheduled()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+    return true;
+}
+
 void
 AccessBankArb::processTickEvent()
 {
@@ -204,16 +305,30 @@ AccessBankArb::processTickEvent()
         PacketPtr pkt = it->second;
         pendingReqPkt.erase(it);
 
-        const int portIdx = static_cast<int>(grant->clientId) - kClientP2S_L;
-        DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
-                "acking P2S[%d]\n", grant->clientId,
-                grant->committedThisCycle ? "ready" : "busy", portIdx);
+        if (grant->clientId == kClientAutoLoadVec) {
+            DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
+                    "acking AutoLoadL\n", grant->clientId,
+                    grant->committedThisCycle ? "ready" : "busy");
+            // No real bank storage yet (see file header) -- placeholder
+            // read data until one exists.
+            const uint64_t placeholder = 0;
+            pkt->setData(reinterpret_cast<const uint8_t *>(&placeholder));
+            pkt->makeResponse();
+            autoLoadPort.sendPacket(pkt);
+            autoLoadPort.trySendRetry();
+        } else {
+            const int portIdx =
+                static_cast<int>(grant->clientId) - kClientP2S_L;
+            DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
+                    "acking P2S[%d]\n", grant->clientId,
+                    grant->committedThisCycle ? "ready" : "busy", portIdx);
 
-        pkt->makeResponse();
-        sendResponse(pkt, portIdx);
-        // The client's one pending-request slot just freed up -- let it
-        // send its next write if one was refused earlier.
-        p2sPorts[portIdx].trySendRetry();
+            pkt->makeResponse();
+            sendResponse(pkt, portIdx);
+            // The client's one pending-request slot just freed up -- let
+            // it send its next write if one was refused earlier.
+            p2sPorts[portIdx].trySendRetry();
+        }
     }
 
     // Keep ticking every cycle while there's pending work: either a
@@ -316,11 +431,9 @@ void
 AccessBankArb::commit(unsigned clientId, const ReqPackage &req,
                        unsigned bankId)
 {
-    // WRITE is the only optype currently exercised (P2S has no read port
-    // in the RTL either, so there's nothing to respond with). This is
-    // still the hook for actually depositing dataWrittenToBank into
-    // simulated bank storage once that exists; READ/dataReadValid
-    // handling was removed for now -- see the file header comment.
+    // Still a no-op hook: no simulated bank storage exists yet, so a
+    // WRITE has nothing to deposit into and a READ (AutoLoadVec) gets its
+    // placeholder data filled in processTickEvent() instead of here.
     (void)clientId;
     (void)req;
     (void)bankId;

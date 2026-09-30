@@ -101,6 +101,20 @@ class PICLLCTags : public BaseSetAssoc
     bool isWayInPICMode(unsigned way) const;
 
     /**
+     * Per-Mat job-busy bit: true from when that Mat's FSM leaves MainIdle
+     * until it returns. Query-only (RTL: Controller.io.busy) -- does NOT
+     * gate CPU access. accessBlock()/findVictim() check wayPICModeBitmap
+     * (via isWayInPICMode()) instead: RTL's actual CPU-blocking signal
+     * (BankSellPIC.scala:107-127, cacheLevelEnd/picActivated) is driven
+     * only by an explicit SWITCH command, never by a Mat's own busy
+     * state -- a way stays blocked through any idle gap between jobs
+     * until SWITCH says otherwise. Driven externally (Mat), not by this
+     * class.
+     */
+    void setMatBusy(unsigned bank, unsigned way, bool busy);
+    bool isMatBusy(unsigned bank, unsigned way) const;
+
+    /**
      * Return the bank index (0–3) that owns @p addr.
      *
      * Bank selection uses log2(numBanks) bits immediately above the block
@@ -199,6 +213,9 @@ class PICLLCTags : public BaseSetAssoc
      * Up to 32 ways are supported (uint32_t).
      */
     uint32_t wayPICModeBitmap;
+
+    /** matBusyBitmap[bank] bit i = way i busy (real-time access gate). */
+    std::vector<uint32_t> matBusyBitmap;
 
     /** log2(blkSize) — used to locate bank-select bits in an address. */
     const unsigned blkShift;

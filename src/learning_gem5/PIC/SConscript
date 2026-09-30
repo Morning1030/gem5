@@ -17,19 +17,40 @@ Source('pic_test_frontend.cc')
 DebugFlag('PicMmioTransport', 'Frontend-independent PolymorPIC MMIO transport')
 DebugFlag('PicTestFrontend', 'PolymorPIC P2S end-to-end test frontend')
 
-# # P2S implementations
-# SimObject('P2S/P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
-# Source('P2S/p2s_l.cc')
-# Source('P2S/p2s_r.cc')
-# Source('P2S/p2s_r_t.cc')
-# DebugFlag('P2S_L', 'PolymorPIC P2S_L')
-# DebugFlag('P2S_R', 'PolymorPIC P2S_R')
-# DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
+# P2S implementations
+SimObject('P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
+Source('p2s_l.cc')
+Source('p2s_r.cc')
+Source('p2s_r_t.cc')
+DebugFlag('P2S_L', 'PolymorPIC P2S_L')
+DebugFlag('P2S_R', 'PolymorPIC P2S_R')
+DebugFlag('P2S_R_T', 'PolymorPIC P2S_R_T')
 
-# # output checker for P2S_L/P2S_R/P2S_R_T.
-# SimObject('P2S/P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
-# Source('P2S/p2s_real_golden_sink.cc')
+# output checker for P2S_L/P2S_R/P2S_R_T.
+SimObject('P2SRealGoldenSink.py', sim_objects=['P2SRealGoldenSink'])
+Source('p2s_real_golden_sink.cc')
 
+# AutoLoadL: fetches a Mat's L vector from the cache bank
+SimObject('AutoLoadL/AutoLoadL.py', sim_objects=['AutoLoadL'])
+Source('AutoLoadL/AutoLoadL.cc')
+DebugFlag('AutoLoadL', 'PolymorPIC AutoLoadL')
+
+# CacheController: owns PICLLCTags. Registered so the name exists for
+# pic_cache.py to reference -- CacheController.py's base class
+# (ClockedObject, should be BaseCache) is still broken, deferred; this
+# joins scheduler.hh/p2s.hh in the known-failing build until that's fixed.
+SimObject('CacheController.py', sim_objects=['CacheController'])
+Source('cache_controller.cc')
+DebugFlag('CacheController', 'PolymorPIC CacheController')
+
+# Mat: one PIC Mat, one SimObject (retired MatBank, which batched a
+# whole bank's Mats behind one shared tick event)
+SimObject('mat/Mat.py', sim_objects=['Mat'])
+Source('mat/mat.cc')
+Source('mat/mat_fsm.cc')
+Source('mat/mat_datapath.cc')
+Source('mat/mat_mac.cc')
+DebugFlag('MatBank', 'PolymorPIC Mat FSM <-> AutoLoadL/CacheController')
 
 # ACC implementation
 SimObject('ACC/Accumulator.py', sim_objects=['Accumulator'])
@@ -39,14 +60,3 @@ DebugFlag('Accumulator', 'PolymorPIC standalone accumulator')
 # ACC E2E test-only components
 SimObject('ACC/AccMockBank.py', sim_objects=['AccMockBank'])
 Source('ACC/acc_mock_bank.cc')
-SimObject('ACC/AccMmioBridge.py', sim_objects=['AccMmioBridge'])
-Source('ACC/acc_mmio_bridge.cc')
-DebugFlag('AccMmioBridge', 'PolymorPIC AccMmioBridge')
-
-
-# MAC functional model.
-Source('Mac/pic_mac.cc')
-
-# Test-only MAC golden/unit test.
-SimObject('Mac/MacTest.py', sim_objects=['MacTest'])
-Source('Mac/mac_test.cc')
