@@ -67,7 +67,7 @@ PICTags::getSetWayTag(const uint32_t setID, const uint32_t wayID)
 {
     for (CacheBlk &blk : blks) {
         if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.getTag();  // CacheBlk 繼承自 TaggedEntry，有 getTag()
+            return blk.getTag();  // CacheBlk 繼承 TaggedEntry，有 getTag()
         }
     }
     return 0;
@@ -122,6 +122,12 @@ CacheController::CPUSidePort::recvTimingReq(PacketPtr pkt)
     if (pkt->cmd == MemCmd::QueryReq) {
         return owner->handleQueryWayState(pkt);
     }
+    if (pkt->cmd == MemCmd::DrainQueryReq) {
+        return owner->handleDrainQuery(pkt);
+    }
+    if (pkt->cmd == MemCmd::FlushReq) {
+        return owner->handleFlushReq(pkt);
+    }
     return false;
 }
 
@@ -147,21 +153,46 @@ CacheController::handleQueryWayState(PacketPtr pkt)
 }
 
 bool
+CacheController::handleDrainQuery(PacketPtr pkt)
+{
+    DrainQueryPayload qPayload{};
+    pkt->writeData(reinterpret_cast<uint8_t*>(&qPayload));
+
+    // Check if MSHR queue is idle
+    // RTL: mshrx_free = !(mshrs.map { _.status.valid }.reduce(_ | _))
+    // gem5: mshrQueue.isEmpty() checks no outstanding MSHR entries
+    const bool isDrained = mshrQueue.isEmpty();
+
+    DPRINTF(CacheController, "DrainQuery: wayID=%u isDrained=%d\n",
+            qPayload.wayID, isDrained);
+
+    DrainQueryRespPayload respPayload{isDrained ? 1u : 0u};
+    pkt->makeResponse();
+    pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
+
+    cpuSidePort.schedTimingResp(pkt, curTick());
+
+    return true;
+}
+
+bool
 CacheController::handleFlushReq(PacketPtr pkt)
 {
+    // DCF
     CacheFlushPayload fPayload{};
     pkt->writeData(reinterpret_cast<uint8_t*>(&fPayload));
-    const uint32_t setID = fPayload.setID;
-    const Addr tag = fPayload.tag;
+    // Reconstruct address from (set, tag) for findBlock
+    // TODO: use tags->regenerateBlkAddr(tag, setID) when available
+    const Addr flushAddr = tags->regenerateBlkAddr(fPayload.tag, fPayload.setID);
+    CacheBlk *blk = tags->findBlock({flushAddr, pkt->isSecure()});
 
-    CacheBlk *target = nullptr;
-    for (uint32_t w = 0; w < tags->getNumWays(); w++) {
-        auto *entry = tags->findBlockBySetAndWay(setID, w);
-        CacheBlk *blk = static_cast<CacheBlk*>(entry);
-        if (blk && blk->isValid() && blk->getTag() == tag) {
-            target = blk;
-            break;
+    if (blk && blk->isValid()) {
+        if (blk->isSet(CacheBlk::DirtyBit)) {
+            PacketPtr wb_pkt = writebackBlk(blk);
+            allocateWriteBuffer(wb_pkt, curTick());
         }
+
+        invalidateBlock(blk);
     }
 
     if (target) {

@@ -63,6 +63,7 @@ class CacheController : public BaseCache
     CacheController(CacheControllerParams *params);
 
     bool handleQueryWayState(PacketPtr pkt);
+    bool handleDrainQuery(PacketPtr pkt);
     bool handleFlushReq(PacketPtr pkt);
     bool handleCache2PIC(PacketPtr pkt);
     bool handlePIC2Cache(PacketPtr pkt);
