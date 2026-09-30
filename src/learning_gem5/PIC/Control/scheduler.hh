@@ -5,11 +5,13 @@
 #include <deque>
 #include <string>
 
+#include "learning_gem5/PIC/Control/cmd_state_helper.hh"
 #include "learning_gem5/PIC/pic_protocol.hh"
 #include "mem/packet.hh"
 #include "mem/port.hh"
 #include "params/Scheduler.hh"
 #include "sim/clocked_object.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -82,23 +84,33 @@ struct QueryPayload
 
 class Scheduler : public ClockedObject
 {
+  public:
+    enum class PICPortID{CC, LD, ST, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
+    enum class TaskState
+    {
+      IDLE,
+      LOADING,
+      STORING,
+      P2SING,
+      CALING,
+      ACCING,
+      SWITCHING
+    };
+
   private:
+
     struct Task
     {
         QryTabClient clientID;
         uint8_t cmdID;
-        
-        ModuleID moduleID;
+        pic::ModuleID moduleID;
         PacketPtr pkt;
     };
-    enum class PICPortID{CC, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
+    
 
     // to interact with MMIO request
     class CPUSidePort : public ResponsePort
     {
-      private:
-        Scheduler *owner;
-        PacketPtr blockedPacket;
       public:
         CPUSidePort(const std::string& name, Scheduler *owner);
         void sendPacket(PacketPtr pkt);
@@ -108,7 +120,11 @@ class Scheduler : public ClockedObject
         void recvFunctional(PacketPtr pkt) override {panic("recvFunctional unimplemented.");}
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
-        AddrRangeList getAddrRanges() const override {return owner-> }
+        AddrRangeList getAddrRanges() const override {return {AddrRange(pic::MmioBase, pic::MmioBase + pic::MmioWindowSize)};}
+
+      private:
+        Scheduler *owner;
+        PacketPtr blockedPacket;
     };
 
     // to interact with Cache controller / DPM / cache bank
@@ -116,64 +132,23 @@ class Scheduler : public ClockedObject
     {
       private:
         Scheduler *owner;
-        PICPortID portID;
-      public:
-        enum class PICPortID {DMA, CB};
-        MemSidePort(const std::string& name, Scheduler *owner, PICPortID picPortID);
+        PICPortID picPortID;
         PacketPtr blockedPacket;
-        bool sendPacket(PacketPtr pkt);
 
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
-    };
-
-    class TaskScheduler
-    {
-      private:
-        enum TaskState
-        {
-          IDLE,
-          LOADING,
-          STORING,
-          P2SING,
-          CALING,
-          ACCING,
-          SWITCHING
-        };
-        Scheduler *owner;
-        std::deque<Task> nextTask;
-        std::deque<Task> nextImmTask;   // switch is immTask
-        TaskState currState;
-
-        EventFunctionWrapper loadEvent;
-        EventFunctionWrapper storeEvent;
-        EventFunctionWrapper p2sLEvent;
-        EventFunctionWrapper p2sREvent;
-        EventFunctionWrapper p2sRTEvent;
-        EventFunctionWrapper calEvent;
-        EventFunctionWrapper accEvent;
-        EventFunctionWrapper switchEvent;
-
-        void triggerTS(Task t);
-        void processLoadEvnet();
-        void processStoreEvent();
-        void processP2SLEvent();
-        void processP2SREvent();
-        void processP2SRTEvent();
-        void processCalEvent();
-        void processAccEvent();
-        void processSwitchEvent();
-
+      
       public:
-        TaskScheduler(Scheduler *owner);
-        bool idle() const { return currState == TaskState::IDLE; }
-        // use when a real downstream reports completion
-        void completeCurrentTask();
+        MemSidePort(const std::string& name, Scheduler *owner, PICPortID picPortID);
+        void sendPacket(PacketPtr pkt);
     };
-    AddrRangeList mmioRange;
+
+
     CPUSidePort instPort;
     MemSidePort cacheControllerPort; // cache controller direct port
+    MemSidePort loadPort;          // direct load ctrl port
+    MemSidePort storePort;         // direct store ctrl port
     MemSidePort p2sLPort;          // direct P2S_L command port
     MemSidePort p2sRPort;          // direct P2S_R command port
     MemSidePort p2sRTPort;         // direct P2S_R_T command port
@@ -182,27 +157,59 @@ class Scheduler : public ClockedObject
     MemSidePort switchControllerPort; // switch controller direct port
     MemSidePort cmdStateHelperPort;
 
-    TaskScheduler taskScheduler;
     RequestorID requestorId;
 
     std::deque<PacketPtr> instQueue;
+    std::deque<Task> nextTask;
+    std::deque<Task> nextImmTask;   // switch is immTask
+
     // register file data to store the params
     uint64_t src;                   // SET_SRC
     uint64_t dst;                   // SET_DST
     uint16_t row;                   // SET_SIZE
     uint16_t byte_per_row;          // SET_SIZE
     uint16_t offset;                // SET_SIZE
+
     PacketPtr paramPkt;
     Task nextEnqTask;
+    bool isImmeCmd, isEnqCmd, isQueryCmd;
 
     size_t maxInstQueueSize = 1000; // temporarily set to 1000
-    EventFunctionWrapper decodeEvent;
 
-    bool isImmeCmd, isEnqCmd, isQueryCmd;
+    TaskState currState;
+    
+    // bool idle() const { return currState == TaskState::IDLE; }
+    // use when a real downstream reports completion
+    // void completeCurrentTask();
+
+    EventFunctionWrapper decodeEvent;
+    EventFunctionWrapper prepareTaskEvent;
+    EventFunctionWrapper enqueEvent;
+    EventFunctionWrapper setCmdEvent;
+    
+    EventFunctionWrapper triggerEvent;
+    EventFunctionWrapper loadEvent;
+    EventFunctionWrapper storeEvent;
+    EventFunctionWrapper p2sLEvent;
+    EventFunctionWrapper p2sREvent;
+    EventFunctionWrapper p2sRTEvent;
+    EventFunctionWrapper calEvent;
+    EventFunctionWrapper accEvent;
+    EventFunctionWrapper switchEvent;              
+
     void processDecodeEvent();
     void processPrepareTaskEvent();
     void processEnqueEvent();
     void processSetCmdEvent();
+    void processTriggerEvent();
+    void processLoadEvent();
+    void processStoreEvent();
+    void processP2SLEvent();
+    void processP2SREvent();
+    void processP2SRTEvent();
+    void processCalEvent();
+    void processAccEvent();
+    void processSwitchEvent();  
     // void scheduleDecodeIfNeeded();
 
   public:
@@ -210,12 +217,10 @@ class Scheduler : public ClockedObject
 
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
-    AddrRangeList getAddrRanges() const {return {mmioRange};};
-    void sendRangeChange();
     void handleFunctional(PacketPtr pkt);
     bool handleRequest(PacketPtr pkt);
-    bool handleResponse(PortID portID, PacketPtr pkt);
-    void startup() override;
+    bool handleResponse(PICPortID picPortID, PacketPtr pkt);
+    // void startup() override;
 };
 
 } // namespace gem5

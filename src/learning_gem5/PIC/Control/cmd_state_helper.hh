@@ -21,7 +21,7 @@ namespace gem5
         LD_R,
         EXE,
         LD_P,
-        ACC,
+        ACC,    // 6
         ST_P,
         total_client
     };

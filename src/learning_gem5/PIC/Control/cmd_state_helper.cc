@@ -56,7 +56,6 @@ CmdStateHelper::CPUSidePort::recvTimingReq(PacketPtr pkt) {
 void
 CmdStateHelper::CPUSidePort::sendPacket(PacketPtr pkt)
 {
-    // send p2s done to scheduler
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
 
     if (sendTimingResp(pkt)) {
@@ -85,7 +84,7 @@ CmdStateHelper::handleRequest(PacketPtr pkt) {
         return false;
     }
     else query_req[static_cast<uint8_t>(queryPayload->clientID)].push_back(pkt);
-    DPRINTF(CmdStateHelper, "Got request from %d", static_cast<uint8_t>(queryPayload->clientID));
+    DPRINTF(CmdStateHelper, "Got request from %d\n", static_cast<uint8_t>(queryPayload->clientID));
 
     // prevent from scheduling every cycle
     if (!arbiterEvent.scheduled() && !initEvent.scheduled() &&
@@ -113,9 +112,10 @@ CmdStateHelper::processArbiterEvent() {
     const pic::QueryPayload *qp = pendingReqPkt->getConstPtr<pic::QueryPayload>();
     query_req[chosen_id].pop_front();
     RRArbiterLastChoose = (chosen_id + 1) % client_num;
-    
+    DPRINTF(CmdStateHelper, "Arbiter chose client_id=%d \n", chosen_id);
     req_cmdID = qp->cmdID;
     if (chosen_id == static_cast<uint8_t>(QryTabClient::READER)) {
+        DPRINTF(CmdStateHelper, "Check if event is finish\n");
         schedule(checkFinishEvent, clockEdge(Cycles(1)));
     }
     else {
@@ -126,6 +126,7 @@ CmdStateHelper::processArbiterEvent() {
 void
 CmdStateHelper::processInitEvent() {
     panic_if(cmd_state_table[req_cmdID].valid, "The cmdID is inited!");
+    DPRINTF(CmdStateHelper, "Initiate Cmd state table\n");
     cmd_state_table[req_cmdID].valid = true;
     cmd_state_table[req_cmdID].finish = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
@@ -133,6 +134,7 @@ CmdStateHelper::processInitEvent() {
 void
 CmdStateHelper::processSetFinishEvent() {
     panic_if(cmd_state_table[req_cmdID].valid == false,"The cmdID is not inited!");
+    DPRINTF(CmdStateHelper, "Set cmd state table[%d] finish\n", req_cmdID);
     cmd_state_table[req_cmdID].valid = true;
     cmd_state_table[req_cmdID].finish = true;
 
@@ -151,14 +153,20 @@ CmdStateHelper::processCheckFinishEvent() {
     instPort.sendPacket(pendingReqPkt);
 
     // cmd finiished
-    if (cmd_state_table[req_cmdID].finish)
+    if (cmd_state_table[req_cmdID].finish) {
+        DPRINTF(CmdStateHelper, "Check cmd state table[%d] finished\n", req_cmdID);
         schedule(setInvalidEvent, clockEdge(Cycles(1)));
+    }
     // not yet finish
-    else schedule(arbiterEvent, clockEdge(Cycles(1)));
+    else {
+        DPRINTF(CmdStateHelper, "Check cmd state table[%d] not yet finished\n", req_cmdID);
+        schedule(arbiterEvent, clockEdge(Cycles(1)));
+    }
 }
 void
 CmdStateHelper::processSetInvalidEvent() {
     panic_if(cmd_state_table[req_cmdID].valid == false,"The cmdID is not inited!");
+    DPRINTF(CmdStateHelper, "Set cmd state table[%d] Invalid\n", req_cmdID);
     cmd_state_table[req_cmdID].valid = false;
     schedule(arbiterEvent, clockEdge(Cycles(1)));
     // panic_if(table_read_out_wire.valid == true,"The cmdID is inited!")

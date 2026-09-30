@@ -1,4 +1,3 @@
-#include "learning_gem5/PIC/pic_protocol.hh"
 #include "learning_gem5/PIC/Control/scheduler.hh"
 #include "mem/request.hh"
 #include <algorithm>
@@ -6,27 +5,36 @@
 #include "debug/Scheduler.hh"
 #include "mem/packet_access.hh"
 
-#define MmioBase 0x10028000ULL
 namespace gem5
 {
 Scheduler::Scheduler(const SchedulerParams &params) :
     ClockedObject(params),
-    mmioRange(params.addr_range),
     instPort(params.name + ".inst_port", this),
-    cacheControllerPort(params.name + ".cc_port", this),
-    p2sLPort(params.name + ".p2sl_port", this),
-    p2sRPort(params.name + ".p2sr_port", this),
-    p2sRTPort(params.name + ".p2srt_port", this),
-    cacheBankPort(params.name + ".cb_port", this),
-    accPort(params.name + ".acc_port", this),
-    switchControllerPort(params.name + ".sc_port", this),
-    cmdStateHelperPort(params.name + ".csh_port", this),
-    taskScheduler(this),
+    cacheControllerPort(params.name + ".cc_port", this, PICPortID::CC),
+    loadPort(params.name + "ld_port", this, PICPortID::LD),
+    storePort(params.name + "st_port", this, PICPortID::ST),
+    p2sLPort(params.name + ".p2sl_port", this, PICPortID::P2SL),
+    p2sRPort(params.name + ".p2sr_port", this, PICPortID::P2SR),
+    p2sRTPort(params.name + ".p2srt_port", this, PICPortID::P2SRT),
+    cacheBankPort(params.name + ".cb_port", this, PICPortID::CB),
+    accPort(params.name + ".acc_port", this, PICPortID::ACC),
+    switchControllerPort(params.name + ".sc_port", this, PICPortID::SC),
+    cmdStateHelperPort(params.name + ".csh_port", this, PICPortID::CSH),
     requestorId(params.system->getRequestorId(this, "Scheduler")),
+    currState(TaskState::IDLE),
     decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent"),
     prepareTaskEvent([this]{this->processPrepareTaskEvent();}, "prepareTaskEvent"),
     enqueEvent([this]{this->processEnqueEvent();}, "enqueEvent"),
-    setCmdEvent([this]{this->processSetCmdEvent();}, "setCmdEvent")
+    setCmdEvent([this]{this->processSetCmdEvent();}, "setCmdEvent"),
+    triggerEvent([this]{this->processTriggerEvent();}, "triggerEvent"),
+    loadEvent([this]{this->processLoadEvent();}, "LoadEvent"),
+    storeEvent([this]{this->processStoreEvent();}, "StoreEvent"),
+    p2sLEvent([this]{this->processP2SLEvent();}, "p2sLEvent"),
+    p2sREvent([this]{this->processP2SREvent();}, "p2sREvent"),
+    p2sRTEvent([this]{this->processP2SRTEvent();}, "p2sRTEvent"),
+    calEvent([this]{this->processCalEvent();}, "calEvent"),
+    accEvent([this]{this->processAccEvent();}, "accEvent"),
+    switchEvent([this]{this->processSwitchEvent();}, "switchEvent")
 {}
 
 Port&
@@ -34,6 +42,12 @@ Scheduler::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "inst_port") {
         return instPort;
+    }
+    else if (if_name == "ld_port") {
+        return loadPort;
+    }
+    else if (if_name == "st_port") {
+        return storePort;
     }
     else if (if_name == "cc_port") {
         return cacheControllerPort;
@@ -77,7 +91,7 @@ void
 Scheduler::CPUSidePort::sendPacket(PacketPtr pkt)
 {
     // send p2s done to scheduler
-    assert(blockedResponse == nullptr);
+    assert(blockedPacket == nullptr);
 
     if (sendTimingResp(pkt)) {
         blockedPacket = nullptr;
@@ -99,20 +113,20 @@ Scheduler::CPUSidePort::recvRespRetry()
 Scheduler::MemSidePort::MemSidePort(
     const std::string& name,
     Scheduler *owner,
-    PICPortID port_id) : 
+    PICPortID picPortID) : 
     RequestPort(name),
     owner(owner),
-    portID(picPortID),
+    picPortID(picPortID),
     blockedPacket(nullptr)
 {}
 bool
 Scheduler::MemSidePort::recvTimingResp(PacketPtr pkt)
 {
-    return owner->handleResponse(this->portID, pkt);
+    return owner->handleResponse(this->picPortID, pkt);
 }
 
 void
-Schdduler::MemSidePort::sendPacket(PacketPtr pkt)
+Scheduler::MemSidePort::sendPacket(PacketPtr pkt)
 {
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
     if (!sendTimingReq(pkt)) {
@@ -124,12 +138,11 @@ void
 Scheduler::MemSidePort::recvReqRetry()
 {
     // TODO retry to send req to downstream modules
-    assert(blockedRequest != nullptr);
+    assert(blockedPacket != nullptr);
 
-    PacketPtr pkt = blockedRequest;
-    if (sendTimingReq(pkt)) {
-        blockedRequest = nullptr;
-    }
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+    sendPacket(pkt);
 }
 
 bool
@@ -150,7 +163,7 @@ Scheduler::handleRequest(PacketPtr pkt)
     //     !instPort.responseBlocked() && !decodeEvent.scheduled()) { 
     //     schedule(decodeEvent, clockEdge(Cycles(1)));
     // }
-    if (!instQueue.empty() && taskScheduler.idle() &&
+    if (!instQueue.empty() && currState == TaskState::IDLE &&
         !decodeEvent.scheduled()) { 
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
@@ -158,53 +171,53 @@ Scheduler::handleRequest(PacketPtr pkt)
 }
 
 bool
-Scheduler::handleResponse(PICPortID portID, PacketPtr pkt)
+Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
 {
     DPRINTF(Scheduler, "Got downstream response for addr %#llx\n",
             static_cast<unsigned long long>(pkt->getAddr()));
 
-    switch (portID) {
+    switch (picPortID) {
         case PICPortID::CC:
             panic_if(!pkt->isResponse(),"Scheduler expected CC completion response");
-            DPRINTFS(Scheduler, this, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SL:
             isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SL completion response");
-            DPRINTFS(Scheduler, this, "P2SL COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "P2SL COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SR:
             isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SR completion response");
-            DPRINTFS(Scheduler, this, "P2SR COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "P2SR COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SRT:
             isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SRT completion response");
-            DPRINTFS(Scheduler, this, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::CB:
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
-            DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::ACC:
             isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
-            DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::SC:
             // TODO: fill the resp from switchController to the registers
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
-            DPRINTFS(Scheduler, this, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::CSH:
             isQueryCmd = true;
             // TODO: depends on what kind of query it is
             panic_if(!pkt->isResponse(),"Scheduler expected CSH completion response");
-            DPRINTFS(Scheduler, this, "CSH COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(portID));
+            DPRINTF(Scheduler, "CSH COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         default:
-            DPRINTF(Scheduler, this, "receive response but not from any known port.\n");
+            DPRINTF(Scheduler, "receive response but not from any known port.\n");
     }
     // only enq cmd has something to do with currState and resp
     if (isEnqCmd) {
@@ -219,7 +232,7 @@ void
 Scheduler::processDecodeEvent()
 {
     // check at the entrance
-    if (taskScheduler.currState != IDLE) return;    // || instQueue.empty() ??
+    if (currState != TaskState::IDLE) return;    // || instQueue.empty() ??
 
     PacketPtr pkt = instQueue.front();
     instQueue.pop_front();
@@ -239,8 +252,8 @@ Scheduler::processDecodeEvent()
         pkt->setLE<uint64_t>(pic::RetryResponse);
         instPort.sendPacket(pkt);
 
-        instPort.trySendRequestRetry();
-        scheduleDecodeIfNeeded();
+        // instPort.trySendRequestRetry();
+        // scheduleDecodeIfNeeded();
         return;
     }
 
@@ -270,7 +283,7 @@ Scheduler::processDecodeEvent()
             row = static_cast<uint16_t>(dataPayload & 0x7FF);                      // 11 bit LSB
             byte_per_row = static_cast<uint16_t>((dataPayload >> 11) & 0x7FF);     // 11 bit
             offset = static_cast<uint16_t>((dataPayload >> 22)& 0x3FFF);            // 15 bit
-            DPRINTF(AccMmioBridge, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
+            DPRINTF(Scheduler, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
             delete pkt;
             break;
         }
@@ -279,33 +292,19 @@ Scheduler::processDecodeEvent()
         case static_cast<uint64_t>(pic::SetRegister::Param): {
             paramPkt = pkt;
             schedule(prepareTaskEvent, clockEdge(Cycles(1)));
-            // taskScheduler->prepareTask(pkt, src, dst, row, byte_per_row, offset);
             break;
         }
         default:
-            DPRINTF(AccMmioBridge, "Not identified instuction");
+            DPRINTF(Scheduler, "Not identified instuction");
 
     }
 
     // waiting for instructions, self looping at each cycle
-    if (taskScheduler.currState == IDLE && !instQueue.empty()) {
-        schedule(decodeEvent, clockEdge(Cycles(1)))    // temporarily set to 1
+    if (currState == TaskState::IDLE && !instQueue.empty()) {
+        schedule(decodeEvent, clockEdge(Cycles(1)));    // temporarily set to 1
     }
 
 }
-
-Scheduler::TaskScheduler::TaskScheduler(Scheduler *owner)
-    : owner(owner),
-    currState(TaskState::IDLE),
-    loadEvent([this]{this->processLoadEvent();}, "LoadEvent"),
-    storeEvent([this]{this->processStoreEvent();}, "StoreEvent"),
-    p2sLEvent([this]{this->processP2SLEvent();}, "p2sLEvent"),
-    p2sREvent([this]{this->processP2SREvent();}, "p2sREvent"),
-    p2sRTEvent([this]{this->processP2SRTEvent();}, "p2sRTEvent"),
-    calEvent([this]{this->processCalEvent();}, "calEvent"),
-    accEvent([this]{this->processAccEvent();}, "accEvent"),
-    switchEvent([this]{this->processSwitchEvent();}, "switchEvent")
-{}
 
 // prepare task and enqueue the task
 // :=set_d_resp
@@ -315,9 +314,8 @@ Scheduler::processPrepareTaskEvent()
     uint64_t dataPayload = paramPkt->getLE<uint64_t>();
     delete paramPkt;                                               // maybe like this?
 
-
     // Task nextEnqTask;
-    ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
+    pic::ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
     uint8_t cmdID = static_cast<uint8_t>(dataPayload & 0xFF);                            // cmdID is bit 0 ~ bit 7
 
 
@@ -364,6 +362,7 @@ Scheduler::processPrepareTaskEvent()
             // nextEnqTask.clientID = 
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
+            break;
         }
         case pic::ModuleID::P2S_L: {
             // decode the params from SET_PARAM
@@ -520,7 +519,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::SWITCH;
             nextEnqTask.pkt = pkt;
 
-            taskScheduler->nextImmTask.push_back(nextEnqTask);
+            nextImmTask.push_back(nextEnqTask);
             DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
             break;
         }
@@ -551,16 +550,15 @@ Scheduler::processPrepareTaskEvent()
         }
     }
     // for most case, proceed to enqueue state
-    if (nextEnqTask != NULL && !scheduled(enqueEvent)) {
+    // TODO find a way to checkt whether nextEnqTask is valid
+    if (nextEnqTask.pkt != nullptr && !enqueEvent.scheduled()) {
         schedule(enqueEvent, clockEdge(Cycles(1)));
     }
 }
 void
 Scheduler::processEnqueEvent() {
-    taskScheduler->nextTask.push_back(nextEnqTask);
-    if () {
-        schedule(setCmdEvent, clockEdge(Cycles(1)));
-    }
+    nextTask.push_back(nextEnqTask);
+    schedule(setCmdEvent, clockEdge(Cycles(1)));
 }
 void
 Scheduler::processSetCmdEvent(){
@@ -578,11 +576,15 @@ Scheduler::processSetCmdEvent(){
     QueryPayload queryPayload{nextEnqTask.clientID, nextEnqTask.cmdID, false};    // to init the cmd_state
     pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
     cmdStateHelperPort.sendPacket(pkt);
+
+    if (currState == TaskState::IDLE && !triggerEvent.scheduled()) {
+        schedule(triggerEvent, clockEdge(Cycles(1)));
+    }
 }
 
 // dequeue from the queue and execute
 void
-Scheduler::TaskScheduler::triggerTS()
+Scheduler::processTriggerEvent()
 {
     // TODO
     // schedule the task requests
@@ -591,15 +593,14 @@ Scheduler::TaskScheduler::triggerTS()
     // check if there's task in the queue, if yes then check hardware condition(IDLE/BUSY)
 
     // need to wait
-    if (currState != IDLE) {
+    if (currState != TaskState::IDLE) {
         return;
     }
     // IDLE right now
     else {
         // check if there's immtask
         if (!nextImmTask.empty()) {
-            currState = SWITCHING;
-            // Task t = nextTask.front();
+            currState = TaskState::SWITCHING;
             schedule(switchEvent, clockEdge(Cycles(1)));
         }
 
@@ -607,42 +608,72 @@ Scheduler::TaskScheduler::triggerTS()
             if (!nextTask.empty()) {
                 Task t = nextTask.front();
                 switch(t.moduleID) {
-                    case LOAD:
-                        currState = LOADING;
+                    case pic::ModuleID::LOAD:
+                        currState = TaskState::LOADING;
                         schedule(loadEvent, clockEdge(Cycles(1)));
-                    case STORE:
-                        currState = STORING;
+                        break;
+                    case pic::ModuleID::STORE:
+                        currState = TaskState::STORING;
                         schedule(storeEvent, clockEdge(Cycles(1)));
-                    case P2S_L:
-                        currState = P2SING;
+                        break;
+                    case pic::ModuleID::P2S_L:
+                        currState = TaskState::P2SING;
                         schedule(p2sLEvent, clockEdge(Cycles(1)));
-                    case P2S_R:
-                        currState = P2SING;
+                        break;
+                    case pic::ModuleID::P2S_R:
+                        currState = TaskState::P2SING;
                         schedule(p2sREvent, clockEdge(Cycles(1)));
-                    case P2S_R_T:
-                        currState = P2SING;
+                        break;
+                    case pic::ModuleID::P2S_R_T:
+                        currState = TaskState::P2SING;
                         schedule(p2sRTEvent, clockEdge(Cycles(1)));
-                    case CAL:
-                        currState = CALING;
+                        break;
+                    case pic::ModuleID::CAL:
+                        currState = TaskState::CALING;
                         schedule(calEvent, clockEdge(Cycles(1)));
-                    case ACC:
-                        currState = ACCING;
+                        break;
+                    case pic::ModuleID::ACC:
+                        currState = TaskState::ACCING;
                         schedule(accEvent, clockEdge(Cycles(1)));
-                    case SWITCH:
-                        currState = SWITCHING;
-                        schedule(switchEvent, clockEdge(Cycles(1)));
+                        break;
                 }
             }
 
         }
     }
 }
-
 void
-Scheduler::TaskScheduler::processP2SLEvent() {
+Scheduler::processLoadEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->p2sLPort.sendTimingReq(nextTask.front());
+    bool success = loadPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
+        DPRINTF(Scheduler, "Send load request to load ctrl\n");
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+        DPRINTF(Scheduler, "Load Ctrl busy, stalling load request.\n");
+    }
+}
+void
+Scheduler::processStoreEvent() {
+    // send the nextTask packet to DPM
+    bool success = storePort.sendTimingReq(nextTask.front().pkt);
+    if (success) {
+        DPRINTF(Scheduler, "Send store request to store ctrl\n");
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+        DPRINTF(Scheduler, "Store Ctrl busy, stalling store request.\n");
+    }
+}
+void
+Scheduler::processP2SLEvent() {
+    // send the nextTask packet to DPM
+    bool success = p2sLPort.sendTimingReq(nextTask.front().pkt);
+    if (success) {
+        DPRINTF(Scheduler, "Send p2sL request to p2sL\n");
         nextTask.pop_front();
     }
     else {
@@ -651,10 +682,11 @@ Scheduler::TaskScheduler::processP2SLEvent() {
     }
 }
 void
-Scheduler::TaskScheduler::processP2SREvent() {
+Scheduler::processP2SREvent() {
     // send the nextTask packet to DPM
-    bool success = owner->p2sRPort.sendTimingReq(nextTask.front());
+    bool success = p2sRPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
+        DPRINTF(Scheduler, "Send p2sR request to p2sR\n");
         nextTask.pop_front();
     }
     else {
@@ -663,10 +695,11 @@ Scheduler::TaskScheduler::processP2SREvent() {
     }
 }
 void
-Scheduler::TaskScheduler::processP2SRTEvent() {
+Scheduler::processP2SRTEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->p2sRTPort.sendTimingReq(nextTask.front());
+    bool success = p2sRTPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
+        DPRINTF(Scheduler, "Send p2sRT request to p2sRT\n");
         nextTask.pop_front();
     }
     else {
@@ -675,37 +708,51 @@ Scheduler::TaskScheduler::processP2SRTEvent() {
     }
 }
 void
-Scheduler::TaskScheduler::processCalEvent() {
+Scheduler::processCalEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->cacheBankPort.sendTimingReq(nextTask.front());
+    bool success = cacheBankPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
+        DPRINTF(Scheduler, "Send cal request to cache bank\n");
         nextTask.pop_front();
     }
     else {
         // need to store and retry
-        DPRINTF(Scheduler, "CacheBank busy, stalling p2s request.\n");
+        DPRINTF(Scheduler, "CacheBank busy, stalling cal request.\n");
     }
 }
 void
-Scheduler::TaskScheduler::processAccEvent() {
+Scheduler::processAccEvent() {
     // send the nextTask packet to DPM
-    bool success = owner->accPort.sendTimingReq(nextTask.front());
+    bool success = accPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
+        DPRINTF(Scheduler, "Send Acc request to accumulator\n");
         nextTask.pop_front();
     }
     else {
         // need to store and retry
-        DPRINTF(Scheduler, "Acc busy, stalling p2s request.\n");
+        DPRINTF(Scheduler, "Accumulator busy, stalling acc request.\n");
     }
 }
-
 void
-Scheduler::startup()
-{
-    // Publish the MMIO range
-    // Decoding itself starts when handleRequest() accepts the first packet.
-    sendRangeChange();
-    schedule(decodeEvent, clockEdge(Cycles(1)));
+Scheduler::processSwitchEvent() {
+    // send the nextTask packet to DPM
+    bool success = switchControllerPort.sendTimingReq(nextTask.front().pkt);
+    if (success) {
+        DPRINTF(Scheduler, "Send Switch request to switchCtrl\n");
+        nextImmTask.pop_front();
+    }
+    else {
+        // need to store and retry
+        DPRINTF(Scheduler, "switch busy, stalling switch request.\n");
+    }
 }
+// void
+// Scheduler::startup()
+// {
+//     // Publish the MMIO range
+//     // Decoding itself starts when handleRequest() accepts the first packet.
+//     sendRangeChange();
+//     schedule(decodeEvent, clockEdge(Cycles(1)));
+// }
 
 } // namespace gem5

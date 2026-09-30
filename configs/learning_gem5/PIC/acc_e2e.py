@@ -55,8 +55,11 @@ system.test_frontend = PicTestFrontend(
 #
 # No Scheduler source is modified.
 #
-system.acc_mmio_bridge = AccMmioBridge(
-    system=system,
+# system.acc_mmio_bridge = AccMmioBridge(
+#     system=system,
+# )
+system.scheduler = Scheduler(
+    system=system
 )
 
 system.cmd_state_helper = CmdStateHelper(
@@ -83,9 +86,9 @@ system.acc_bank = AccMockBank(
 
 
 # Test-only ACC E2E wiring
-system.pic_transport.mmio_port = system.acc_mmio_bridge.mmio_port
-system.acc_mmio_bridge.acc_port = system.acc.inst_port
-system.acc_mmio_bridge.csh_port = system.cmd_state_helper.inst_port
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.acc_port = system.acc.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
 system.acc.bank_port = system.acc_bank.port
 
 m5.instantiate()

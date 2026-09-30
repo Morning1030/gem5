@@ -131,6 +131,17 @@ class AccMmioBridge : public ClockedObject
         void recvRangeChange() override {}
     };
 
+    enum TaskState
+        {
+          IDLE,
+          LOADING,
+          STORING,
+          P2SING,
+          CALING,
+          ACCING,
+          SWITCHING
+    };
+
     CPUSidePort mmioPort;
     MemSidePort accPort;
     MemSidePort cmdStateHelperPort;
@@ -155,15 +166,19 @@ class AccMmioBridge : public ClockedObject
 
     PacketPtr pendingMmioResponsePkt = nullptr;
 
+    std::deque<PacketPtr> instQueue;
+    size_t maxInstQueueSize = 1000;
+    std::deque<Task> nextTask;
+    std::deque<Task> nextImmTask;
+    TaskState currState;
+
     EventFunctionWrapper mmioResponseEvent;
     EventFunctionWrapper decodeEvent;
     EventFunctionWrapper prepareTaskEvent;
     EventFunctionWrapper enqueEvent;
     EventFunctionWrapper setCmdEvent;
-    
-    std::deque<PacketPtr> instQueue;
-    size_t maxInstQueueSize = 1000;
-    std::deque<Task> nextTask;
+    EventFunctionWrapper triggerEvent;
+    EventFunctionWrapper accEvent;
 
     bool handleRequest(PacketPtr pkt);
     bool handleAccResponse(PacketPtr pkt);
@@ -179,6 +194,10 @@ class AccMmioBridge : public ClockedObject
     void processPrepareTaskEvent();
     void processEnqueEvent();
     void processSetCmdEvent();
+    void processTriggerEvent();
+    void processAccEvent();
+
+    void triggerTS();
 
   public:
     AccMmioBridge(const AccMmioBridgeParams &params);

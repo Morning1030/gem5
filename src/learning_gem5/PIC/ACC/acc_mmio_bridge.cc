@@ -21,11 +21,14 @@ AccMmioBridge::AccMmioBridge(const AccMmioBridgeParams &params):
     accPort(params.name + ".acc_port", this),
     cmdStateHelperPort(params.name + ".csh_port", this),
     requestorId(params.system->getRequestorId(this, "AccMmioBridge")),
+    currState(IDLE),
     mmioResponseEvent([this] {this->processMmioResponse();},".mmio_response_event"),
     decodeEvent([this]{this->processDecodeEvent();}, "decodeEvent"),
     prepareTaskEvent([this]{this->processPrepareTaskEvent();}, "prepareTaskEvent"),
     enqueEvent([this]{this->processEnqueEvent();}, "enqueEvent"),
-    setCmdEvent([this]{this->processSetCmdEvent();}, "setCmdEvent")
+    setCmdEvent([this]{this->processSetCmdEvent();}, "setCmdEvent"),
+    triggerEvent([this]{this->processTriggerEvent();}, "triggerEvent"),
+    accEvent([this]{this->processAccEvent();}, "accEvent")
     {
         panic_if(
             params.system == nullptr,
@@ -352,7 +355,7 @@ void
 AccMmioBridge::processPrepareTaskEvent()
 {
     uint64_t dataPayload = paramPkt->getLE<uint64_t>();
-    DPRINTF(AccMmioBridge, "dataPayload from SET_PARAM: %llx", dataPayload);
+    DPRINTF(AccMmioBridge, "dataPayload from SET_PARAM: %llx\n", dataPayload);
     delete paramPkt;                                               // maybe like this?
 
 
@@ -623,10 +626,77 @@ AccMmioBridge::processSetCmdEvent(){
     QueryPayload queryPayload{nextEnqTask.clientID, nextEnqTask.cmdID, false};    // to init the cmd_state
     pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
     cmdStateHelperPort.sendPacket(pkt);
-    DPRINTF(AccMmioBridge, "Successfully send cmd state query to cmdStateHelper");
+    DPRINTF(AccMmioBridge, "Successfully send cmd state query to cmdStateHelper\n");
+    if (currState == IDLE && !triggerEvent.scheduled()) schedule(triggerEvent, clockEdge(Cycles(1)));
+}
+void
+AccMmioBridge::processTriggerEvent()
+{
+    // TODO
+    // schedule the task requests
+    // for every cycle/trigger
+    // check if there's immTask if yes then check hardware condition(IDLE/BUSY)
+    // check if there's task in the queue, if yes then check hardware condition(IDLE/BUSY)
+
+    // need to wait
+    if (currState != IDLE) {
+        return;
+    }
+    // IDLE right now
+    else {
+        // check if there's immtask
+        if (!nextImmTask.empty()) {
+            currState = SWITCHING;
+            // schedule(switchEvent, clockEdge(Cycles(1)));
+        }
+
+        else {
+            if (!nextTask.empty()) {
+                Task t = nextTask.front();
+                switch(t.moduleID) {
+                    // case LOAD:
+                    //     currState = LOADING;
+                    //     schedule(loadEvent, clockEdge(Cycles(1)));
+                    // case STORE:
+                    //     currState = STORING;
+                    //     schedule(storeEvent, clockEdge(Cycles(1)));
+                    // case P2S_L:
+                    //     currState = P2SING;
+                    //     schedule(p2sLEvent, clockEdge(Cycles(1)));
+                    // case P2S_R:
+                    //     currState = P2SING;
+                    //     schedule(p2sREvent, clockEdge(Cycles(1)));
+                    // case P2S_R_T:
+                    //     currState = P2SING;
+                    //     schedule(p2sRTEvent, clockEdge(Cycles(1)));
+                    // case CAL:
+                    //     currState = CALING;
+                    //     schedule(calEvent, clockEdge(Cycles(1)));
+                    case pic::ModuleID::ACC:
+                        currState = ACCING;
+                        schedule(accEvent, clockEdge(Cycles(1)));
+                }
+            }
+
+        }
+    }
+}
+void
+AccMmioBridge::processAccEvent() {
+    // send the nextTask packet to DPM
+    bool success = accPort.sendTimingReq(nextTask.front().pkt);
+    if (success) {
+        DPRINTF(AccMmioBridge, "Send Acc request to accumulator\n");
+        nextTask.pop_front();
+    }
+    else {
+        // need to store and retry
+        DPRINTF(AccMmioBridge, "Accumulator busy, stalling acc request.\n");
+    }
 }
 
 
+/*
 void
 AccMmioBridge::launchAcc(
     PacketPtr mmioPkt,
@@ -719,7 +789,7 @@ AccMmioBridge::launchAcc(
 
     accRequestAccepted();
 }
-
+*/
 
 void
 AccMmioBridge::accRequestAccepted()
