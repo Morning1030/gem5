@@ -16,11 +16,9 @@ Scheduler::SwitchController::SwitchController(Scheduler *owner)
 : owner(owner),
     setID(0),
     wayID(0),
-    wayStateValid(0),
-    flushAddr(0),
     currSwitchType(SwitchType::PIC2Cache),
-    switchEvent([this] { processSwitchEvent(); }, "switchEvent"),
-    queryEvent([this] { processQueryEvent(); }, "queryEvent"),
+    FlushController(owner),
+    drainQueryEvent([this] { processDrainQueryEvent(); }, "switchEvent"),,
     requestFlushEvent([this] { processRequestFlushEvent(); }, "flushEvent"),
     switch2PICEvent([this] { processSwitch2PICEvent(); }, "switch2PICEvent"),
     switch2CacheEvent([this] { processSwitch2CacheEvent(); }, "switch2CacheEvent")
@@ -28,7 +26,7 @@ Scheduler::SwitchController::SwitchController(Scheduler *owner)
 }
 
 void
-SwitchController::processSwitchEvent(bool allocate, uint32_t way, uint32_t sets)
+Scheduler::SwitchController::processSwitchEvent(bool allocate, uint32_t way, uint32_t sets)
 {
     assert(isIdle() && "Cannot start switch while another is in progress");
 
@@ -58,7 +56,7 @@ SwitchController::processSwitchEvent(bool allocate, uint32_t way, uint32_t sets)
 }
 
 void
-SwitchController::processDrainQueryEvent()
+Scheduler::SwitchController::processDrainQueryEvent()
 {
     const size_t pktSize = std::max(sizeof(DrainQueryPayload),
                                     sizeof(DrainQueryRespPayload));
@@ -84,7 +82,7 @@ SwitchController::processDrainQueryEvent()
 }
 
 void
-SwitchController::processQueryEvent()
+Scheduler::SwitchController::processQueryEvent()
 {
     const size_t pktSize = std::max(sizeof(CacheWayQueryPayload),
                                     sizeof(CacheWayQueryRespPayload));
@@ -156,7 +154,7 @@ Scheduler::SwitchController::handleResponse(PacketPtr pkt)
         }
 
         // ---- Advance to next set (RTL: check_finish) ----
-        processNextSetOrWay();
+        processNext();
         return true;
     }
  
@@ -181,7 +179,7 @@ Scheduler::SwitchController::handleResponse(PacketPtr pkt)
 
 
 void
-SwitchController::processNextSetOrWay()
+Scheduler::SwitchController::processNext()
 {
     setID++;
 
@@ -211,7 +209,7 @@ SwitchController::processNextSetOrWay()
 }
 
 void
-SwitchController::processSwitch2PICEvent()
+Scheduler::SwitchController::processSwitch2PICEvent()
 {
     DPRINTF(SwitchCtrl, "Switch2PIC: wayID=%u → PIC mode ON\n", wayID);
 
@@ -223,7 +221,7 @@ SwitchController::processSwitch2PICEvent()
 }
 
 void
-SwitchController::processSwitch2CacheEvent()
+Scheduler::SwitchController::processSwitch2CacheEvent()
 {
     DPRINTF(SwitchCtrl, "Switch2Cache: wayID=%u → PIC mode OFF\n", wayID);
 

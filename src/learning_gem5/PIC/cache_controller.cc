@@ -143,7 +143,7 @@ CacheController::handleQueryWayState(PacketPtr pkt)
     const bool valid = tags->getSetWayValid(setID, wayID);
     const Addr tag = tags->getSetWayTag(setID, wayID);
 
-    CacheWayQueryRespPayload *respPayload = new CacheWayQueryRespPayload{tag, valid ? 1u : 0u};
+    CacheWayQueryRespPayload respPayload{tag, valid ? 1u : 0u};
     pkt->makeResponse();
     pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
 
@@ -193,14 +193,6 @@ CacheController::handleFlushReq(PacketPtr pkt)
         }
 
         invalidateBlock(blk);
-    }
-
-    if (target) {
-        if (target->isSet(CacheBlk::DirtyBit)) {
-            PacketPtr wb_pkt = writebackBlk(target);
-            allocateWriteBuffer(wb_pkt, curTick());
-        }
-        invalidateBlock(target);
     }
 
     if (pkt->needsResponse()) {
