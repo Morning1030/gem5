@@ -155,9 +155,9 @@ constexpr uint64_t
 packAccParams(uint8_t sourceCount, uint16_t rowCount,
               uint8_t bitWidthCode)
 {
-    return (static_cast<uint64_t>(bitWidthCode & mask(3)) << 15) |
-           (static_cast<uint64_t>(rowCount & mask(11)) << 4) |
-           (sourceCount & mask(4));
+    return (static_cast<uint64_t>(sourceCount & mask(3)) << 14) |
+           (static_cast<uint64_t>(rowCount & mask(11)) << 3) |
+           (bitWidthCode & mask(3));
 }
 
 struct ExeParams

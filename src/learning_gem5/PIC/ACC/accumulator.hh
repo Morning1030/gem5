@@ -14,19 +14,6 @@
 namespace gem5
 {
 
-struct AccRequestPayload
-{
-    uint64_t baseSrcPicAddr;
-    uint64_t destPicAddr;
-    uint32_t rowNum;
-    uint8_t sourceCount;
-    uint8_t acc32Bit;
-    uint8_t reserved[2];
-};
-
-static_assert(sizeof(AccRequestPayload) == 24,
-              "AccRequestPayload layout changed unexpectedly");
-
 class Accumulator : public ClockedObject
 {
   private:
@@ -37,49 +24,44 @@ class Accumulator : public ClockedObject
         WRITE_BACK
     };
 
-    enum class BankReqKind
-    {
-        NONE,
-        READ,
-        WRITE
-    };
-
-    class ControlPort : public ResponsePort
+    class CPUSidePort : public ResponsePort
     {
       private:
         Accumulator *owner;
-        PacketPtr blockedResponse = nullptr;
 
       public:
-        ControlPort(const std::string &name, Accumulator *owner);
+        CPUSidePort(const std::string &name, Accumulator *owner);
+        PacketPtr blockedPacket;
+        void sendPacket(PacketPtr pkt);
 
-        bool responseBlocked() const { return blockedResponse != nullptr; }
-        void sendResponse(PacketPtr pkt);
+        bool responseBlocked() const { return blockedPacket != nullptr; }
 
       protected:
-        Tick recvAtomic(PacketPtr pkt) override;
-        void recvFunctional(PacketPtr pkt) override;
+        Tick recvAtomic(PacketPtr pkt) override {panic("%s atomic access unsupported", name());}
+        void recvFunctional(PacketPtr pkt) override {panic("%s functional access unsupported", name());}
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
-        AddrRangeList getAddrRanges() const override;
+        AddrRangeList getAddrRanges() const override {return {};}
     };
 
-    class BankPort : public RequestPort
+    class MemSidePort : public RequestPort
     {
       private:
         Accumulator *owner;
 
       public:
-        BankPort(const std::string &name, Accumulator *owner);
+        MemSidePort(const std::string &name, Accumulator *owner);
+        PacketPtr blockedPacket;
+        void sendPacket(PacketPtr pkt);
 
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
-        void recvRangeChange() override;
+        void recvRangeChange() override {}
     };
 
-    ControlPort instPort;
-    BankPort bankPort;
+    CPUSidePort instPort;
+    MemSidePort cacheBankPort;
     RequestorID requestorId;
 
     const uint64_t wordlineNums;
@@ -87,7 +69,7 @@ class Accumulator : public ClockedObject
 
     State state = State::IDLE;
 
-    PacketPtr pendingControlPkt = nullptr;
+    PacketPtr pendingReqPkt = nullptr;
 
     uint64_t baseSrcPicAddr = 0;
     uint64_t destPicAddr = 0;
@@ -96,40 +78,37 @@ class Accumulator : public ClockedObject
     uint8_t sourceCount = 0;
     bool acc32Bit = true;
 
-    uint32_t nextReadSource = 0;
+    uint8_t readSourcePtr = 0;
     uint32_t readResponses = 0;
     uint64_t accumulatorBuf = 0;
 
-    PacketPtr blockedBankPkt = nullptr;
-    BankReqKind blockedBankKind = BankReqKind::NONE;
+    EventFunctionWrapper readEvent;
+    EventFunctionWrapper writeEvent;
 
-    EventFunctionWrapper readIssueEvent;
-    EventFunctionWrapper writeIssueEvent;
+    bool handleRequest(PacketPtr pkt);
+    bool handleResponse(PacketPtr pkt);
 
-    bool handleControlRequest(PacketPtr pkt);
-    bool handleBankResponse(PacketPtr pkt);
-    void retryBlockedBankRequest();
+    void processReadEvent();
+    void processWriteEvent();
 
-    void processReadIssue();
-    void processWriteIssue();
-
-    void sendBankPacket(PacketPtr pkt, BankReqKind kind);
-    void bankRequestAccepted(BankReqKind kind);
-
-    void beginRow();
-    void maybeFinishReads();
-    void finishOperation();
-
-    uint64_t sourceAddress(uint32_t sourceIndex) const;
+    uint64_t sourceAddress(uint32_t readSourcePtr) const {
+        return baseSrcPicAddr + readSourcePtr * wordlineNums * arraysPerMat + rowPtr;
+    }
     uint64_t add32(uint64_t acc, uint64_t data) const;
     uint64_t add16(uint64_t acc, uint64_t data) const;
 
   public:
     Accumulator(const AccumulatorParams &params);
-
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
 };
+
+// uint64_t
+// Accumulator::sourceAddress(uint32_t readSourcePtr) const
+// {
+//     const uint64_t sourceStride = wordlineNums * arraysPerMat;  // 512*4=2048
+//     return baseSrcPicAddr + readSourcePtr * sourceStride + rowPtr;
+// }
 
 } // namespace gem5
 

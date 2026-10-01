@@ -1,6 +1,5 @@
 #include "learning_gem5/PIC/Control/cmd_state_helper.hh"
-// #include "learning_gem5/PIC/Control/scheduler.hh"
-#include "learning_gem5/PIC/ACC/acc_mmio_bridge.hh"
+#include "learning_gem5/PIC/Control/scheduler.hh"
 #include "sim/system.hh"
 
 #include <algorithm>
@@ -79,7 +78,7 @@ CmdStateHelper::CPUSidePort::recvRespRetry()
 }
 bool
 CmdStateHelper::handleRequest(PacketPtr pkt) {
-    const pic::QueryPayload *queryPayload = pkt->getConstPtr<pic::QueryPayload>();
+    const QueryPayload *queryPayload = pkt->getConstPtr<QueryPayload>();
     if (query_req[static_cast<uint8_t>(queryPayload->clientID)].size() >= maxQueryReqSize) {
         return false;
     }
@@ -109,7 +108,7 @@ CmdStateHelper::processArbiterEvent() {
     }
     if (chosen_id == -1) return;
     pendingReqPkt = query_req[chosen_id].front();
-    const pic::QueryPayload *qp = pendingReqPkt->getConstPtr<pic::QueryPayload>();
+    const QueryPayload *qp = pendingReqPkt->getConstPtr<QueryPayload>();
     query_req[chosen_id].pop_front();
     RRArbiterLastChoose = (chosen_id + 1) % client_num;
     DPRINTF(CmdStateHelper, "Arbiter chose client_id=%d \n", chosen_id);
@@ -149,7 +148,7 @@ CmdStateHelper::processCheckFinishEvent() {
     // Resp includes correct information
     pendingReqPkt->makeResponse();
 
-    pendingReqPkt->getPtr<pic::QueryPayload>()->is_finish = cmd_state_table[req_cmdID].finish;
+    pendingReqPkt->getPtr<QueryPayload>()->is_finish = cmd_state_table[req_cmdID].finish;
     instPort.sendPacket(pendingReqPkt);
 
     // cmd finiished

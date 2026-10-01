@@ -1,4 +1,5 @@
 #include "learning_gem5/PIC/ACC/accumulator.hh"
+#include "learning_gem5/PIC/Control/scheduler.hh"
 
 #include <cassert>
 #include <cstdint>
@@ -11,94 +12,15 @@
 
 namespace gem5
 {
-
-Accumulator::ControlPort::ControlPort(
-    const std::string &name, Accumulator *owner)
-    : ResponsePort(name), owner(owner)
-{
-}
-
-Tick
-Accumulator::ControlPort::recvAtomic(PacketPtr pkt)
-{
-    panic("%s atomic access unsupported", name());
-}
-
-void
-Accumulator::ControlPort::recvFunctional(PacketPtr pkt)
-{
-    panic("%s functional access unsupported", name());
-}
-
-bool
-Accumulator::ControlPort::recvTimingReq(PacketPtr pkt)
-{
-    return owner->handleControlRequest(pkt);
-}
-
-void
-Accumulator::ControlPort::recvRespRetry()
-{
-    assert(blockedResponse != nullptr);
-
-    PacketPtr pkt = blockedResponse;
-    if (sendTimingResp(pkt)) {
-        blockedResponse = nullptr;
-    }
-}
-
-AddrRangeList
-Accumulator::ControlPort::getAddrRanges() const
-{
-    return {};
-}
-
-void
-Accumulator::ControlPort::sendResponse(PacketPtr pkt)
-{
-    panic_if(blockedResponse != nullptr,
-             "%s attempted to queue two blocked control responses",
-             name());
-
-    if (!sendTimingResp(pkt)) {
-        blockedResponse = pkt;
-    }
-}
-
-Accumulator::BankPort::BankPort(
-    const std::string &name, Accumulator *owner)
-    : RequestPort(name), owner(owner)
-{
-}
-
-bool
-Accumulator::BankPort::recvTimingResp(PacketPtr pkt)
-{
-    return owner->handleBankResponse(pkt);
-}
-
-void
-Accumulator::BankPort::recvReqRetry()
-{
-    owner->retryBlockedBankRequest();
-}
-
-void
-Accumulator::BankPort::recvRangeChange()
-{
-}
-
 Accumulator::Accumulator(const AccumulatorParams &params)
     : ClockedObject(params),
       instPort(name() + ".inst_port", this),
-      bankPort(name() + ".bank_port", this),
+      cacheBankPort(name() + ".bank_port", this),
       requestorId(params.system->getRequestorId(this, "Accumulator")),
       wordlineNums(params.wordline_nums),
       arraysPerMat(params.arrays_per_mat),
-      readIssueEvent([this] { processReadIssue(); },
-                     name() + ".read_issue_event"),
-      writeIssueEvent([this] { processWriteIssue(); },
-                      name() + ".write_issue_event")
+      readEvent([this] { processReadEvent(); },".read_event"),
+      writeEvent([this] { processWriteEvent(); }, "write_event")
 {
     panic_if(wordlineNums == 0, "%s wordline_nums must be non-zero", name());
     panic_if(arraysPerMat == 0, "%s arrays_per_mat must be non-zero", name());
@@ -111,43 +33,122 @@ Accumulator::getPort(const std::string &if_name, PortID idx)
         return instPort;
     }
     if (if_name == "bank_port") {
-        return bankPort;
+        return cacheBankPort;
     }
 
     return ClockedObject::getPort(if_name, idx);
 }
 
+Accumulator::CPUSidePort::CPUSidePort(
+    const std::string &name, Accumulator *owner)
+    : ResponsePort(name), owner(owner), blockedPacket(nullptr)
+{}
+
 bool
-Accumulator::handleControlRequest(PacketPtr pkt)
+Accumulator::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
-    if (state != State::IDLE || pendingControlPkt != nullptr ||
+    return owner->handleRequest(pkt);
+}
+void
+Accumulator::CPUSidePort::sendPacket(PacketPtr pkt)
+{
+    panic_if(blockedPacket != nullptr,
+             "%s attempted to queue two blocked control responses",
+             name());
+
+    if (sendTimingResp(pkt)) {
+        owner->pendingReqPkt = nullptr;
+        blockedPacket = nullptr;
+    }
+    else blockedPacket = pkt;
+}
+
+void
+Accumulator::CPUSidePort::recvRespRetry()
+{
+    panic_if(blockedPacket == nullptr, "Should never try to send if blocked!");
+
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+    
+}
+
+Accumulator::MemSidePort::MemSidePort(
+    const std::string &name, Accumulator *owner)
+    : RequestPort(name), owner(owner), blockedPacket(nullptr)
+{}
+
+bool
+Accumulator::MemSidePort::recvTimingResp(PacketPtr pkt)
+{
+    return owner->handleResponse(pkt);
+}
+void
+Accumulator::MemSidePort::sendPacket(PacketPtr pkt)
+{
+    panic_if(blockedPacket != nullptr,
+        "%s tried to issue a second blocked bank request",
+        name());
+
+    if (sendTimingReq(pkt)) {
+        blockedPacket = nullptr;
+        if (pkt->isRead()) {
+            owner->schedule(owner->readEvent, owner->clockEdge(Cycles(1)));
+        }
+        else if (pkt->isWrite()) {
+            owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
+        }
+    }
+    else {
+        blockedPacket = pkt;
+    }
+}
+void
+Accumulator::MemSidePort::recvReqRetry()
+{
+    // retry to send resp to scheduler
+    panic_if(blockedPacket == nullptr, "There's no blockedPacket!\n");
+
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
+}
+
+bool
+Accumulator::handleRequest(PacketPtr pkt)
+{
+    if (state != State::IDLE || pendingReqPkt != nullptr ||
         instPort.responseBlocked()) {
         return false;
     }
 
     panic_if(!pkt->isWrite(), "%s ACC control packet must be a WriteReq", name());
-    panic_if(pkt->getSize() != sizeof(AccRequestPayload),
+    panic_if(pkt->getSize() != sizeof(AccPayload),
              "%s ACC control payload size mismatch: got=%u expected=%u",
              name(), pkt->getSize(),
-             static_cast<unsigned>(sizeof(AccRequestPayload)));
+             static_cast<unsigned>(sizeof(AccPayload)));
 
-    const auto *payload = pkt->getConstPtr<AccRequestPayload>();
+    const AccPayload *payload = pkt->getConstPtr<AccPayload>();
 
-    panic_if(payload->rowNum == 0,
-             "%s ACC rowNum must be non-zero (official RTL assumes row_num >= 1)",
+    panic_if(payload->row_num == 0,
+             "%s ACC row_num must be non-zero (official RTL assumes row_num >= 1)",
              name());
 
-    pendingControlPkt = pkt;
+    pendingReqPkt = pkt;
 
-    baseSrcPicAddr = payload->baseSrcPicAddr;
-    destPicAddr = payload->destPicAddr;
-    totalRows = payload->rowNum;
-    sourceCount = payload->sourceCount;
-    acc32Bit = payload->acc32Bit != 0;
+    baseSrcPicAddr = payload->base_src_picAddr;
+    destPicAddr = payload->dest_picAddr;
+    totalRows = payload->row_num;
+    DPRINTF(Accumulator, "ACC START row_num: %u\n", payload->row_num);
+    sourceCount = payload->src_arrayNum;
+    acc32Bit = (payload->bitWidth != 0);
 
     rowPtr = 0;
     accumulatorBuf = 0;
-    nextReadSource = 0;
+    readSourcePtr = 0;
     readResponses = 0;
     state = State::READ;
 
@@ -160,35 +161,27 @@ Accumulator::handleControlRequest(PacketPtr pkt)
             acc32Bit ? "32" : "16");
 
     if (sourceCount == 0) {
-        schedule(writeIssueEvent, clockEdge(Cycles(1)));
+        schedule(writeEvent, clockEdge(Cycles(1)));
         state = State::WRITE_BACK;
-    } else {
-        schedule(readIssueEvent, clockEdge(Cycles(1)));
+    }
+    else {
+        schedule(readEvent, clockEdge(Cycles(1)));
     }
 
     return true;
 }
 
-uint64_t
-Accumulator::sourceAddress(uint32_t sourceIndex) const
-{
-    const uint64_t sourceStride = wordlineNums * arraysPerMat;
-    return baseSrcPicAddr + rowPtr + sourceIndex * sourceStride;
-}
+
 
 void
-Accumulator::processReadIssue()
+Accumulator::processReadEvent()
 {
-    if (state != State::READ || blockedBankPkt != nullptr) {
+    // if last round send packet is blocked then don't continue
+    if (state != State::READ || cacheBankPort.blockedPacket != nullptr) {
         return;
     }
 
-    if (nextReadSource >= sourceCount) {
-        maybeFinishReads();
-        return;
-    }
-
-    const Addr addr = sourceAddress(nextReadSource);
+    const Addr addr = sourceAddress(readSourcePtr);
 
     RequestPtr request = std::make_shared<Request>(
         addr,
@@ -196,22 +189,30 @@ Accumulator::processReadIssue()
         Request::Flags(),
         requestorId);
 
-    PacketPtr pkt = Packet::createRead(request);
+    PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
     DPRINTF(Accumulator,
-            "ACC READ ISSUE row=%u source=%u addr=%#llx\n",
+            "ACC READ REQ row=%u source=%u addr=%#llx\n",
             rowPtr,
-            nextReadSource,
+            readSourcePtr,
             static_cast<unsigned long long>(addr));
 
-    sendBankPacket(pkt, BankReqKind::READ);
+    cacheBankPort.sendPacket(pkt);
+
+    readSourcePtr++;
+
+    if (readSourcePtr < sourceCount) {
+        if (!readEvent.scheduled()) {
+            schedule(readEvent, clockEdge(Cycles(1)));
+        }
+    }
 }
 
 void
-Accumulator::processWriteIssue()
+Accumulator::processWriteEvent()
 {
-    if (state != State::WRITE_BACK || blockedBankPkt != nullptr) {
+    if (state != State::WRITE_BACK || cacheBankPort.blockedPacket != nullptr) {
         return;
     }
 
@@ -223,7 +224,7 @@ Accumulator::processWriteIssue()
         Request::Flags(),
         requestorId);
 
-    PacketPtr pkt = Packet::createWrite(request);
+    PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
     pkt->allocate();
     pkt->setLE<uint64_t>(accumulatorBuf);
 
@@ -233,76 +234,39 @@ Accumulator::processWriteIssue()
             static_cast<unsigned long long>(addr),
             static_cast<unsigned long long>(accumulatorBuf));
 
-    sendBankPacket(pkt, BankReqKind::WRITE);
-}
-
-void
-Accumulator::sendBankPacket(PacketPtr pkt, BankReqKind kind)
-{
-    panic_if(blockedBankPkt != nullptr,
-             "%s tried to issue a second blocked bank request",
-             name());
-
-    if (!bankPort.sendTimingReq(pkt)) {
-        blockedBankPkt = pkt;
-        blockedBankKind = kind;
-        return;
-    }
-
-    bankRequestAccepted(kind);
-}
-
-void
-Accumulator::retryBlockedBankRequest()
-{
-    panic_if(blockedBankPkt == nullptr,
-             "%s received bank retry without a blocked request",
-             name());
-
-    PacketPtr pkt = blockedBankPkt;
-    const BankReqKind kind = blockedBankKind;
-
-    if (!bankPort.sendTimingReq(pkt)) {
-        return;
-    }
-
-    blockedBankPkt = nullptr;
-    blockedBankKind = BankReqKind::NONE;
-    bankRequestAccepted(kind);
-}
-
-void
-Accumulator::bankRequestAccepted(BankReqKind kind)
-{
-    if (kind == BankReqKind::READ) {
-        ++nextReadSource;
-
-        if (nextReadSource < sourceCount) {
-            if (!readIssueEvent.scheduled()) {
-                schedule(readIssueEvent, clockEdge(Cycles(1)));
-            }
-        } else {
-            maybeFinishReads();
-        }
-        return;
-    }
-
-    panic_if(kind != BankReqKind::WRITE,
-             "%s accepted invalid bank request kind",
-             name());
-
-    ++rowPtr;
+    cacheBankPort.sendPacket(pkt);
+    rowPtr++;
 
     if (rowPtr >= totalRows) {
-        finishOperation();
-        return;
-    }
+        panic_if(pendingReqPkt == nullptr,
+             "%s finished ACC without a pending control packet",
+             name());
+        panic_if(pendingReqPkt->isResponse(), "Should be request packet");
 
-    beginRow();
+        DPRINTF(Accumulator, "ACC COMPLETE rows=%u\n", totalRows);
+
+        state = State::IDLE;
+        accumulatorBuf = 0;
+        readSourcePtr = 0;
+        readResponses = 0;
+
+        pendingReqPkt->makeResponse();
+        instPort.sendPacket(pendingReqPkt);
+    }
+    else {
+        accumulatorBuf = 0;
+        readSourcePtr = 0;
+        readResponses = 0;
+        state = State::READ;
+
+        if (!readEvent.scheduled()) {
+            schedule(readEvent, clockEdge(Cycles(1)));
+        }
+    }
 }
 
 bool
-Accumulator::handleBankResponse(PacketPtr pkt)
+Accumulator::handleResponse(PacketPtr pkt)
 {
     if (!pkt->isRead()) {
         delete pkt;
@@ -332,64 +296,16 @@ Accumulator::handleBankResponse(PacketPtr pkt)
             static_cast<unsigned>(sourceCount),
             static_cast<unsigned long long>(accumulatorBuf));
 
-    maybeFinishReads();
-    return true;
-}
-
-void
-Accumulator::maybeFinishReads()
-{
-    if (state != State::READ) {
-        return;
-    }
-
-    if (nextReadSource == sourceCount &&
-        readResponses == sourceCount &&
-        blockedBankPkt == nullptr) {
+    if (readSourcePtr == sourceCount &&
+        readResponses == sourceCount) {
 
         state = State::WRITE_BACK;
 
-        if (!writeIssueEvent.scheduled()) {
-            schedule(writeIssueEvent, clockEdge(Cycles(1)));
+        if (!writeEvent.scheduled()) {
+            schedule(writeEvent, clockEdge(Cycles(1)));
         }
     }
-}
-
-void
-Accumulator::beginRow()
-{
-    accumulatorBuf = 0;
-    nextReadSource = 0;
-    readResponses = 0;
-    state = State::READ;
-
-    if (!readIssueEvent.scheduled()) {
-        schedule(readIssueEvent, clockEdge(Cycles(1)));
-    }
-}
-
-void
-Accumulator::finishOperation()
-{
-    panic_if(pendingControlPkt == nullptr,
-             "%s finished ACC without a pending control packet",
-             name());
-
-    DPRINTF(Accumulator, "ACC COMPLETE rows=%u\n", totalRows);
-
-    state = State::IDLE;
-    accumulatorBuf = 0;
-    nextReadSource = 0;
-    readResponses = 0;
-
-    PacketPtr pkt = pendingControlPkt;
-    pendingControlPkt = nullptr;
-
-    if (!pkt->isResponse()) {
-        pkt->makeResponse();
-    }
-
-    instPort.sendResponse(pkt);
+    return true;
 }
 
 uint64_t

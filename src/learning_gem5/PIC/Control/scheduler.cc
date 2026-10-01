@@ -317,7 +317,7 @@ Scheduler::processPrepareTaskEvent()
     // Task nextEnqTask;
     pic::ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
     uint8_t cmdID = static_cast<uint8_t>(dataPayload & 0xFF);                            // cmdID is bit 0 ~ bit 7
-
+    DPRINTF(Scheduler, "raw datapayload: %#llx\n", dataPayload);
 
     switch(moduleID) {
         case pic::ModuleID::LOAD: {
@@ -475,7 +475,7 @@ Scheduler::processPrepareTaskEvent()
         case pic::ModuleID::ACC: {
             uint8_t bitWidth = static_cast<uint8_t>((dataPayload >> 8) &0x7);  // 3 bit
             uint32_t accRowNum = static_cast<uint32_t>((dataPayload >> 11) &0x7FF);      // 11 bit
-            uint8_t srcNum = static_cast<uint8_t>((dataPayload >> 22) &0x7);          // 4 bit
+            uint8_t srcNum = static_cast<uint8_t>((dataPayload >> 22) &0x7);          // 3 bit
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm
                 sizeof(AccPayload),
