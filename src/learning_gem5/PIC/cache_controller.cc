@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 
 #include "base/trace.hh"
 #include "debug/CacheController.hh"
-#include "learning_gem5/PIC/scheduler.hh"
+#include "learning_gem5/PIC/Control/scheduler.hh"
+#include "learning_gem5/PIC/Switch/pic_payloads.hh"
 
 namespace gem5
 {
@@ -43,34 +45,19 @@ PICTags::findVictim(const CacheBlk::KeyType& key,
 bool
 PICTags::getSetWayValid(const uint32_t setID, const uint32_t wayID)
 {
-    for (CacheBlk &blk : blks) {
-        if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.isValid();
-        }
-    }
-    return false;
+    return getBlk(setID, wayID)->isValid();
 }
 
 Addr
 PICTags::getSetWayAddr(const uint32_t setID, const uint32_t wayID)
 {
-    for (CacheBlk &blk : blks) {
-        if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.getAddr();
-        }
-    }
-    return 0;
+    return regenerateBlkAddr(getBlk(setID, wayID));
 }
 
 Addr
 PICTags::getSetWayTag(const uint32_t setID, const uint32_t wayID)
 {
-    for (CacheBlk &blk : blks) {
-        if (blk.getSet() == setID && blk.getWay() == wayID) {
-            return blk.getTag();  // CacheBlk 繼承 TaggedEntry，有 getTag()
-        }
-    }
-    return 0;
+    return getBlk(setID, wayID)->getTag();
 }
 
 bool
@@ -93,84 +80,82 @@ PICTags::setWayPICMode(const uint32_t wayID, bool picMode)
     PIC_mode[wayID] = picMode;
 }
 
-#if 0
-CacheController::CacheController(CacheControllerParams *params) :
-    ClockedObject(params),
-    instPort(params.name + ".cpu_port", this),
-    memPort(params.name + ".mem_port", this)
+void
+PICTags::setWayRangePICMode(const uint32_t beginWay, const uint32_t endWay,
+                            bool picMode)
 {
-}
-#endif
-
-CacheController::CPUSidePort::CPUSidePort(
-    const std::string& name, CacheController *owner)
-    : BaseCache::CpuSidePort(name, *owner, "pic_control"),
-      owner(owner)
-{
+    panic_if(beginWay > endWay, "PICTags: bad way range [%u, %u]",
+             beginWay, endWay);
+    for (uint32_t w = beginWay; w <= endWay; ++w) {
+        setWayPICMode(w, picMode);
+    }
 }
 
-CacheController::MemSidePort::MemSidePort(
-    const std::string& name, CacheController *owner)
-    : BaseCache::MemSidePort(name, owner, "pic_control"),
-      owner(owner)
+
+CacheController::CacheController(const CacheControllerParams &params)
+    : /*BaseCache(params, params.blk_size),*/
+      picDirPort(params.name + ".pic_ctrl_port", this),
+      picFlushPort(params.name + ".pic_flush_port", this)
 {
 }
 
-bool
-CacheController::CPUSidePort::recvTimingReq(PacketPtr pkt)
+Port &
+CacheController::getPort(const std::string &if_name, PortID idx)
 {
-    if (pkt->cmd == MemCmd::QueryReq) {
-        return owner->handleQueryWayState(pkt);
-    }
-    if (pkt->cmd == MemCmd::DrainQueryReq) {
-        return owner->handleDrainQuery(pkt);
-    }
-    if (pkt->cmd == MemCmd::FlushReq) {
-        return owner->handleFlushReq(pkt);
-    }
-    return false;
+    if (if_name == "pic_ctrl_port") return picCtrlPort;
+    if (if_name == "pic_flush_port") return picFlushPort;
+    return BaseCache::getPort(if_name, idx);
 }
 
 bool
 CacheController::handleQueryWayState(PacketPtr pkt)
 {
-    CacheWayQueryPayload qPayload{};
+    const auto *q = pkt->getConstPtr<CacheWayQueryPayload>();
+    const uint32_t setID    = q->setID;
+    const uint32_t beginWay = q->beginWay;
+    const uint32_t endWay   = q->endWay;
 
-    pkt->writeData(reinterpret_cast<uint8_t*>(&qPayload));
+    panic_if(beginWay > endWay ||
+             endWay >= (uint32_t)picTags()->getWayAllocationMax() ||
+             endWay - beginWay + 1 > PIC_MAX_WAYS,          // ← D-7
+             "QueryWayState: bad range set=%u ways=[%u,%u]",
+             setID, beginWay, endWay);
 
-    const uint32_t setID = qPayload.setID;
-    const uint32_t wayID = qPayload.wayID;
-    const bool valid = tags->getSetWayValid(setID, wayID);
-    const Addr tag = tags->getSetWayTag(setID, wayID);
-
-    CacheWayQueryRespPayload respPayload{tag, valid ? 1u : 0u};
     pkt->makeResponse();
-    pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
+    auto *resp = pkt->getPtr<CacheWayQueryRespPayload>();
+    *resp = CacheWayQueryRespPayload{};
 
-    cpuSidePort.schedTimingResp(pkt, curTick());
+    // RTL 只回報 state != INVALID 的 way
+    for (uint32_t w = beginWay; w <= endWay; ++w) {
+        CacheBlk *blk = picTags()->getBlk(setID, w);
+        if (blk->isValid()) {
+            resp->wayID[resp->numValid] = w;
+            resp->tag[resp->numValid]   = blk->getTag();
+            resp->numValid++;
+        }
+    }
 
+    DPRINTF(CacheController, "QueryWayState: set=%u ways=[%u,%u] valid=%u\n",
+            setID, beginWay, endWay, resp->numValid);
+
+    const Cycles lat = lookupLatency + Cycles(endWay - beginWay + 1);
+    picCtrlPort.schedTimingResp(pkt, clockEdge(lat));
     return true;
 }
 
 bool
 CacheController::handleDrainQuery(PacketPtr pkt)
 {
-    DrainQueryPayload qPayload{};
-    pkt->writeData(reinterpret_cast<uint8_t*>(&qPayload));
-
-    // Check if MSHR queue is idle
-    // RTL: mshrx_free = !(mshrs.map { _.status.valid }.reduce(_ | _))
-    // gem5: mshrQueue.isEmpty() checks no outstanding MSHR entries
+    const uint32_t wayID = pkt->getConstPtr<DrainQueryPayload>()->wayID;
     const bool isDrained = mshrQueue.isEmpty();
 
     DPRINTF(CacheController, "DrainQuery: wayID=%u isDrained=%d\n",
-            qPayload.wayID, isDrained);
+            wayID, isDrained);
 
-    DrainQueryRespPayload respPayload{isDrained ? 1u : 0u};
     pkt->makeResponse();
-    pkt->setData(reinterpret_cast<const uint8_t*>(&respPayload));
+    pkt->getPtr<DrainQueryRespPayload>()->isDrained = isDrained ? 1u : 0u;
 
-    cpuSidePort.schedTimingResp(pkt, curTick());
+    picCtrlPort.schedTimingResp(pkt, curTick());
 
     return true;
 }
@@ -179,12 +164,15 @@ bool
 CacheController::handleFlushReq(PacketPtr pkt)
 {
     // DCF
-    CacheFlushPayload fPayload{};
-    pkt->writeData(reinterpret_cast<uint8_t*>(&fPayload));
-    // Reconstruct address from (set, tag) for findBlock
-    // TODO: use tags->regenerateBlkAddr(tag, setID) when available
-    const Addr flushAddr = tags->regenerateBlkAddr(fPayload.tag, fPayload.setID);
-    CacheBlk *blk = tags->findBlock({flushAddr, pkt->isSecure()});
+    const auto *f = pkt->getConstPtr<CacheFlushPayload>();
+    CacheBlk *blk = nullptr;
+    for (uint32_t w = 0; w < (uint32_t)picTags()->getWayAllocationMax(); ++w) {
+        CacheBlk *cand = picTags()->getBlk(f->setID, w);
+        if (cand->isValid() && cand->getTag() == f->tag) { 
+            blk = cand; 
+            break; 
+        }
+    }
 
     if (blk && blk->isValid()) {
         if (blk->isSet(CacheBlk::DirtyBit)) {
@@ -195,51 +183,38 @@ CacheController::handleFlushReq(PacketPtr pkt)
         invalidateBlock(blk);
     }
 
-    if (pkt->needsResponse()) {
-        pkt->makeResponse();
-
-        // Use BaseCache's queued CPU-side response path so retry is not lost
-        cpuSidePort.schedTimingResp(pkt, curTick());
-    }
-    else {
-        delete pkt;
-    }
-
+    pkt->makeResponse();
+    picFlushPort.schedTimingResp(pkt, curTick());
     return true;
 }
 
 bool
-CacheController::handleCache2PIC(PacketPtr pkt)
+CacheController::handleWayMode(PacketPtr pkt)
 {
-    const uint32_t wayID = pkt->getLE<uint32_t>();
-    tags->setWayPICMode(wayID, true);
+    const auto *m = pkt->getConstPtr<WayModePayload>(); 
 
-    if (pkt->needsResponse()) {
-        pkt->makeResponse();
-        cpuSidePort.schedTimingResp(pkt, curTick());
-    }
-    else {
-        delete pkt;
-    }
+    picTags()->setWayRangePICMode(m->beginWay, m->endWay, m->picMode != 0);
 
+    pkt->makeResponse();
+    picCtrlPort.schedTimingResp(pkt, clockEdge(Cycles(1)));
     return true;
 }
 
 bool
-CacheController::handlePIC2Cache(PacketPtr pkt)
+CacheController::handlePicCtrlReq(PacketPtr pkt)
 {
-    const uint32_t wayID = pkt->getLE<uint32_t>();
-    tags->setWayPICMode(wayID, false);
+    panic_if(!pkt->isWrite(), "%s expected a PIC dir WriteReq", name());
 
-    if (pkt->needsResponse()) {
-        pkt->makeResponse();
-        cpuSidePort.schedTimingResp(pkt, curTick());
-    }
-    else {
-        delete pkt;
-    }
+    const auto reg = static_cast<PicCtrlReg>(pkt->getAddr() - PicCtrlBase);
+    panic_if(!isDirReg(reg), "%s bad dir offset %#llx", name(),
+             (unsigned long long)(pkt->getAddr() - PicCtrlBase));
 
-    return true;
+    switch (reg) {
+      case PicCtrlReg::DrainQuery: return handleDrainQuery(pkt);
+      case PicCtrlReg::WayQuery:   return handleQueryWayState(pkt);
+      case PicCtrlReg::WayMode:    return handleWayMode(pkt);
+      default:                     panic("unreachable");
+    }
 }
 
 } // namespace gem5

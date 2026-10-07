@@ -4,7 +4,7 @@
 
 #include "base/trace.hh"
 #include "debug/SwitchCtrl.hh"
-#include "learning_gem5/PIC/Control/scheduler.hh"
+#include "learning_gem5/PIC/Switch/switchCtrl.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/cur_tick.hh"
@@ -19,12 +19,12 @@ namespace gem5
 //    flush_idle → send_flush_req → wait_flushDone → flush_idle
 // =================================================================
 
-FlushController::FlushController(Scheduler *owner)
+FlushController::FlushController(SwitchController *owner)
     : owner(owner),
       flushState(State::DealIdle),
       currentEntry{0, 0},
-      flushSendEvent([this] { processFlushSendEvent(); }, "flushSendEvent"),
-      flushDoneEvent([] {}, "flushDoneEvent")   // response-driven, not self-scheduled
+      flushSendEvent([this] { processFlushSendEvent(); }, owner->name() + ".flushSendEvent")
+      
 {
 }
 
@@ -44,7 +44,7 @@ FlushController::enqueueFlush(uint32_t setID, Addr tag)
             setID, tag, (unsigned)flushQueue.size());
 
     // If idle, kick off processing
-    if (flushState == State::DealIdle && !owner->isEventScheduled(flushSendEvent)) {
+    if (flushState == State::DealIdle && !flushSendEvent.scheduled()) {
         owner->schedule(flushSendEvent, owner->clockEdge(Cycles(1)));
     }
 }
@@ -66,39 +66,18 @@ FlushController::processFlushSendEvent()
     // Build FlushReq packet with CacheFlushPayload
     const size_t pktSize = sizeof(CacheFlushPayload);
     RequestPtr req = std::make_shared<Request>(
-        0, pktSize, 0, owner->requestorId
+        picCtrlAddr(PicCtrlReg::Flush), pktSize, 0, owner->requestorId
     );
-    PacketPtr pkt = new Packet(req, MemCmd::FlushReq);
+    PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
     pkt->allocate();
 
-    CacheFlushPayload payload{currentEntry.setID, currentEntry.tag};
-    pkt->setData(reinterpret_cast<const uint8_t*>(&payload));
+    *pkt->getPtr<CacheFlushPayload>() = CacheFlushPayload{currentEntry.setID, currentEntry.tag};
 
     DPRINTF(SwitchCtrl, "FlushCtl: SendFlushReq set=%u tag=%#x\n",
             currentEntry.setID, currentEntry.tag);
 
-    flushState = State::SendFlushReq;
-
-    if (!owner->cacheControllerPort.sendTimingReq(pkt)) {
-        // Port busy — retry next cycle
-        // Push entry back to front
-        DPRINTF(SwitchCtrl, "FlushCtl: port busy, retrying next cycle\n");
-        flushState = State::DealIdle;
-        delete pkt;
-        // Put the entry back
-        std::queue<FlushEntry> temp;
-        temp.push(currentEntry);
-        while (!flushQueue.empty()) {
-            temp.push(flushQueue.front());
-            flushQueue.pop();
-        }
-        flushQueue = temp;
-        owner->schedule(flushSendEvent, owner->clockEdge(Cycles(1)));
-        return;
-    }
-
-    // Packet sent — transition to WaitFlushDone
     flushState = State::WaitFlushDone;
+    owner->flushPort.sendPacket(pkt);
 }
 
 // -----------------------------------------------------------------

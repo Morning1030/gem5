@@ -12,7 +12,7 @@
 namespace gem5
 {
 
-class Scheduler;   // forward declare
+class SwitchController;   // forward declare
 
 // =====================================================================
 //  FlushController — independent flush FSM (RTL: flush FSM in SwitchCtl_pic)
@@ -29,7 +29,7 @@ class FlushController {
     enum class State { DealIdle, SendFlushReq, WaitFlushDone };
 
   private:
-    Scheduler *owner;
+    SwitchController *owner;
     State      flushState;
 
     // Internal flush queue (RTL: flush_queue, depth 16)
@@ -40,13 +40,11 @@ class FlushController {
     FlushEntry currentEntry;
 
     EventFunctionWrapper flushSendEvent;
-    EventFunctionWrapper flushDoneEvent;   
-                                         
 
     void processFlushSendEvent();
 
   public:
-    FlushController(Scheduler *owner);
+    FlushController(SwitchController *owner);
 
     /** SwitchCtl calls this to enqueue a dirty line for flush (direct call). */
     void enqueueFlush(uint32_t setID, Addr tag);
