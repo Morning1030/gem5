@@ -393,7 +393,7 @@ DMAEngine::handleResponse(PacketPtr pkt)
 
     DPRINTF(PICDMA,
             "op %u: RESP-ACCEPT row %u remaining %u "
-            "outstanding %u rowDone=%d groupDone=%d\\n",
+            "outstanding %u rowDone=%d groupDone=%d\n",
             op->opId,
             rowIdx,
             op->rowRemaining[rowIdx],
@@ -405,7 +405,7 @@ DMAEngine::handleResponse(PacketPtr pkt)
     if (groupDone) {
         DPRINTF(PICDMA,
                 "op %u: GROUP-COMPLETE group %u -> return full row "
-                "to P2S[%d]\\n",
+                "to P2S[%d]\n",
                 op->opId,
                 group,
                 static_cast<int>(op->dest));

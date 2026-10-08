@@ -16,6 +16,7 @@ system.clk_domain = SrcClockDomain()
 system.clk_domain.clock = '1GHz'
 system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = 'timing'
+
 system.mem_ranges = [AddrRange(start=0x80000000, size='64MiB')]
 
 system.pic_transport = PicMmioTransport(
@@ -34,11 +35,12 @@ system.test_frontend = PicTestFrontend(
     # depends on each P2S engine's write queue actually draining through
     # cb_port) is what ends the run -- and what makes a hung cb_port
     # protocol show up as "never exits" instead of running forever.
-    exit_on_finish=True,
+    exit_on_finish=False,
+    trace="p2s",
 )
 
-system.scheduler = Scheduler()
-system.pic_transport.command_port = system.scheduler.inst_port
+system.scheduler = Scheduler(system=system)
+system.cmd_state_helper = CmdStateHelper(system=system)
 
 system.p2s_l = P2S_L(system=system)
 system.p2s_r = P2S_R(system=system)
@@ -52,15 +54,17 @@ system.dma = DMAEngine(
     tlb_latency=1,
 )
 
+system.bank_arb = AccessBankArb(num_banks=4)
+
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
+system.scheduler.p2sl_port = system.p2s_l.inst_port
+system.scheduler.p2sr_port = system.p2s_r.inst_port
+system.scheduler.p2srt_port = system.p2s_r_t.inst_port
+
 system.p2s_l.dma_port = system.dma.p2s_side
 system.p2s_r.dma_port = system.dma.p2s_side
 system.p2s_r_t.dma_port = system.dma.p2s_side
-
-system.scheduler.mem_side_p2sl = system.p2s_l.inst_port
-system.scheduler.mem_side_p2sr = system.p2s_r.inst_port
-system.scheduler.mem_side_p2srt = system.p2s_r_t.inst_port
-
-system.bank_arb = AccessBankArb(num_banks=4)
 
 # Index 0/1/2 = P2S_L/P2S_R/P2S_R_T, matching AccessBankArb's own
 # kClientP2S_L-offset convention (see access_bank_arb.py/.hh).

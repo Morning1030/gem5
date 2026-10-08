@@ -283,7 +283,7 @@ Scheduler::processDecodeEvent()
             row = static_cast<uint16_t>(dataPayload & 0x7FF);                      // 11 bit LSB
             byte_per_row = static_cast<uint16_t>((dataPayload >> 11) & 0x7FF);     // 11 bit
             offset = static_cast<uint16_t>((dataPayload >> 22)& 0x3FFF);            // 15 bit
-            DPRINTF(Scheduler, "SET_SIZE to (%hu, %hu, %hu)\n", row, byte_per_row, offset);
+            DPRINTF(Scheduler, "SET_SIZE to (%u, %u, %u)\n", row, byte_per_row, offset);
             delete pkt;
             break;
         }
@@ -366,7 +366,8 @@ Scheduler::processPrepareTaskEvent()
         }
         case pic::ModuleID::P2S_L: {
             // decode the params from SET_PARAM
-            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);    // precision is 3 bit
+            
+            uint8_t precision = static_cast<uint8_t>((dataPayload >> 8)& 0x7);    // precision is 3 bit
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of p2sL
@@ -384,14 +385,14 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::P2S_L;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            nextEnqTask.clientID = QryTabClient::P2S_L;
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
         }
         case pic::ModuleID::P2S_R: {
-            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);
-            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 3) &0x3);
+            uint8_t precision = static_cast<uint8_t>((dataPayload >> 8) & 0x7);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 11) &0x3);
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm
@@ -409,14 +410,14 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::P2S_R;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            nextEnqTask.clientID = QryTabClient::P2S_L;
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
         }
         case pic::ModuleID::P2S_R_T: {
-            uint8_t precision = static_cast<uint8_t>(dataPayload & 0x7);
-            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 3) &0x3);
+            uint8_t precision = static_cast<uint8_t>((dataPayload >> 8)& 0x7);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 11) &0x3);
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm

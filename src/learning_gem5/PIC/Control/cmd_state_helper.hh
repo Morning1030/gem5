@@ -23,6 +23,9 @@ namespace gem5
         LD_P,
         ACC,    // 6
         ST_P,
+        P2S_L,
+        P2S_R,
+        P2S_R_T,
         total_client
     };
 

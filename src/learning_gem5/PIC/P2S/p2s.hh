@@ -13,13 +13,6 @@
 
 namespace gem5
 {
-    struct DMALPayload{
-        // row = 1;
-        // byte_per_row = 512;
-        // baseAddr_Array = 0;
-        uint32_t offset;
-        uint64_t baseAddr_DRAM;
-    };
     struct DMARPayload{
         uint32_t byte_per_row;  // cols
         uint32_t offset;
@@ -30,12 +23,10 @@ namespace gem5
         uint32_t byte_per_row;  // cols
         uint64_t baseAddr_DRAM;
     };
-    struct P2SWritePayload {
-        uint64_t arrayAddr;
-        uint64_t bitSlice;
-    };
 
     class P2S_L : public ClockedObject {
+        public:
+            enum class PICPortID {DMA, CB};
         private:
             // to interact with scheduler
             class CPUSidePort : public ResponsePort
@@ -61,16 +52,14 @@ namespace gem5
                 private:
                     // corresponds to each direct port
                     P2S_L *owner;
-                    PICPortID portID;               
-                public:
-                    enum class PICPortID {DMA, CB};
-                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
-                    PacketPtr blockedPacket;
-                    void sendPacket(PacketPtr pkt) {}
-
+                    PICPortID picPortID;              
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
-                    void recvReqRetry() override {};
+                    void recvReqRetry() override;
+                public:
+                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
+                    void sendPacket(PacketPtr pkt);
             };
             // direct port
             CPUSidePort instPort;
@@ -94,10 +83,8 @@ namespace gem5
             uint8_t precision;
             uint8_t bit_ptr;
 
-            uint8_t dmaRow;
-
             // buffer to store data accessed from DMA
-            std::vector<std::vector<uint8_t>> regArray(8, std::vector<uint8_t>(8, 0)); // 8 * 8
+            std::vector<std::vector<uint8_t>> regArray; // 8 * 8
 
             // write bank queue
             std::deque<PacketPtr> bitSliceQueue;
@@ -109,10 +96,10 @@ namespace gem5
 
         protected:
         public:
-            Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             P2S_L(const P2S_LParams &params);
+            Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             bool handleRequest(PacketPtr pkt);
-            bool handleResponse(PacketPtr pkt);
+            bool handleResponse(PICPortID picPortID, PacketPtr pkt);
             uint64_t extractBits(const std::vector<std::vector<uint8_t>> &arr, uint8_t bit);
             void processDMAReadEvent();
             void processBitSliceEvent();
@@ -120,6 +107,8 @@ namespace gem5
     };
 
     class P2S_R : public ClockedObject {
+        public:
+            enum class PICPortID {DMA, CB};
         private:
             class CPUSidePort : public ResponsePort
             {
@@ -143,15 +132,14 @@ namespace gem5
             {
                 private:
                     P2S_R *owner;
-                    PICPortID portID;
-                public:
-                    enum class PICPortID {DMA, CB};
-                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
-                    PacketPtr blockedPacket;
-                    void sendPacket(PacketPtr pkt) {}
+                    PICPortID picPortID;
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
                     void recvReqRetry() override;
+                public:
+                    MemSidePort(const std::string& name, P2S_R *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
+                    void sendPacket(PacketPtr pkt) {}
             };
             // direct port
             CPUSidePort instPort;
@@ -192,10 +180,10 @@ namespace gem5
             uint32_t writeMemAddr;
 
             // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
-            std::vector<uint8_t> relative_offset_buf(7);
-            std::vector<uint8_t> arrayID_offset(8);
-            std::vector<std::vector<uint8_t>> mem0(64, std::vector<uint8_t>(128, 0));      // SRAM block is 64 * 128
-            std::vector<std::vector<uint8_t>> regArray(64, std::vector<uint8_t>(8, 0));    // p2s_R it's 64 * 8
+            std::vector<uint8_t> relative_offset_buf;
+            std::vector<uint8_t> arrayID_offset;
+            std::vector<std::vector<uint8_t>> mem0;      // SRAM block is 64 * 128
+            std::vector<std::vector<uint8_t>> regArray;    // p2s_R it's 64 * 8
             // write bank queue
             std::deque<PacketPtr> bitSliceQueue;
 
@@ -216,9 +204,8 @@ namespace gem5
             P2S_R(const P2S_RParams &params);
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             bool handleRequest(PacketPtr pkt);
-            bool handleResponse(PacketPtr pkt);
-            void get_array_relatice_offset(std::vector<uint8_t> &offset, uint8_t numBuf);
-            void extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit, uint32_t dim);
+            bool handleResponse(PICPortID picPortID, PacketPtr pkt);
+            uint64_t extractBits(const std::vector<std::vector<uint8_t>> &arr, uint32_t row, uint8_t bit);
             void processDMAReadEvent();
             void processLoadBufferEvent();
             void processBitSliceEvent();
@@ -227,6 +214,8 @@ namespace gem5
     };
 
     class P2S_R_T : public ClockedObject{
+        public:
+            enum class PICPortID {DMA, CB};
         private:
             class CPUSidePort : public ResponsePort
             {
@@ -250,15 +239,14 @@ namespace gem5
             {
                 private:
                     P2S_R_T *owner;
-                    PICPortID portID;
-                public:
-                    enum class PICPortID {DMA, CB};
-                    MemSidePort(const std::string& name, P2S_L *owner, PICPortID picPortID);
-                    PacketPtr blockedPacket;
-                    void sendPacket(PacketPtr pkt) {}
+                    PICPortID picPortID;
                 protected:
                     bool recvTimingResp(PacketPtr pkt) override;
                     void recvReqRetry() override;
+                public:
+                    MemSidePort(const std::string& name, P2S_R_T *owner, PICPortID picPortID);
+                    PacketPtr blockedPacket;
+                    void sendPacket(PacketPtr pkt) {}
             };
             // direct port
             CPUSidePort instPort;
@@ -285,11 +273,11 @@ namespace gem5
 
             uint8_t dmaRow;
             // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
-            std::vector<uint8_t> relative_offset_buf(7);
-            std::vector<uint8_t> arrayID_offset(8);
+            std::vector<uint8_t> relative_offset_buf;
+            std::vector<uint8_t> arrayID_offset;
 
             // Buffer Array
-            std::vector<uint8_t> bufArray(64);
+            std::vector<uint8_t> bufArray;
             // write bank queue
             std::deque<PacketPtr> bitSliceQueue;
 
@@ -299,15 +287,22 @@ namespace gem5
             EventFunctionWrapper writeEvent;
         protected:
         public:
-            P2S_R_T(P2S_R_TParams &params);
+            P2S_R_T(const P2S_R_TParams &params);
             Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
             bool handleRequest(PacketPtr pkt);
-            bool handleResponse(PacketPtr pkt);
-            void get_array_relative_offset(std::vector<uint8_t> &offset,uint8_t numBuf);
-            void extractBits(std::vector<uint8_t> buf, uint8_t bit);
+            bool handleResponse(PICPortID picPortID, PacketPtr pkt);
+            uint64_t extractBits(const std::vector<uint8_t> &buf, uint8_t bit);
             void processDMAReadEvent();
             void processBitSliceEvent();
             void processWriteEvent();
 
     };
+    inline void
+    get_array_relative_offset(std::vector<uint8_t> &offset, uint8_t numBuf) { // numBuf is 2 bit in fact
+        if (numBuf == 3) offset = std::vector<uint8_t>{4, 4, 4, 4, 4, 4, 4};        // therefore later arrayID_offset could be [0, 4, 8, 12, 16, 20, 24, 28]
+        else if (numBuf == 2) offset = std::vector<uint8_t>{1, 3, 1, 3, 1, 3, 1};   // therefore later arrayID_offset could be [0, 1, 4, 5, 8, 9, 12, 13]
+        else if (numBuf == 1) offset = std::vector<uint8_t>{1, 1, 2, 1, 1, 2, 1};   // therefore later arrayID_offset could be [0, 1, 2, 4, 5, 6, 8, 9]
+    }
 }
+
+#endif

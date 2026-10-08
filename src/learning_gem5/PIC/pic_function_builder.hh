@@ -42,15 +42,22 @@ class PicFunctionBuilder
         launch(out, ModuleID::LOAD, commandId, 0);
         return out;
     }
+    // PicFunctionBuilder::p2sl(
+    //     0x80010000,
+    //     0x00001000,
+    //     64,
+    //     128,
+    //     2,
+    // 7));
 
     static std::vector<PicSetRequest>
     p2sl(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
-         uint16_t rowOffset, uint8_t commandId, uint8_t bitWidthMinusOne)
+         uint16_t byte_per_row, uint16_t offset, uint8_t commandId, uint8_t bitWidthMinusOne)
     {
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, dramSource, "P2SL SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "P2SL SET_DST");
-        add(out, SetRegister::Size, packSize({rows, rowOffset, 0}),
+        add(out, SetRegister::Size, packSize({rows, byte_per_row, offset}),
             "P2SL SET_SIZE");
         launch(out, ModuleID::P2S_L, commandId,
                packP2SLParams(bitWidthMinusOne));
