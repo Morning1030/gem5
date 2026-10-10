@@ -5,7 +5,6 @@
 #include <queue>
 #include "base/types.hh"
 #include "mem/packet.hh"
-#include "sim/eventq.hh"
 
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
 
@@ -15,47 +14,49 @@ namespace gem5
 class SwitchController;   // forward declare
 
 // =====================================================================
-//  FlushController — independent flush FSM (RTL: flush FSM in SwitchCtl_pic)
+//  FlushController — flush FSM (RTL: flush_queue + flush FSM in SwitchCtl_pic)
 //
-//  Maintains an internal queue of (setID, tag) flush requests.
-//  SwitchController enqueues via enqueueFlush() and polls
-//  isFlushQueueEmpty() at the end.
+//  沒有自己的 event：每拍由 SwitchController::tick() 呼叫 tick()。
+//  enqueueFlush() 只 push，下一拍的 tick() 才看得到（Chisel Queue 語意）。
 //
-//  States:  DealIdle → SendFlushReq → WaitFlushDone → DealIdle
+//  States:  Idle (deq) → SendFlushReq (fire) → WaitFlushDone → Idle
 // =====================================================================
 
 class FlushController {
   public:
-    enum class State { DealIdle, SendFlushReq, WaitFlushDone };
+    enum class State { Idle, SendFlushReq, WaitFlushDone };
+    static constexpr size_t kQueueDepth = 16;      // RTL flush_queue depth
 
   private:
     SwitchController *owner;
-    State      flushState;
+    State flushState = State::Idle;
 
-    // Internal flush queue (RTL: flush_queue, depth 16)
     struct FlushEntry { uint32_t setID; Addr tag; };
     std::queue<FlushEntry> flushQueue;
+    FlushEntry currentEntry{0, 0};
+    bool doneSeen = false;                         // io.flushDone（組合訊號）
 
-    // Current entry being flushed
-    FlushEntry currentEntry;
-
-    EventFunctionWrapper flushSendEvent;
-
-    void processFlushSendEvent();
+    void sendFlushReq();
 
   public:
-    FlushController(SwitchController *owner);
+    explicit FlushController(SwitchController *owner) : owner(owner) {}
 
-    /** SwitchCtl calls this to enqueue a dirty line for flush (direct call). */
+    /** RTL flush_queue.io.enq.ready */
+    bool queueNotFull() const { return flushQueue.size() < kQueueDepth; }
+
+    /** 只 push，下一拍才看得到 */
     void enqueueFlush(uint32_t setID, Addr tag);
+
+    /** 由 SwitchController::tick 每拍呼叫 */
+    void tick();
 
     /** Handle flush-done response from CacheController. */
     bool handleFlushResponse(PacketPtr pkt);
 
-    /** True when queue is empty AND state is DealIdle. */
+    /** True when queue is empty AND state is Idle. */
     bool isFlushQueueEmpty() const
     {
-      return flushQueue.empty() && flushState == State::DealIdle;
+        return flushQueue.empty() && flushState == State::Idle;
     }
 
     State getState() const { return flushState; }

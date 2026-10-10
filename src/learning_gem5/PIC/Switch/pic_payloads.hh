@@ -17,6 +17,7 @@ enum class PicCtrlReg : uint64_t
     WayQuery   = 0x08,
     Flush      = 0x10,
     WayMode    = 0x18,
+    SwitchBusy = 0x20, 
 };
 
 constexpr uint64_t
@@ -48,6 +49,24 @@ struct CacheFlushPayload
     Addr     tag;
 };
 
+// Scheduler -> SwitchCtrl（switch_req）
+// RTL: SwitchInfo{op, nLevels}；op = true 為 ALLOC（PIC_Switch.ALLOC = true.B）
+// 版面必須和 Control/scheduler.hh 的 SwitchPayload 相同（這裡不 include 它，
+// 因為 Scheduler 目前沒有編進去，params/Scheduler.hh 不存在）
+struct SwitchReqPayload
+{
+    bool    opType;
+    uint8_t nLevels;
+};
+
+// SwitchCtrl -> Scheduler（switch_resp，寫回原本的 switch_req packet）
+// RTL: SwitchResult{op_success, avail_MatID_begin}
+struct SwitchRespPayload
+{
+    uint8_t opSuccess;
+    uint8_t availMatIdBegin;
+};
+
 // SwitchCtrl -> CacheController
 struct DrainQueryPayload
 {
@@ -68,12 +87,21 @@ struct WayModePayload
     uint32_t picMode;    // 1 = PIC（不可以被 findVictim 選）, 0 = cache
 };
 
+// SwitchCtrl -> CacheController
+// switchCtl.io.switchIdle → Scheduler.scala 的 sinkA.io.req.ready
+struct SwitchBusyPayload
+{
+    uint32_t busy;  
+};
+static_assert(sizeof(SwitchBusyPayload) == 4, "...");
+
 constexpr bool
 isDirReg(PicCtrlReg r)
 {
     return r == PicCtrlReg::DrainQuery ||
-           r == PicCtrlReg::WayQuery   ||
-           r == PicCtrlReg::WayMode;
+           r == PicCtrlReg::WayQuery ||
+           r == PicCtrlReg::WayMode ||
+           r == PicCtrlReg::SwitchBusy;
 }
 
 
@@ -86,6 +114,10 @@ static_assert(sizeof(CacheFlushPayload) == 16,
 static_assert(sizeof(DrainQueryPayload) == 4, "...");
 static_assert(sizeof(DrainQueryRespPayload) == 4, "...");
 static_assert(sizeof(WayModePayload) == 12, "...");
+static_assert(sizeof(SwitchReqPayload) == 2,
+              "SwitchReqPayload must match Scheduler's SwitchPayload");
+static_assert(sizeof(SwitchRespPayload) == 2,
+              "SwitchRespPayload must fit in the 2-byte SwitchPayload packet");
 
 } 
 
