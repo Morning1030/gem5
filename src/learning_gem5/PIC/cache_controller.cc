@@ -92,7 +92,7 @@ PICTags::setWayRangePICMode(const uint32_t beginWay, const uint32_t endWay,
 
 
 CacheController::CacheController(const CacheControllerParams &params)
-    : /*BaseCache(params, params.blk_size),*/
+    : Cache(params),
     flushLookupLat(params.flush_lookup_lat),
     flushMissDoneLat(params.flush_miss_done_lat),
     flushReleaseAckLat(params.flush_release_ack_lat),
@@ -131,7 +131,7 @@ CacheController::recvTimingReq(PacketPtr pkt)
                 pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
         return;
     }
-    BaseCache::recvTimingReq(pkt);
+    Cache::recvTimingReq(pkt);
 }
 
 void
@@ -142,7 +142,7 @@ CacheController::processSinkAReplay()
         return;
     PacketPtr pkt = heldSinkA.front();
     heldSinkA.pop_front();
-    BaseCache::recvTimingReq(pkt);
+    Cache::recvTimingReq(pkt);
     if (!switchBlocked && !heldSinkA.empty() && !sinkAReplayEvent.scheduled())
         schedule(sinkAReplayEvent, clockEdge(Cycles(1)));
 }
@@ -152,7 +152,7 @@ CacheController::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "pic_ctrl_port") return picCtrlPort;
     if (if_name == "pic_flush_port") return picFlushPort;
-    return BaseCache::getPort(if_name, idx);
+    return Cache::getPort(if_name, idx);
 }
 
 bool

@@ -7,7 +7,7 @@
 #include <vector>
 #include "mem/qport.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
-#include "mem/cache/base.hh"
+#include "mem/cache/cache.hh"
 #include "mem/cache/tags/base_set_assoc.hh"
 #include "mem/packet.hh"
 #include "params/CacheController.hh"
@@ -42,7 +42,7 @@ class PICTags : public BaseSetAssoc
     std::vector<bool> PIC_mode; // each element indicates one way
 };
 
-class CacheController : public BaseCache
+class CacheController : public Cache
 {
   private:
     class PicCtrlPort : public QueuedResponsePort
