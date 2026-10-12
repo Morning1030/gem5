@@ -12,11 +12,15 @@ Import('*')
 SimObject('pic_dma_engine.py', sim_objects=['DMAEngine'])
 SimObject('access_bank_arb.py', sim_objects=['AccessBankArb'])
 SimObject('tlb_req_scheduler.py', sim_objects=['TLBReqScheduler'])
+SimObject('mat_sink.py', sim_objects=['MatSink'])
+SimObject('arb_test_client.py', sim_objects=['ArbTestClient'])
 
 # only list .cc files here; .hh files are automatically included by the build system
 Source('pic_dma_engine.cc')
 Source('access_bank_arb.cc')
 Source('tlb_req_scheduler.cc')
+Source('mat_sink.cc')
+Source('arb_test_client.cc')
 
 # use -debug-flags=PICDMA to open the debug output for the DMA engine
 DebugFlag('PICDMA', 'DMA request generation, page split, responses')

@@ -1,10 +1,13 @@
 #include "mem/cache/pic/access_bank_arb.hh"
 
 #include <algorithm>
+#include <cstring>
 
+#include "base/intmath.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/PICBankArb.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -31,6 +34,20 @@ namespace
 // only matter once a request is already inside the right bank).
 constexpr unsigned kOffsetBits       = 9;  // wordline_offset, bits[8:0]
 constexpr unsigned kArrayIdInMatBits = 2;  // arrayID_in_mat, bits[10:9]
+constexpr uint32_t kWithinMatMask =
+    (1u << (kOffsetBits + kArrayIdInMatBits)) - 1;
+
+/** Sender state on a packet sent to a Mat. */
+class ArbMatSenderState : public Packet::SenderState
+{
+  public:
+    ArbMatSenderState(unsigned _clientId, bool _isRead)
+        : clientId(_clientId), isRead(_isRead)
+    {}
+
+    const unsigned clientId;
+    const bool isRead;
+};
 } // namespace
 
 AccessBankArb::AccessBankArb(const Params &p)
@@ -46,9 +63,19 @@ AccessBankArb::AccessBankArb(const Params &p)
       blockedBankId(0),
       bankReadyVec(p.num_banks, true),
       autoLoadPort(p.name + ".autoload_side", this),
-      tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent")
+      tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent"),
+      requestorId(p.system->getRequestorId(this)),
+      matsPerBank(p.mats_per_bank),
+      firstPicMat(p.first_pic_mat),
+      bankBits(floorLog2(p.num_banks)),
+      heldMat(p.num_banks)
 {
-    fatal_if(p.num_banks == 0, "AccessBankArb: num_banks must be > 0");
+    fatal_if(p.num_banks == 0 || !isPowerOf2(p.num_banks),
+             "AccessBankArb: num_banks must be a non-zero power of 2");
+    fatal_if(!isPowerOf2(p.mats_per_bank),
+             "AccessBankArb: mats_per_bank must be a power of 2");
+    fatal_if(p.first_pic_mat >= p.mats_per_bank,
+             "AccessBankArb: first_pic_mat must be < mats_per_bank");
 
     // mod: p2s_arbiter
     // Default decode, matching get_bankID() (SysConfig.scala:282-305):
@@ -74,6 +101,17 @@ AccessBankArb::AccessBankArb(const Params &p)
         p2sPorts.emplace_back(
             p.name + csprintf(".p2s_side[%d]", i), i, this);
     }
+
+    const unsigned numMats =
+        p.num_banks * (p.mats_per_bank - p.first_pic_mat);
+    const int n = p.port_mat_side_connection_count;
+    fatal_if(n != 0 && static_cast<unsigned>(n) != numMats,
+             "AccessBankArb: mat_side needs 0 (stub mode) or %u "
+             "connections, got %d", numMats, n);
+    for (int i = 0; i < n; ++i) {
+        matPorts.emplace_back(
+            p.name + csprintf(".mat_side[%d]", i), i, this);
+    }
 }
 
 Port &
@@ -85,6 +123,10 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
     }
     if (if_name == "autoload_side") {
         return autoLoadPort;
+    }
+    if (if_name == "mat_side" &&
+        static_cast<size_t>(idx) < matPorts.size()) {
+        return matPorts[idx];
     }
     return ClockedObject::getPort(if_name, idx);
 }
@@ -272,6 +314,11 @@ AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
              "AccessBankArb: AutoLoadL sent a %u-byte read request, "
              "expected %zu", pkt->getSize(), sizeof(uint64_t));
 
+    // One read at a time, until its response has been sent.
+    if (autoLoadPkt) {
+        return false;
+    }
+
     ReqPackage req;
     req.addr = static_cast<uint32_t>(pkt->getAddr());
     req.optype = AccessArrayType::READ;
@@ -279,6 +326,7 @@ AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
     if (!postRequest(kClientAutoLoadVec, req)) {
         return false;
     }
+    autoLoadPkt = pkt;
 
     panic_if(pendingReqPkt.count(kClientAutoLoadVec) != 0,
              "AccessBankArb: AutoLoadL already has a pending packet");
@@ -297,7 +345,10 @@ void
 AccessBankArb::processTickEvent()
 {
     std::optional<Grant> grant = tick();
-    if (grant) {
+    if (grant && grant->lateCommit) {
+        DPRINTF(PICBankArb, "AccessBankArb: client %u committed after "
+                "Block\n", grant->clientId);
+    } else if (grant) {
         auto it = pendingReqPkt.find(grant->clientId);
         panic_if(it == pendingReqPkt.end(),
                  "AccessBankArb: granted client %u with no pending packet",
@@ -309,13 +360,12 @@ AccessBankArb::processTickEvent()
             DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
                     "acking AutoLoadL\n", grant->clientId,
                     grant->committedThisCycle ? "ready" : "busy");
-            // No real bank storage yet (see file header) -- placeholder
-            // read data until one exists.
-            const uint64_t placeholder = 0;
-            pkt->setData(reinterpret_cast<const uint8_t *>(&placeholder));
-            pkt->makeResponse();
-            autoLoadPort.sendPacket(pkt);
-            autoLoadPort.trySendRetry();
+            // With Mats connected the response comes from the Mat
+            // (handleMatResponse); in stub mode answer with zeros here.
+            if (matPorts.empty()) {
+                const uint64_t zero = 0;
+                finishAutoLoad(reinterpret_cast<const uint8_t *>(&zero));
+            }
         } else {
             const int portIdx =
                 static_cast<int>(grant->clientId) - kClientP2S_L;
@@ -395,7 +445,8 @@ AccessBankArb::tick()
 
         commit(blockedClientId, blockedReq, blockedBankId);
         state = ArbState::Access;
-        return Grant{blockedClientId, /*committedThisCycle=*/true};
+        return Grant{blockedClientId, /*committedThisCycle=*/true,
+                     /*lateCommit=*/true};
     }
 
     // Access state: round-robin scan for the next pending client.
@@ -431,12 +482,102 @@ void
 AccessBankArb::commit(unsigned clientId, const ReqPackage &req,
                        unsigned bankId)
 {
-    // Still a no-op hook: no simulated bank storage exists yet, so a
-    // WRITE has nothing to deposit into and a READ (AutoLoadVec) gets its
-    // placeholder data filled in processTickEvent() instead of here.
-    (void)clientId;
-    (void)req;
-    (void)bankId;
+    // Stub mode (no Mats connected): nothing to write or read.
+    if (matPorts.empty())
+        return;
+    sendToMat(clientId, req, bankId);
+}
+
+unsigned
+AccessBankArb::matIndex(uint32_t addr, unsigned bankId) const
+{
+    const unsigned matId = (addr >> (kOffsetBits + kArrayIdInMatBits +
+                                     bankBits)) & (matsPerBank - 1);
+    panic_if(matId < firstPicMat,
+             "AccessBankArb: addr %#x targets matID %u, which has no Mat "
+             "(first is %u)", addr, matId, firstPicMat);
+    return (matId - firstPicMat) * bankReadyVec.size() + bankId;
+}
+
+void
+AccessBankArb::sendToMat(unsigned clientId, const ReqPackage &req,
+                         unsigned bankId)
+{
+    const unsigned idx = matIndex(req.addr, bankId);
+    panic_if(idx >= matPorts.size(), "AccessBankArb: Mat index %u out of "
+             "range (%zu Mats)", idx, matPorts.size());
+
+    const bool isRead = (req.optype == AccessArrayType::READ);
+    RequestPtr r = std::make_shared<Request>(
+        req.addr & kWithinMatMask, sizeof(uint64_t), 0, requestorId);
+    PacketPtr pkt = new Packet(r, isRead ? MemCmd::ReadReq
+                                         : MemCmd::WriteReq);
+    pkt->allocate();
+    if (!isRead) {
+        pkt->setData(
+            reinterpret_cast<const uint8_t *>(&req.dataWrittenToBank));
+    }
+    pkt->pushSenderState(new ArbMatSenderState(clientId, isRead));
+
+    DPRINTF(PICBankArb, "AccessBankArb: client %u -> Mat[%u] %s\n",
+            clientId, idx, pkt->print());
+
+    if (!matPorts[idx].sendTimingReq(pkt)) {
+        DPRINTF(PICBankArb, "AccessBankArb: Mat[%u] refused, bank %u "
+                "not ready\n", idx, bankId);
+        heldMat[bankId].pkt = pkt;
+        heldMat[bankId].matIdx = idx;
+    }
+}
+
+bool
+AccessBankArb::handleMatResponse(PacketPtr pkt)
+{
+    auto *ss = safe_cast<ArbMatSenderState *>(pkt->popSenderState());
+    if (ss->isRead) {
+        panic_if(!autoLoadPkt, "AccessBankArb: read response with no "
+                 "AutoLoadL request in flight");
+        finishAutoLoad(pkt->getConstPtr<uint8_t>());
+    }
+    // A write was already acked to its client at grant.
+    delete ss;
+    delete pkt;
+    return true;
+}
+
+void
+AccessBankArb::finishAutoLoad(const uint8_t *data)
+{
+    PacketPtr pkt = autoLoadPkt;
+    autoLoadPkt = nullptr;
+    pkt->setData(data);
+    pkt->makeResponse();
+    autoLoadPort.sendPacket(pkt);
+    autoLoadPort.trySendRetry();
+}
+
+void
+AccessBankArb::matRetry(int idx)
+{
+    HeldMatReq &h = heldMat[idx % bankReadyVec.size()];
+    panic_if(!h.pkt || h.matIdx != static_cast<unsigned>(idx),
+             "AccessBankArb: unexpected retry from Mat[%d]", idx);
+    PacketPtr pkt = h.pkt;
+    if (matPorts[idx].sendTimingReq(pkt)) {
+        h.pkt = nullptr;
+    }
+}
+
+bool
+AccessBankArb::MatSidePort::recvTimingResp(PacketPtr pkt)
+{
+    return owner->handleMatResponse(pkt);
+}
+
+void
+AccessBankArb::MatSidePort::recvReqRetry()
+{
+    owner->matRetry(id);
 }
 
 void
@@ -454,7 +595,7 @@ AccessBankArb::bankReady(unsigned bankId) const
     fatal_if(bankId >= bankReadyVec.size(),
              "AccessBankArb::bankReady: bank %u out of range (%zu banks)",
              bankId, bankReadyVec.size());
-    return bankReadyVec[bankId];
+    return bankReadyVec[bankId] && heldMat[bankId].pkt == nullptr;
 }
 
 void

@@ -41,6 +41,11 @@ class Mat(ClockedObject):
     # mat_datapath drives it yet -- see mat.cc's file comment.
     cache_port = RequestPort("Request port to CacheController")
 
+    # 8-byte reads/writes from AccessBankArb.mat_side into this Mat's
+    # four sub-arrays. Packet address = arrayID_in_mat << 9 | wordline.
+    array_side = ResponsePort("Array reads/writes from AccessBankArb")
+    array_latency = Param.Cycles(1, "Cycles from array access to response")
+
     # cal() command setup for this one Mat.
     n_buf = Param.Unsigned(1, "nBuf")
     n_cal = Param.Unsigned(3, "nCal")

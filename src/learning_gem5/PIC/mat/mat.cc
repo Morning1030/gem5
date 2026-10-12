@@ -1,5 +1,7 @@
 #include "learning_gem5/PIC/mat/mat.hh"
 
+#include <cstring>
+
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/MatBank.hh"
@@ -16,6 +18,9 @@ Mat::Mat(const MatParams &params) :
     tickEvent([this] { processTick(); }, name()),
     loadPort(params.name + ".load_l_port", this),
     cachePort(params.name + ".cache_port", this),
+    arrayPort(params.name + ".array_side", this),
+    arrayRespEvent([this] { processArrayResp(); }, name() + ".arrayResp"),
+    arrayLatency(params.array_latency),
     maxCycles(params.max_cycles),
     startCycles(params.start_cycles),
     bankIndex(params.bank_index),
@@ -45,6 +50,8 @@ Mat::getPort(const std::string &if_name, PortID idx)
         return loadPort;
     if (if_name == "cache_port")
         return cachePort;
+    if (if_name == "array_side")
+        return arrayPort;
     return ClockedObject::getPort(if_name, idx);
 }
 
@@ -126,6 +133,97 @@ Mat::handleLoadRetry()
     }
 }
 
+AddrRangeList
+Mat::ArrayPort::getAddrRanges() const
+{
+    AddrRangeList ranges;
+    ranges.push_back(AddrRange(0, MaxAddr));
+    return ranges;
+}
+
+// 8-byte read or write of one wordline of one sub-array.
+// addr = arrayID_in_mat << 9 | wordline.
+bool
+Mat::handleArrayReq(PacketPtr pkt)
+{
+    panic_if(pkt->getSize() != sizeof(uint64_t),
+             "%s: array access must be 8 bytes, got %s", name(),
+             pkt->print());
+
+    // RTL (BankSellPIC.scala): the PIC channel may only touch a way that is
+    // in PIC mode.
+    panic_if(tags != nullptr && !tags->isWayInPICMode(way),
+             "%s: array access while way %u is not in PIC mode", name(),
+             way);
+
+    constexpr unsigned wordlineBits = 9;
+    static_assert((1u << wordlineBits) == mat_fsm::CArrayWordlineNums,
+                  "wordline field must cover the whole sub-array");
+    const Addr a = pkt->getAddr();
+    const unsigned array = a >> wordlineBits;
+    const unsigned row = a & (mat_fsm::CArrayWordlineNums - 1);
+    panic_if(array >= mat_fsm::NumArrays,
+             "%s: array access to sub-array %u, only %u exist", name(),
+             array, mat_fsm::NumArrays);
+
+    // RTL (Mat.scala): while a job runs the arrays take their enable, address
+    // and data from the Mat's controller (arrayCacheMode is false), so the
+    // external port is ignored. A write is lost; a read gets nothing useful.
+    if (fsm.state() != mat_fsm::MainState::MainIdle) {
+        ++droppedArrayAccesses;
+        DPRINTF(MatBank, "bank %u way %u: %s array %u row %u dropped, "
+                "Mat is busy\n", bankIndex, way,
+                pkt->isWrite() ? "write" : "read", array, row);
+        if (!pkt->isWrite()) {
+            const uint64_t zero = 0;
+            pkt->setData(reinterpret_cast<const uint8_t *>(&zero));
+        }
+    } else if (pkt->isWrite()) {
+        uint64_t word = 0;
+        std::memcpy(&word, pkt->getConstPtr<uint8_t>(), sizeof(word));
+        fsm.datapath().writeCArrayWord(array, row, word);
+        DPRINTF(MatBank, "bank %u way %u: write array %u row %u = %#llx\n",
+                bankIndex, way, array, row, (unsigned long long)word);
+    } else {
+        const uint64_t word = fsm.datapath().cArrayWord(array, row);
+        pkt->setData(reinterpret_cast<const uint8_t *>(&word));
+        DPRINTF(MatBank, "bank %u way %u: read array %u row %u = %#llx\n",
+                bankIndex, way, array, row, (unsigned long long)word);
+    }
+    pkt->makeResponse();
+
+    arrayRespQ.emplace_back(clockEdge(arrayLatency), pkt);
+    if (!arrayRespBlocked && !arrayRespEvent.scheduled())
+        schedule(arrayRespEvent, arrayRespQ.front().first);
+    return true;
+}
+
+void
+Mat::processArrayResp()
+{
+    while (!arrayRespBlocked && !arrayRespQ.empty() &&
+           arrayRespQ.front().first <= curTick()) {
+        if (!arrayPort.sendTimingResp(arrayRespQ.front().second)) {
+            arrayRespBlocked = true;
+            return;
+        }
+        arrayRespQ.pop_front();
+    }
+    if (!arrayRespBlocked && !arrayRespQ.empty() &&
+        !arrayRespEvent.scheduled()) {
+        schedule(arrayRespEvent, arrayRespQ.front().first);
+    }
+}
+
+void
+Mat::handleArrayRespRetry()
+{
+    panic_if(!arrayRespBlocked, "%s: unexpected array response retry",
+             name());
+    arrayRespBlocked = false;
+    processArrayResp();
+}
+
 // Not yet exercised -- see mat.hh's class doc comment.
 bool
 Mat::handleCacheResp(PacketPtr pkt)
@@ -162,9 +260,14 @@ Mat::processTick()
 
     if (!setUp.exec && isIdleNow) {
         done = true;
+        uint64_t mSum = 0;
+        for (unsigned r = 0; r < mat_fsm::MArrayWordlineNums; ++r)
+            mSum += fsm.datapath().mArrayWord(r) * (r + 1);
         inform("%s: bank %u way %u finished, %u L rows loaded, "
-               "vecBuf=%#llx\n", name(), bankIndex, way, loads,
-               (unsigned long long)fsm.datapath().vecBuf());
+               "vecBuf=%#llx, array checksum=%#llx, %u array accesses "
+               "dropped while busy\n", name(), bankIndex, way, loads,
+               (unsigned long long)fsm.datapath().vecBuf(),
+               (unsigned long long)mSum, droppedArrayAccesses);
         exitSimLoop("Mat finished");
         return;
     }

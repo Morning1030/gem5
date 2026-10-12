@@ -30,9 +30,11 @@ constexpr unsigned VectorWidth = 64;          // R vector / vecBuf width.
 constexpr unsigned AccLaneWidth = 16;         // rBuf/wBuf per-lane width.
 static_assert(VectorWidth / AccLaneWidth == WBufNumSlots,
               "WBufNumSlots must equal VectorWidth / AccLaneWidth");
-// ASSUMPTION: M-array depth isn't given by the spec; mirrored from the
-// C-array's own depth.
-constexpr unsigned MArrayWordlineNums = 512;
+// RTL (Mat.scala/Controller.scala): there is no separate M-array SRAM. The
+// M-array lives in the same four sub-arrays as the C-array: the arrays in
+// Mem mode hold partial sums, the ones in Mac mode hold C data. An M-array
+// address is {arrayID(2), row(9)}, so its address space covers all arrays.
+constexpr unsigned MArrayWordlineNums = NumArrays * CArrayWordlineNums;
 
 /**
  * The "cal() Datapath Specification" storage + Adder #2 (sections
@@ -95,20 +97,28 @@ class MatDatapath
     // Packs wBuf_'s 4 lanes into one row and writes it at `addr`.
     void commitWBufToMArray(uint64_t addr);
 
+    // ---- Array access from outside the Mat (AccessBankArb) ----------
+    void writeCArrayWord(unsigned array, unsigned row, uint64_t word)
+    { arraySram_[array % NumArrays][row % CArrayWordlineNums] = word; }
+
     // ---- test-only storage pokes / readback -------------------------
-    uint64_t cArrayWord(unsigned array, unsigned row) const { return cArraySram_[array][row % CArrayWordlineNums]; }
-    void setCArrayWordForTest(unsigned array, unsigned row, uint64_t word) { cArraySram_[array][row % CArrayWordlineNums] = word; }
-    uint64_t mArrayWord(unsigned row) const { return mArraySram_[row % MArrayWordlineNums]; }
-    void setMArrayWordForTest(unsigned row, uint64_t word) { mArraySram_[row % MArrayWordlineNums] = word; }
+    uint64_t cArrayWord(unsigned array, unsigned row) const { return arraySram_[array][row % CArrayWordlineNums]; }
+    void setCArrayWordForTest(unsigned array, unsigned row, uint64_t word) { arraySram_[array][row % CArrayWordlineNums] = word; }
+    // addr = {arrayID(2), row(9)}
+    uint64_t mArrayWord(unsigned addr) const { return arraySram_[mArrayID(addr)][mArrayRow(addr)]; }
+    void setMArrayWordForTest(unsigned addr, uint64_t word) { arraySram_[mArrayID(addr)][mArrayRow(addr)] = word; }
     void setRWireForTest(const std::array<int16_t, WBufNumSlots> &v) { rWire_ = v; }
     void setRBufForTest(const std::array<int16_t, WBufNumSlots> &v) { rBuf_ = v; }
     void setWBufForTest(const std::array<int16_t, WBufNumSlots> &v) { wBuf_ = v; }
 
   private:
-    std::array<std::array<uint64_t, CArrayWordlineNums>, NumArrays> cArraySram_{};
+    static unsigned mArrayID(uint64_t addr) { return (addr / CArrayWordlineNums) % NumArrays; }
+    static unsigned mArrayRow(uint64_t addr) { return addr % CArrayWordlineNums; }
+
+    /** The four sub-arrays: C data in Mac-mode arrays, M data in Mem-mode. */
+    std::array<std::array<uint64_t, CArrayWordlineNums>, NumArrays> arraySram_{};
     std::array<uint64_t, NumArrays> rVec_{};
     uint64_t vecBuf_ = 0;
-    std::array<uint64_t, MArrayWordlineNums> mArraySram_{};
     std::array<int16_t, WBufNumSlots> rWire_{};
     std::array<int16_t, WBufNumSlots> rBuf_{};
     std::array<int16_t, WBufNumSlots> wBuf_{};

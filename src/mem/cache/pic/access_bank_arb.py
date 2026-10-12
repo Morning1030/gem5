@@ -27,4 +27,16 @@ class AccessBankArb(ClockedObject):
     # (kClientAutoLoadVec).
     autoload_side = ResponsePort("Port AutoLoadL sends READ requests on")
 
+    # One port per PIC Mat, indexed (matID_in_bank - first_pic_mat) *
+    # num_banks + bankID (same order as pic_cache.py's Mat list).
+    # Leave unconnected for the old stub mode: grants commit nowhere and
+    # AutoLoadL reads get zeros.
+    mat_side = VectorRequestPort("Ports to the PIC Mats, one per Mat")
+
+    system = Param.System(Parent.any, "System, for the requestor ID")
+
     num_banks = Param.Unsigned(4, "Number of cache banks (paper default: 4)")
+    mats_per_bank = Param.Unsigned(16, "Mats per bank (paper default: 16)")
+    first_pic_mat = Param.Unsigned(
+        1, "First matID with a Mat (RTL in_bank_first_matID); lower are cache"
+    )
