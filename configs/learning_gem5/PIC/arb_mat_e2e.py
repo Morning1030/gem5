@@ -3,8 +3,9 @@
 # reads them back and checks the values. Reads of addresses nobody wrote
 # must return 0 (checks that a write did not land in the wrong Mat).
 #
-# Built with PICCache (tags + arbiter + 60 Mats); the clients are test
-# clients connected from outside. No AutoLoadL, Scheduler or DMA.
+# PICCache gives the tags and the 60 Mats; the arbiter and its clients are
+# built here, as in the RTL PIC main module. The clients are test clients.
+# No AutoLoadL, Scheduler or DMA.
 
 import os
 import sys
@@ -75,7 +76,12 @@ reads = [R(a, d) for a, d in final.items()] + [R(a, 0) for a in unwritten]
 # Mats never start their own cal() job here, they are only storage.
 # All ways but the normal cache way are in PIC mode (the PIC channel needs it).
 cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
-arb = system.access_bank_arb
+
+# Arbiter -> Mats, in .mats order.
+system.bank_arb = AccessBankArb(num_banks=NUM_BANKS)
+arb = system.bank_arb
+for mat in cache.mats:
+    arb.mat_side = mat.array_side
 
 system.writer0 = ArbTestClient(kind='p2s', ops=[W(a, d) for a, d in writes0])
 system.writer1 = ArbTestClient(kind='p2s', ops=[W(a, d) for a, d in writes1])

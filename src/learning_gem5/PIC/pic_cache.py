@@ -1,7 +1,8 @@
 # PICCache -- the PIC cache banks as one reusable component:
-# PICLLCTags + AccessBankArb + 60 Mats. A testbench builds it with
+# PICLLCTags + 60 Mats (RTL: BankedStore / BankShellPIC / Bank / Mat).
+# A testbench builds it with
 #
-#   system.pic_cache = PICCache(system)
+#   cache = PICCache(system)
 #
 # Fixed topology (paper section 4.1.3): 4 banks x 16 ways. Ways below
 # FIRST_PIC_WAY are plain cache ways with no Mat (their data would live in
@@ -9,16 +10,18 @@
 # one Mat per bank: (16 - 1) x 4 = 60 Mats. Bank and way counts are fixed
 # constants; only the Mat cal() parameters can be passed in.
 #
-# Connect from outside:
-#   - AccessBankArb.p2s_side: exactly 3 connections (P2S_L, P2S_R, P2S_R_T)
-#   - AccessBankArb.autoload_side: AutoLoadL (or a test client)
-#   - Mat.load_l_port: AutoLoadL.inst_port, for every Mat in .mats
-# AccessBankArb.mat_side is connected to every Mat's array_side in here,
-# in the same order as .mats.
+# The AccessBankArb and its clients (P2S, AutoLoadL, ...) are not in here:
+# in the RTL they sit in the PIC main module (PolymorPIC_main_in_cache),
+# and the banks only see the arbiter's output. Connect from outside:
+#   - for every Mat in .mats, in order:
+#       arbiter.mat_side = mat.array_side   (RTL picMem_* path)
+#       mat.load_l_port = AutoLoadL.inst_port (RTL request_vec / vec_data,
+#                                             the only direct client link)
+# .mats order = (way - FIRST_PIC_WAY) * NUM_BANKS + bank, the same order
+# AccessBankArb.mat_side and AutoLoadL.inst_port expect.
 
 from m5.objects import ( #m5:the module gem5 provide
     NULL,
-    AccessBankArb,
     LRURP,    # gem5's built in replacement policy
     Mat,      #60 mats
     PICLLCTags,     #mark states of each cache line
@@ -60,9 +63,6 @@ class PICCache:
             initial_pic_ways=pic_way_mask,
         )
 
-        # ---- Bank-access arbitration ---------------------------------------
-        system.access_bank_arb = AccessBankArb(num_banks=NUM_BANKS)
-
         # ---- The 60 PIC Mats ---------------------------------------------
         # Connection order matches the RTL's matID*numBanks+bankID
         self.mats = []
@@ -79,7 +79,3 @@ class PICCache:
                 self.mats.append(mat)
         system.mats = self.mats
 
-        # Arbiter -> Mat. mat_side index = (way - 1) * NUM_BANKS + bank,
-        # same as the order of self.mats.
-        for mat in self.mats:
-            system.access_bank_arb.mat_side = mat.array_side
