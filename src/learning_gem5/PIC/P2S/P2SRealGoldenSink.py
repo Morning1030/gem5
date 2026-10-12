@@ -5,7 +5,7 @@ from m5.params import *
 class P2SRealGoldenSink(ClockedObject):
     type = "P2SRealGoldenSink"
     cxx_header = (
-        "learning_gem5/PIC/p2s_real_golden_sink.hh"
+        "learning_gem5/PIC/P2S/p2s_real_golden_sink.hh"
     )
     cxx_class = "gem5::P2SRealGoldenSink"
 

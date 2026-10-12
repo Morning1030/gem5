@@ -8,7 +8,7 @@ class PicMmioTransport(ClockedObject):
     cxx_header = "learning_gem5/PIC/pic_mmio_transport.hh"
     cxx_class = "gem5::pic::PicMmioTransport"
 
-    command_port = RequestPort(
+    mmio_port = RequestPort(
         "PIC-facing RequestPort used to send one SET transaction"
     )
 

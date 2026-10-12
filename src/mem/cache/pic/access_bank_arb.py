@@ -6,9 +6,9 @@
 # PIC bank hierarchy's shared physical port. See access_bank_arb.hh for the
 # full design note and the port protocol P2S speaks on p2s_side.
 
+from m5.objects.ClockedObject import ClockedObject
 from m5.params import *
 from m5.proxy import *
-from m5.objects.ClockedObject import ClockedObject
 
 
 class AccessBankArb(ClockedObject):

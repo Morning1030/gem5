@@ -22,7 +22,7 @@ class PicFunctionBuilder
         out.push_back({reg, value, label});
     }
 
-    static void launch(std::vector<PicSetRequest> &out, ModuleId module,
+    static void launch(std::vector<PicSetRequest> &out, ModuleID module,
                        uint8_t commandId, uint64_t others)
     {
         add(out, SetRegister::Param,
@@ -39,20 +39,27 @@ class PicFunctionBuilder
         add(out, SetRegister::Src, dramSource, "LOAD SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "LOAD SET_DST");
         add(out, SetRegister::Size, packSize(size), "LOAD SET_SIZE");
-        launch(out, ModuleId::Load, commandId, 0);
+        launch(out, ModuleID::LOAD, commandId, 0);
         return out;
     }
+    // PicFunctionBuilder::p2sl(
+    //     0x80010000,
+    //     0x00001000,
+    //     64,
+    //     128,
+    //     2,
+    // 7));
 
     static std::vector<PicSetRequest>
     p2sl(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
-         uint16_t rowOffset, uint8_t commandId, uint8_t bitWidthMinusOne)
+         uint16_t byte_per_row, uint16_t offset, uint8_t commandId, uint8_t bitWidthMinusOne)
     {
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, dramSource, "P2SL SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "P2SL SET_DST");
-        add(out, SetRegister::Size, packSize({rows, rowOffset, 0}),
+        add(out, SetRegister::Size, packSize({rows, byte_per_row, offset}),
             "P2SL SET_SIZE");
-        launch(out, ModuleId::P2SL, commandId,
+        launch(out, ModuleID::P2S_L, commandId,
                packP2SLParams(bitWidthMinusOne));
         return out;
     }
@@ -66,22 +73,8 @@ class PicFunctionBuilder
         add(out, SetRegister::Src, dramSource, "P2SR SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "P2SR SET_DST");
         add(out, SetRegister::Size, packSize(size), "P2SR SET_SIZE");
-        launch(out, ModuleId::P2SR, commandId,
+        launch(out, ModuleID::P2S_R, commandId,
                packP2SRParams(buffersPerMat, bitWidthMinusOne, transpose));
-        return out;
-    }
-
-    static std::vector<PicSetRequest>
-    im2col(uint64_t dramSource, uint64_t dramDestination,
-           uint16_t featureSize, uint8_t kernelSize, uint8_t strideSize,
-           uint8_t padding, bool writeToDram)
-    {
-        std::vector<PicSetRequest> out;
-        add(out, SetRegister::Src, dramSource, "IM2COL SET_SRC");
-        add(out, SetRegister::Dst, dramDestination, "IM2COL SET_DST");
-        launch(out, ModuleId::Im2Col, 0,
-               packIm2ColParams(featureSize, kernelSize, strideSize,
-                                padding, writeToDram));
         return out;
     }
 
@@ -93,7 +86,7 @@ class PicFunctionBuilder
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, onChipSource, "ACC SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "ACC SET_DST");
-        launch(out, ModuleId::Acc, commandId,
+        launch(out, ModuleID::ACC, commandId,
                packAccParams(sourceCount, rowCount, bitWidthCode));
         return out;
     }
@@ -105,7 +98,7 @@ class PicFunctionBuilder
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, leftBase, "EXE SET_SRC");
         add(out, SetRegister::Dst, targetMatId, "EXE SET_DST");
-        launch(out, ModuleId::Exe, commandId, packExeParams(params));
+        launch(out, ModuleID::CAL, commandId, packExeParams(params));
         return out;
     }
 
@@ -117,21 +110,21 @@ class PicFunctionBuilder
         add(out, SetRegister::Src, onChipSource, "STORE SET_SRC");
         add(out, SetRegister::Dst, dramDestination, "STORE SET_DST");
         add(out, SetRegister::Size, packSize(size), "STORE SET_SIZE");
-        launch(out, ModuleId::Store, commandId, 0);
+        launch(out, ModuleID::STORE, commandId, 0);
         return out;
     }
 
     static std::vector<PicSetRequest> switchMode(bool allocate, uint8_t levels)
     {
         std::vector<PicSetRequest> out;
-        launch(out, ModuleId::Switch, 0, packSwitchParams(allocate, levels));
+        launch(out, ModuleID::SWITCH, 0, packSwitchParams(allocate, levels));
         return out;
     }
 
     static std::vector<PicSetRequest> query(uint8_t commandId, bool immediate)
     {
         std::vector<PicSetRequest> out;
-        launch(out, ModuleId::Query, commandId, packQueryParams(immediate));
+        launch(out, ModuleID::QUERY, commandId, packQueryParams(immediate));
         return out;
     }
 };

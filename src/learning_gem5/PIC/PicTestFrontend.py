@@ -25,3 +25,13 @@ class PicTestFrontend(ClockedObject):
         True,
         "Exit after every request in the fixed smoke trace completes",
     )
+
+    trace = Param.String(
+        "p2s",
+        "Fixed frontend trace: p2s or acc",
+    )
+
+    acc_bit_width_code = Param.Unsigned(
+        1,
+        "ACC bit-width code: 0=16-bit lanes, 1=32-bit lanes",
+    )
