@@ -163,6 +163,22 @@ class DMAEngine : public ClockedObject
         void recvRangeChange() override { }
     };
 
+    /** Port to TLBReqScheduler. */
+    class TLBSidePort : public RequestPort
+    {
+      private:
+        DMAEngine *owner;
+
+      public:
+        TLBSidePort(const std::string &name, DMAEngine *owner) :
+            RequestPort(name), owner(owner)
+        { }
+
+      protected:
+        bool recvTimingResp(PacketPtr pkt) override;
+        void recvReqRetry() override;
+    };
+
   public:
     explicit DMAEngine(const Params &p);
 
@@ -218,9 +234,14 @@ class DMAEngine : public ClockedObject
      *  says to wake up at, if any. */
     void processIssueEvent();
 
-    /** VA -> PA. Placeholder: identity-mapped (SE-mode-style
-     *  passthrough). No MMU/TLB hookup exists yet for this DMA path. */
-    bool translate(Addr vaddr, Addr &paddr);
+    /** Send a TLB query for the page of @p vaddr on behalf of @p op. */
+    void sendTlbQuery(P2SOpState &op, Addr vaddr);
+
+    /** Apply a TLB response to the op that asked. */
+    bool handleTlbResponse(PacketPtr pkt);
+
+    /** TLB port can accept again; resend the held query. */
+    void tlbRetry();
 
     /** Build (but don't send) a ReadReq packet for chunk @p c at
      *  physical address @p paddr. */
@@ -249,6 +270,7 @@ class DMAEngine : public ClockedObject
 
     std::vector<P2SPort> p2sPorts;
     MemSidePort memSidePort;
+    TLBSidePort tlbSidePort;
 
     RequestorID requestorId;
 
@@ -264,14 +286,19 @@ class DMAEngine : public ClockedObject
     const uint32_t chunkBytes;      //!< Max bytes per single DMA request.
     const uint32_t blockBytes;      //!< Cache block size (chunk ceiling).
     const uint32_t maxOutstanding;  //!< Concurrent in-flight reads allowed.
-    const bool     tlbPipelined = false;
-    const Tick     tlbLatencyTicks; //!< Cost of one (serialised) translation.
+    const bool     skipSamePage;    //!< Reuse last translation if same page.
 
     std::unordered_map<uint32_t, P2SOpState> opTable;
     uint32_t nextOpId = 1;
 
-    /** Single shared TLB port: translations serialise behind this. */
-    Tick tlbFreeTick = 0;
+    /** One TLB query in flight at a time. */
+    bool tlbBusy = false;
+    PacketPtr tlbRetryPkt = nullptr;
+
+    /** Last translated page, used when skipSamePage is set. */
+    bool lastValid = false;
+    Addr lastVpn = 0;
+    Addr lastPpn = 0;
 
     bool blocked = false;
 
