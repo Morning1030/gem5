@@ -210,6 +210,12 @@ class PICLLCTags(BaseSetAssoc):
     num_sub_arrays_per_mat = Param.Unsigned(
         4, "Number of SRAM sub-arrays per Mat (paper: 4)"
     )
+    # Ways that start in PIC mode, one bit per way. Real systems switch ways
+    # at run time; this is for tests that drive the Mats directly.
+    initial_pic_ways = Param.UInt32(
+        0, "Bitmask of ways that start in PIC mode (normal cache way ignored)"
+    )
+
     # Each Mat outputs a 16-byte slice; 4 Mats * 16 B = 64 B = 1 cache line.
     mat_slice_bytes = Param.Unsigned(
         16, "Byte width of one Mat's data output (paper: 16)"

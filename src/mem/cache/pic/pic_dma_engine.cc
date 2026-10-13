@@ -67,12 +67,13 @@ splitRequests(const DMADescriptor &desc, uint32_t maxChunkBytes,
 DMAEngine::DMAEngine(const Params &p) :
     ClockedObject(p),
     memSidePort(p.name + ".mem_side", this),
+    tlbSidePort(p.name + ".tlb_side", this),
     requestorId(p.system->getRequestorId(this)),
     issueEvent([this]{ processIssueEvent(); }, name() + ".issueEvent"),
     chunkBytes(p.chunk_bytes),
     blockBytes(p.block_bytes),
     maxOutstanding(p.max_outstanding),
-    tlbLatencyTicks(cyclesToTicks(p.tlb_latency))
+    skipSamePage(p.skip_same_page)
 {
     for (int i = 0; i < p.port_p2s_side_connection_count; ++i) {
         p2sPorts.emplace_back(
@@ -86,6 +87,9 @@ DMAEngine::getPort(const std::string &if_name, PortID idx)
     if (if_name == "mem_side") {
         panic_if(idx != InvalidPortID, "DMAEngine mem_side is not a vector port");
         return memSidePort;
+    } else if (if_name == "tlb_side") {
+        panic_if(idx != InvalidPortID, "DMAEngine tlb_side is not a vector port");
+        return tlbSidePort;
     } else if (if_name == "p2s_side" &&
                static_cast<size_t>(idx) < p2sPorts.size()) {
         return p2sPorts[idx];
@@ -181,6 +185,18 @@ DMAEngine::MemSidePort::recvReqRetry()
     owner->retry();
 }
 
+bool
+DMAEngine::TLBSidePort::recvTimingResp(PacketPtr pkt)
+{
+    return owner->handleTlbResponse(pkt);
+}
+
+void
+DMAEngine::TLBSidePort::recvReqRetry()
+{
+    owner->tlbRetry();
+}
+
 // ---------------------------------------------------------------------------
 // Request/response handling
 // ---------------------------------------------------------------------------
@@ -255,8 +271,9 @@ DMAEngine::startOp(P2SOpState op)
     op.rowRemaining.assign(op.desc.numRows, op.desc.bytesPerRow);
     op.groupRemaining.assign(op.numGroups(), op.rowsPerGroup);
 
-    DPRINTF(PICDMA, "op %u: %u rows x %u B -> %zu chunks%s\n",
-            opId, op.desc.numRows, op.desc.bytesPerRow, op.pending.size(),
+    DPRINTF(PICDMA, "op %u: %u rows x %u B -> %u chunks%s\n",
+            opId, op.desc.numRows, op.desc.bytesPerRow,
+            static_cast<unsigned>(op.pending.size()),
             op.desc.rowsContiguous() ? " (contiguous)" : " (strided)");
 
     opTable.emplace(opId, std::move(op));
@@ -295,22 +312,20 @@ DMAEngine::issue()
                 break;
             }
 
-            // Serialised TLB port.  SE mode would otherwise translate for
-            // free, hiding the cost that page splitting actually incurs.
-            if (!tlbPipelined && curTick() < tlbFreeTick) {
-                nextWake = std::min(nextWake, tlbFreeTick);
-                break;
+            // One TLB query per page; chunks reuse the translation.
+            const Addr vpn = c.vaddr / PageBytes;
+            if (!(op.pageValid && op.vpn == vpn)) {
+                if (skipSamePage && lastValid && lastVpn == vpn) {
+                    op.pageValid = true;
+                    op.vpn = vpn;
+                    op.ppn = lastPpn;
+                } else {
+                    if (!op.tlbInFlight && !tlbBusy)
+                        sendTlbQuery(op, c.vaddr);
+                    break;   // handleTlbResponse() wakes issue()
+                }
             }
-            tlbFreeTick = curTick() + tlbLatencyTicks;
-
-            // Translated here, per chunk, at the moment it's actually
-            // sent -- not up front in splitRequests() -- so tlbFreeTick
-            // above lands where the RTL pays the TLB round trip, and a
-            // future TLB-miss model has somewhere to hook in.
-            Addr paddr = 0;
-            panic_if(!translate(c.vaddr, paddr),
-                     "DMAEngine::issue: op %u translation failed for "
-                     "vaddr %#x", op.opId, c.vaddr);
+            const Addr paddr = op.ppn * PageBytes + c.vaddr % PageBytes;
 
             PacketPtr pkt = buildReadPacket(paddr, c); // build packet
             pkt->pushSenderState(new PICDMASenderState(
@@ -352,6 +367,10 @@ DMAEngine::retry()
         retryPkt = nullptr;
     }
     blocked = false;
+
+    // Wake issue() for the chunks still pending.
+    if (!issueEvent.scheduled())
+        schedule(issueEvent, nextCycleTick());
 }
 
 bool
@@ -429,15 +448,57 @@ DMAEngine::findOp(uint32_t opId)
 // now plain private methods called directly).
 // ---------------------------------------------------------------------------
 
-bool
-DMAEngine::translate(Addr vaddr, Addr &paddr)
+void
+DMAEngine::sendTlbQuery(P2SOpState &op, Addr vaddr)
 {
-    // mod: p2s_arbiter
-    // Placeholder: identity-mapped (SE-mode-style passthrough). No
-    // MMU/TLB hookup exists yet for this DMA path -- replace once one
-    // does. tlbLatencyTicks still models the round-trip cost even though
-    // the mapping itself is trivial.
-    paddr = vaddr;
+    RequestPtr req = std::make_shared<Request>(vaddr, 8, 0, requestorId);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->allocate();
+    pkt->pushSenderState(new PICTlbSenderState(op.opId, vaddr / PageBytes));
+
+    DPRINTF(PICDMA, "op %u: TLB query vaddr %#x\n", op.opId, vaddr);
+
+    op.tlbInFlight = true;
+    tlbBusy = true;
+    if (!tlbSidePort.sendTimingReq(pkt))
+        tlbRetryPkt = pkt;
+}
+
+void
+DMAEngine::tlbRetry()
+{
+    panic_if(!tlbRetryPkt, "DMAEngine: unexpected tlb_side retry");
+    if (tlbSidePort.sendTimingReq(tlbRetryPkt))
+        tlbRetryPkt = nullptr;
+}
+
+bool
+DMAEngine::handleTlbResponse(PacketPtr pkt)
+{
+    auto *ss = safe_cast<PICTlbSenderState *>(pkt->popSenderState());
+    P2SOpState *op = findOp(ss->opId);
+    panic_if(!op, "TLB response for unknown op %u", ss->opId);
+
+    uint64_t paddr = 0;
+    std::memcpy(&paddr, pkt->getConstPtr<uint8_t>(), sizeof(paddr));
+    op->vpn = ss->vpn;
+    op->ppn = paddr / PageBytes;
+    op->pageValid = true;
+    op->tlbInFlight = false;
+    tlbBusy = false;
+
+    lastValid = true;
+    lastVpn = op->vpn;
+    lastPpn = op->ppn;
+
+    DPRINTF(PICDMA, "op %u: TLB vpn %#x -> ppn %#x\n",
+            op->opId, op->vpn, op->ppn);
+
+    delete ss;
+    delete pkt;
+
+    if (!issueEvent.scheduled())
+        schedule(issueEvent, nextCycleTick());
     return true;
 }
 

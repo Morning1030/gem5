@@ -11,14 +11,14 @@ void
 MatDatapath::readCArray(uint64_t addr, const std::array<bool, NumArrays> &readEn)
 {
     for (unsigned i = 0; i < NumArrays; ++i) {
-        rVec_[i] = readEn[i] ? cArraySram_[i][addr % CArrayWordlineNums] : 0;
+        rVec_[i] = readEn[i] ? arraySram_[i][addr % CArrayWordlineNums] : 0;
     }
 }
 
 void
 MatDatapath::latchMArrayRow(uint64_t addr)
 {
-    const uint64_t row = mArraySram_[addr % MArrayWordlineNums];
+    const uint64_t row = arraySram_[mArrayID(addr)][mArrayRow(addr)];
     for (unsigned i = 0; i < WBufNumSlots; ++i) {
         rWire_[i] = static_cast<int16_t>((row >> (i * AccLaneWidth)) & 0xFFFF);
     }
@@ -54,7 +54,7 @@ MatDatapath::commitWBufToMArray(uint64_t addr)
     for (unsigned i = 0; i < WBufNumSlots; ++i) {
         word |= (static_cast<uint64_t>(static_cast<uint16_t>(wBuf_[i])) << (i * AccLaneWidth));
     }
-    mArraySram_[addr % MArrayWordlineNums] = word;
+    arraySram_[mArrayID(addr)][mArrayRow(addr)] = word;
 }
 
 } // namespace mat_fsm

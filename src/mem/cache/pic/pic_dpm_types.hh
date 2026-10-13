@@ -145,6 +145,14 @@ struct P2SOpState
     /** DMA reads issued but not yet returned. */
     uint32_t outstanding = 0;
 
+    /** Current page translation (page numbers). */
+    bool pageValid = false;
+    Addr vpn = 0;
+    Addr ppn = 0;
+
+    /** A TLB query for this op is in flight. */
+    bool tlbInFlight = false;
+
     /** Wordline writes still queued in the bank arbiter. */
     uint32_t pendingWrites = 0;
 
@@ -176,6 +184,20 @@ class PICDMASenderState : public Packet::SenderState
     const uint32_t rowIdx;
     const uint32_t rowOffset;
     const uint32_t size;
+};
+
+/**
+ * Sender state on a TLB query: the op and virtual page it was for.
+ */
+class PICTlbSenderState : public Packet::SenderState
+{
+  public:
+    PICTlbSenderState(uint32_t _opId, Addr _vpn)
+        : opId(_opId), vpn(_vpn)
+    {}
+
+    const uint32_t opId;
+    const Addr vpn;
 };
 
 }  // namespace gem5

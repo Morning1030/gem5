@@ -12,14 +12,16 @@ class Mat(ClockedObject):
         Parent.any, "System used to allocate Mat requestor ID"
     )
 
-    # This Mat's (bank, way) coordinate. Ways below pic_cache.py's
-    # FIRST_PIC_WAY have no Mat at all (permanently reserved for normal
-    # cache use -- a hardware upper bound, not just "nothing switched
-    # there yet"; see pic_cache.py's own comment), so way is always >=
-    # FIRST_PIC_WAY. Needed to report busy into tags's (bank, way)
-    # coordinate and to compute this Mat's own L row addresses.
+    # This Mat's (bank, way) coordinate. Needed to report busy into
+    # tags's (bank, way) coordinate and to compute its L row addresses.
     bank_index = Param.Unsigned(0, "Cache bank index this Mat lives in")
     way = Param.Unsigned(1, "Way index within its bank")
+
+    # RTL Mat(pic=...). False = a normal cache Mat (ways below
+    # FIRST_PIC_WAY): only the 4 x 512 x 64-bit SRAM (RTL NormalArray), no
+    # controller, never computes. array_side then reads/writes it as plain
+    # memory; the arbiter never connects to it (RTL asserts on that).
+    pic = Param.Bool(True, "PIC-capable Mat; False = storage only")
 
     start_cycles = Param.Cycles(1, "Cycles before the first step")
     max_cycles = Param.Unsigned(100000, "Panic if not finished by then")
@@ -40,6 +42,11 @@ class Mat(ClockedObject):
     # Declared, and the response path exists, but nothing in mat_fsm/
     # mat_datapath drives it yet -- see mat.cc's file comment.
     cache_port = RequestPort("Request port to CacheController")
+
+    # 8-byte reads/writes from AccessBankArb.mat_side into this Mat's
+    # four sub-arrays. Packet address = arrayID_in_mat << 9 | wordline.
+    array_side = ResponsePort("Array reads/writes from AccessBankArb")
+    array_latency = Param.Cycles(1, "Cycles from array access to response")
 
     # cal() command setup for this one Mat.
     n_buf = Param.Unsigned(1, "nBuf")

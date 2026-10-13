@@ -112,16 +112,19 @@
  * payload -- P2S needs nothing back but the ack) and sent out that
  * client's p2s_side port.
  *
- * Bank side ("cache banks" in the req/resp flow this was built for): per
- * the file-header design above, this is deliberately left as the
- * existing functional stub -- bankReadyVec defaults every bank to
- * always-ready, so a granted write commits the same cycle. There is no
- * cache-bank SimObject in the tree yet (bank state today lives only
- * inside PICLLCTags, reached by plain function calls, never by ports),
- * and the RTL-documented fire semantics mean P2S never actually observes
- * bank-commit latency anyway. setBankReady()/setArrayAddrToBank() remain
- * the hooks for wiring in a real SRAM-timing model later without
- * disturbing the P2S-facing protocol above.
+ * Bank side: mat_side is a VectorRequestPort, one port per Mat. When a
+ * grant commits, the access is sent to the target Mat:
+ *   - WRITE: WriteReq, size 8, data = bit-plane. The client was already
+ *     acked at grant, so the Mat's response is just dropped.
+ *   - READ (AutoLoadL): ReadReq, size 8. AutoLoadL gets its response only
+ *     when the Mat's response comes back, carrying the Mat's data.
+ * The packet address is the address inside the Mat (arrayID_in_mat and
+ * offset). Mat port index = (matID_in_bank - first_pic_mat) * num_banks +
+ * bankID. If the Mat refuses the packet, that bank counts as not ready, so
+ * the arbiter goes to Block like the RTL, and the packet is resent on
+ * retry. If mat_side has no connections the arbiter runs in stub mode:
+ * nothing is sent anywhere and AutoLoadL reads return zeros.
+ * setBankReady()/setArrayAddrToBank() remain hooks for timing/decode.
  *
  * Driving tick(): the SimObject schedules its own tickEvent one cycle
  * out whenever a request arrives or a grant leaves work behind (another
@@ -217,6 +220,24 @@ class AccessBankArb : public ClockedObject
                   PortID idx = InvalidPortID) override;
 
   private:
+    /** Port to one Mat. */
+    class MatSidePort : public RequestPort
+    {
+      private:
+        int id;
+        AccessBankArb *owner;
+
+      public:
+        MatSidePort(const std::string &name, int id, AccessBankArb *owner) :
+            RequestPort(name), id(id), owner(owner)
+        { }
+
+      protected:
+        bool recvTimingResp(PacketPtr pkt) override;
+        void recvReqRetry() override;
+        void recvRangeChange() override { }
+    };
+
     /**
      * mod: p2s_arbiter
      * Port on the P2S-facing side that receives bit-plane WRITE requests.
@@ -315,6 +336,10 @@ class AccessBankArb : public ClockedObject
     {
         unsigned clientId; //client that fired
         bool committedThisCycle; // bank is ready = commited
+        /** True when this is the late commit of a request that was already
+         *  granted earlier (it went to Block); the client was acked back
+         *  then, so there is nothing more to ack. */
+        bool lateCommit = false;
     };
 
     /**
@@ -409,6 +434,41 @@ class AccessBankArb : public ClockedObject
     std::unordered_map<unsigned, PacketPtr> pendingReqPkt;
 
     EventFunctionWrapper tickEvent;
+
+    // ---- Mat side ----
+
+    /** Mat array index for @p addr, which targets bank @p bankId. */
+    unsigned matIndex(uint32_t addr, unsigned bankId) const;
+
+    /** Send a committed access to its Mat; hold it if the Mat refuses. */
+    void sendToMat(unsigned clientId, const ReqPackage &req, unsigned bankId);
+
+    /** Mat answered an access. */
+    bool handleMatResponse(PacketPtr pkt);
+
+    /** Mat port @p idx can accept again; resend the held packet. */
+    void matRetry(int idx);
+
+    /** Send the read data back to AutoLoadL and free its slot. */
+    void finishAutoLoad(const uint8_t *data);
+
+    std::vector<MatSidePort> matPorts;
+    RequestorID requestorId;
+    const unsigned matsPerBank;
+    const unsigned firstPicMat;
+    const unsigned bankBits;
+
+    /** Packet a Mat refused, one slot per bank (a bank with a held packet
+     *  is not ready, so at most one is ever held). */
+    struct HeldMatReq
+    {
+        PacketPtr pkt = nullptr;
+        unsigned matIdx = 0;
+    };
+    std::vector<HeldMatReq> heldMat;
+
+    /** The one AutoLoadL read in flight, until its response is sent. */
+    PacketPtr autoLoadPkt = nullptr;
 };
 
 } // namespace gem5

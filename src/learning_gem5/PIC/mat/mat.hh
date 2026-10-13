@@ -2,7 +2,9 @@
 #define __LEARNING_GEM5_PIC_MAT_MAT_HH__
 
 #include <cstdint>
+#include <deque>
 #include <string>
+#include <utility>
 
 #include "learning_gem5/PIC/mat/mat_fsm.hh"
 #include "mem/cache/tags/pic_llc_tags.hh"
@@ -80,11 +82,39 @@ class Mat : public ClockedObject
             : RequestPort(name, owner), owner(owner) {}
     };
 
+    /** Receives 8-byte array reads/writes from AccessBankArb. */
+    class ArrayPort : public ResponsePort
+    {
+      private:
+        Mat *owner;
+
+      public:
+        ArrayPort(const std::string &name, Mat *owner)
+            : ResponsePort(name), owner(owner) {}
+
+        AddrRangeList getAddrRanges() const override;
+
+      protected:
+        Tick recvAtomic(PacketPtr pkt) override
+        { panic("Mat: recvAtomic unimpl."); }
+        void recvFunctional(PacketPtr pkt) override
+        { panic("Mat: recvFunctional unimpl."); }
+        bool recvTimingReq(PacketPtr pkt) override
+        { return owner->handleArrayReq(pkt); }
+        void recvRespRetry() override { owner->handleArrayRespRetry(); }
+    };
+
     RequestorID requestorId;
     EventFunctionWrapper tickEvent;
 
     LoadPort loadPort;
     CachePort cachePort;
+    ArrayPort arrayPort;
+    EventFunctionWrapper arrayRespEvent;
+    const Cycles arrayLatency;
+    /** (ready tick, response) in arrival order. */
+    std::deque<std::pair<Tick, PacketPtr>> arrayRespQ;
+    bool arrayRespBlocked = false;
 
     mat_fsm::MatFSM fsm;
     mat_fsm::SetUpIO setUp;
@@ -93,10 +123,12 @@ class Mat : public ClockedObject
     bool respArrived = false;
     bool done = false;
     unsigned loads = 0;
+    unsigned droppedArrayAccesses = 0;
 
     unsigned cycles = 0;
     const unsigned maxCycles;
     const Cycles startCycles;
+    const bool pic;
     const unsigned bankIndex;
     const unsigned way;
     PICLLCTags *tags;  // may be nullptr -- busy reporting is then skipped
@@ -108,6 +140,9 @@ class Mat : public ClockedObject
     // Not yet called by anything -- see the class doc comment.
     bool handleCacheResp(PacketPtr pkt);
     void handleCacheRetry();
+    bool handleArrayReq(PacketPtr pkt);
+    void handleArrayRespRetry();
+    void processArrayResp();
     void processTick();
 
   public:

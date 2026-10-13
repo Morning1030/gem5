@@ -51,8 +51,10 @@ system.dma = DMAEngine(
     chunk_bytes=64,
     block_bytes=64,
     max_outstanding=8,
-    tlb_latency=1,
 )
+
+system.tlb_sched = TLBReqScheduler()
+system.dma.tlb_side = system.tlb_sched.cpu_side
 
 system.bank_arb = AccessBankArb(num_banks=4)
 

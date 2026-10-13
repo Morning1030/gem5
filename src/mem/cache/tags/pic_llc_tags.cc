@@ -22,7 +22,7 @@ PICLLCTags::PICLLCTags(const Params &p)
       numMatsPerBank(p.num_mats_per_bank),
       numSubArraysPerMat(p.num_sub_arrays_per_mat),
       matSliceBytes(p.mat_slice_bytes),
-      wayPICModeBitmap(0),
+      wayPICModeBitmap(p.initial_pic_ways),
       matBusyBitmap(p.num_banks, 0),
       blkShift(floorLog2(blkSize)),
       bankBits(floorLog2(numBanks))
@@ -34,6 +34,9 @@ PICLLCTags::PICLLCTags(const Params &p)
     fatal_if(normalCacheWay >= allocAssoc,
              "PICLLCTags: normal_cache_way (%u) must be < assoc (%u)",
              normalCacheWay, allocAssoc);
+    fatal_if((p.initial_pic_ways >> normalCacheWay) & 1u,
+             "PICLLCTags: initial_pic_ways has the normal cache way (%u) set",
+             normalCacheWay);
     fatal_if(allocAssoc > 32,
              "PICLLCTags: associativity %u exceeds the 32-way bitmap limit",
              allocAssoc);
