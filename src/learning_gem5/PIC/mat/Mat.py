@@ -12,14 +12,16 @@ class Mat(ClockedObject):
         Parent.any, "System used to allocate Mat requestor ID"
     )
 
-    # This Mat's (bank, way) coordinate. Ways below pic_cache.py's
-    # FIRST_PIC_WAY have no Mat at all (permanently reserved for normal
-    # cache use -- a hardware upper bound, not just "nothing switched
-    # there yet"; see pic_cache.py's own comment), so way is always >=
-    # FIRST_PIC_WAY. Needed to report busy into tags's (bank, way)
-    # coordinate and to compute this Mat's own L row addresses.
+    # This Mat's (bank, way) coordinate. Needed to report busy into
+    # tags's (bank, way) coordinate and to compute its L row addresses.
     bank_index = Param.Unsigned(0, "Cache bank index this Mat lives in")
     way = Param.Unsigned(1, "Way index within its bank")
+
+    # RTL Mat(pic=...). False = a normal cache Mat (ways below
+    # FIRST_PIC_WAY): only the 4 x 512 x 64-bit SRAM (RTL NormalArray), no
+    # controller, never computes. array_side then reads/writes it as plain
+    # memory; the arbiter never connects to it (RTL asserts on that).
+    pic = Param.Bool(True, "PIC-capable Mat; False = storage only")
 
     start_cycles = Param.Cycles(1, "Cycles before the first step")
     max_cycles = Param.Unsigned(100000, "Panic if not finished by then")

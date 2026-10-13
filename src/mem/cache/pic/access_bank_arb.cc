@@ -494,8 +494,9 @@ AccessBankArb::matIndex(uint32_t addr, unsigned bankId) const
     const unsigned matId = (addr >> (kOffsetBits + kArrayIdInMatBits +
                                      bankBits)) & (matsPerBank - 1);
     panic_if(matId < firstPicMat,
-             "AccessBankArb: addr %#x targets matID %u, which has no Mat "
-             "(first is %u)", addr, matId, firstPicMat);
+             "AccessBankArb: addr %#x targets matID %u, a normal cache Mat; "
+             "the PIC channel cannot access it (first PIC matID is %u)",
+             addr, matId, firstPicMat);
     return (matId - firstPicMat) * bankReadyVec.size() + bankId;
 }
 

@@ -128,6 +128,7 @@ class Mat : public ClockedObject
     unsigned cycles = 0;
     const unsigned maxCycles;
     const Cycles startCycles;
+    const bool pic;
     const unsigned bankIndex;
     const unsigned way;
     PICLLCTags *tags;  // may be nullptr -- busy reporting is then skipped

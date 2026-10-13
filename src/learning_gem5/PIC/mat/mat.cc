@@ -23,6 +23,7 @@ Mat::Mat(const MatParams &params) :
     arrayLatency(params.array_latency),
     maxCycles(params.max_cycles),
     startCycles(params.start_cycles),
+    pic(params.pic),
     bankIndex(params.bank_index),
     way(params.way),
     tags(params.tags)
@@ -58,7 +59,9 @@ Mat::getPort(const std::string &if_name, PortID idx)
 void
 Mat::startup()
 {
-    schedule(tickEvent, clockEdge(startCycles));
+    // A normal cache Mat has no controller, so it never runs a job.
+    if (pic)
+        schedule(tickEvent, clockEdge(startCycles));
 }
 
 // request_vec.fire: the request was granted (accepted).
@@ -152,7 +155,7 @@ Mat::handleArrayReq(PacketPtr pkt)
 
     // RTL (BankSellPIC.scala): the PIC channel may only touch a way that is
     // in PIC mode.
-    panic_if(tags != nullptr && !tags->isWayInPICMode(way),
+    panic_if(pic && tags != nullptr && !tags->isWayInPICMode(way),
              "%s: array access while way %u is not in PIC mode", name(),
              way);
 
@@ -169,7 +172,7 @@ Mat::handleArrayReq(PacketPtr pkt)
     // RTL (Mat.scala): while a job runs the arrays take their enable, address
     // and data from the Mat's controller (arrayCacheMode is false), so the
     // external port is ignored. A write is lost; a read gets nothing useful.
-    if (fsm.state() != mat_fsm::MainState::MainIdle) {
+    if (pic && fsm.state() != mat_fsm::MainState::MainIdle) {
         ++droppedArrayAccesses;
         DPRINTF(MatBank, "bank %u way %u: %s array %u row %u dropped, "
                 "Mat is busy\n", bankIndex, way,

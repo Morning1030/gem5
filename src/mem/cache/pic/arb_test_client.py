@@ -19,7 +19,8 @@ class ArbTestClient(ClockedObject):
     kind = Param.String(
         "p2s",
         "'p2s': 16-byte P2SWritePayload writes (arb p2s_side). "
-        "'autoload': 8-byte reads (arb autoload_side)",
+        "'autoload': 8-byte reads (arb autoload_side). "
+        "'raw': 8-byte reads and writes straight to a Mat's array_side",
     )
     ops = VectorParam.String(
         [], "Script, one op at a time: 'W <addr> <data>' or 'R <addr> <expect>'"

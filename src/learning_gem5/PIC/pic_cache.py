@@ -1,14 +1,22 @@
-# PICCache -- the PIC cache banks as one reusable component:
-# PICLLCTags + 60 Mats (RTL: BankedStore / BankShellPIC / Bank / Mat).
+# PICCache -- the whole PIC cache (4 banks x 16 Mats) as one reusable
+# component: PICLLCTags + 64 Mats (RTL: BankedStore / BankShellPIC / Bank /
+# Mat).
 # A testbench builds it with
 #
 #   cache = PICCache(system)
 #
-# Fixed topology (paper section 4.1.3): 4 banks x 16 ways. Ways below
-# FIRST_PIC_WAY are plain cache ways with no Mat (their data would live in
-# CacheController, which is not part of this file yet). Every other way has
-# one Mat per bank: (16 - 1) x 4 = 60 Mats. Bank and way counts are fixed
-# constants; only the Mat cal() parameters can be passed in.
+# Fixed topology (paper section 4.1.3): 4 banks x 16 ways, one Mat per
+# (bank, way). Ways below FIRST_PIC_WAY are normal cache Mats (Mat with
+# pic=False, RTL NormalArray: storage only); the other (16 - 1) x 4 = 60 are
+# PIC Mats. All cache data lives in the Mats; PICLLCTags holds the tags.
+# Bank and way counts are fixed constants; only the PIC Mats' cal()
+# parameters can be passed in.
+#
+#   .mats         60 PIC Mats      -- what the arbiter and AutoLoadL use
+#   .normal_mats   4 normal Mats   -- for the cache path (CacheController,
+#                                     not built yet); the arbiter never
+#                                     touches them
+#   .all_mats     64 Mats in RTL global matID order (matID * 4 + bank)
 #
 # The AccessBankArb and its clients (P2S, AutoLoadL, ...) are not in here:
 # in the RTL they sit in the PIC main module (PolymorPIC_main_in_cache),
@@ -63,12 +71,21 @@ class PICCache:
             initial_pic_ways=pic_way_mask,
         )
 
+        # ---- The 4 normal cache Mats (way < FIRST_PIC_WAY) ----------------
+        self.normal_mats = [
+            Mat(system=system, bank_index=b, way=w, pic=False,
+                tags=system.pic_tags)
+            for w in range(FIRST_PIC_WAY)
+            for b in range(NUM_BANKS)
+        ]
+        system.normal_mats = self.normal_mats
+
         # ---- The 60 PIC Mats ---------------------------------------------
         # Connection order matches the RTL's matID*numBanks+bankID
         self.mats = []
 
-        for w in range(1, 16):
-            for b in range(4):
+        for w in range(FIRST_PIC_WAY, NUM_WAYS):
+            for b in range(NUM_BANKS):
                 mat = Mat(
                     system=system,
                     bank_index=b,
@@ -78,4 +95,7 @@ class PICCache:
                 )
                 self.mats.append(mat)
         system.mats = self.mats
+
+        # Global matID order: way-major, bank-minor, normal Mats first.
+        self.all_mats = self.normal_mats + self.mats
 

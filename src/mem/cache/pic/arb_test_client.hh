@@ -20,7 +20,9 @@ namespace gem5
  *   R <addr> <expect> read  (kind 'autoload': 8-byte read); the data in
  *                     the response must equal <expect>, else panic.
  *                     <expect> = '*' only prints the value.
- * <addr> is the 17-bit array address the arbiter decodes.
+ * kind 'raw' does 8-byte reads and writes straight to one Mat.
+ * <addr> is the 17-bit array address the arbiter decodes (for 'raw', the
+ * 11-bit address inside the Mat).
  */
 class ArbTestClient : public ClockedObject
 {
@@ -70,6 +72,7 @@ class ArbTestClient : public ClockedObject
     RequestorID requestorId;
 
     const bool isP2S;
+    const bool isRaw;
     const bool exitWhenDone;
     const Cycles startDelay;
 

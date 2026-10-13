@@ -95,6 +95,20 @@ system.reader = ArbTestClient(
 )
 system.reader.port = arb.autoload_side
 
+# The whole cache is in PICCache: 64 Mats, 4 of them normal (way 0).
+assert len(cache.all_mats) == NUM_BANKS * NUM_WAYS
+assert all(not m.pic for m in cache.normal_mats)
+assert all(m.pic for m in cache.mats)
+
+# A normal Mat is plain storage on the cache path (no arbiter): write and
+# read back through its array_side directly. Address = array << 9 | row.
+system.way0_client = ArbTestClient(
+    kind='raw',
+    ops=[W(0x005, 0x0F0F0F0F0F0F0F0F), W(0x7FF, 0x1234),
+         R(0x005, 0x0F0F0F0F0F0F0F0F), R(0x7FF, 0x1234), R(0x006, 0)],
+)
+system.way0_client.port = cache.normal_mats[0].array_side
+
 m5.instantiate()
 print(f"{len(writes0) + len(writes1) + len(writes2)} writes, "
       f"{len(reads)} reads")
