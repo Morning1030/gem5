@@ -104,7 +104,7 @@ class CacheController : public Cache
     void processFlushSchedule();
     void processFlushDone();
     CacheBlk *findFlushBlk(uint32_t setID, Addr tag);
-    
+
     const Cycles flushProbeLat;
     const Cycles flushProbeDataLat;
     RequestorID  flushRequestorId;

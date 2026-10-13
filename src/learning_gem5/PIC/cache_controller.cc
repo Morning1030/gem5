@@ -262,7 +262,7 @@ CacheController::processFlushDone()
 bool
 CacheController::handleWayMode(PacketPtr pkt)
 {
-    const auto *m = pkt->getConstPtr<WayModePayload>(); 
+    const auto *m = pkt->getConstPtr<WayModePayload>();
 
     picTags()->setWayRangePICMode(m->beginWay, m->endWay, m->picMode != 0);
 
