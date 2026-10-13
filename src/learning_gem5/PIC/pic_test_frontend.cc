@@ -62,15 +62,15 @@ PicTestFrontend::buildProtocolSmokeTrace()
     if (trace == "p2s") {
 
         // P2S_L
-        append(
-            PicFunctionBuilder::p2sl(
-                0x80010000,
-                0x00001000,
-                64,
-                64,
-                0,
-                2,
-                7));
+        // append(
+        //     PicFunctionBuilder::p2sl(
+        //         0x80010000,
+        //         0x00001000,
+        //         64,
+        //         64,
+        //         0,
+        //         2,
+        //         7));
 
         // P2S_R
         // append(
@@ -84,15 +84,17 @@ PicTestFrontend::buildProtocolSmokeTrace()
         //         false));
 
         // P2S_R_T
-        // append(
-        //     PicFunctionBuilder::p2sr(
-        //         0x80020000,
-        //         0x00000004,
-        //         {2, 64, 128},
-        //         4,
-        //         2,
-        //         7,
-        //         true));
+        append(
+            PicFunctionBuilder::p2srt(
+                0x80020000,
+                0x00000004,
+                128,
+                64,
+                64,
+                4,
+                2,
+                7,
+                true));
 
         return;
     }

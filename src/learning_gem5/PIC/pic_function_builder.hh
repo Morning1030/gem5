@@ -42,13 +42,6 @@ class PicFunctionBuilder
         launch(out, ModuleID::LOAD, commandId, 0);
         return out;
     }
-    // PicFunctionBuilder::p2sl(
-    //     0x80010000,
-    //     0x00001000,
-    //     64,
-    //     128,
-    //     2,
-    // 7));
 
     static std::vector<PicSetRequest>
     p2sl(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
@@ -74,6 +67,21 @@ class PicFunctionBuilder
         add(out, SetRegister::Dst, onChipDestination, "P2SR SET_DST");
         add(out, SetRegister::Size, packSize(size), "P2SR SET_SIZE");
         launch(out, ModuleID::P2S_R, commandId,
+               packP2SRParams(buffersPerMat, bitWidthMinusOne, transpose));
+        return out;
+    }
+    static std::vector<PicSetRequest>
+    p2srt(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
+         uint16_t byte_per_row, uint16_t offset,
+         uint8_t commandId, uint8_t buffersPerMat,
+         uint8_t bitWidthMinusOne, bool transpose)
+    {
+        std::vector<PicSetRequest> out;
+        add(out, SetRegister::Src, dramSource, "P2SR SET_SRC");
+        add(out, SetRegister::Dst, onChipDestination, "P2SR SET_DST");
+        add(out, SetRegister::Size, packSize({rows, byte_per_row, offset}),
+            "P2S_R_T SET_SIZE");
+        launch(out, ModuleID::P2S_R_T, commandId,
                packP2SRParams(buffersPerMat, bitWidthMinusOne, transpose));
         return out;
     }

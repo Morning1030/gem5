@@ -410,7 +410,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::P2S_R;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            nextEnqTask.clientID = QryTabClient::P2S_L;
+            nextEnqTask.clientID = QryTabClient::P2S_R;
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
@@ -435,7 +435,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::P2S_R_T;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            nextEnqTask.clientID = QryTabClient::P2S_R_T;
 
             DPRINTF(Scheduler, "SET_PARAM P2S\n");
             break;
@@ -559,6 +559,7 @@ Scheduler::processPrepareTaskEvent()
 void
 Scheduler::processEnqueEvent() {
     nextTask.push_back(nextEnqTask);
+    DPRINTF(Scheduler, "Enqueue the Task to queue");
     schedule(setCmdEvent, clockEdge(Cycles(1)));
 }
 void
@@ -577,6 +578,8 @@ Scheduler::processSetCmdEvent(){
     QueryPayload queryPayload{nextEnqTask.clientID, nextEnqTask.cmdID, false};    // to init the cmd_state
     pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
     cmdStateHelperPort.sendPacket(pkt);
+
+    DPRINTF(Scheduler, "Send cmd state request");
 
     if (currState == TaskState::IDLE && !triggerEvent.scheduled()) {
         schedule(triggerEvent, clockEdge(Cycles(1)));

@@ -221,10 +221,10 @@ namespace gem5
             {
                 private:
                     P2S_R_T *owner;
-                    PacketPtr blockedPacket;
                 public:
                     CPUSidePort(const std::string& name, P2S_R_T *owner);
                     void sendPacket(PacketPtr pkt);
+                    PacketPtr blockedPacket;
 
                 // there are three modes: Atomic, Functional and Timing
                 protected:
@@ -245,8 +245,8 @@ namespace gem5
                     void recvReqRetry() override;
                 public:
                     MemSidePort(const std::string& name, P2S_R_T *owner, PICPortID picPortID);
+                    void sendPacket(PacketPtr pkt);
                     PacketPtr blockedPacket;
-                    void sendPacket(PacketPtr pkt) {}
             };
             // direct port
             CPUSidePort instPort;
@@ -271,7 +271,6 @@ namespace gem5
             uint8_t bit_ptr;
             uint32_t row_store_ptr;
 
-            uint8_t dmaRow;
             // since each element is 8 bit, arrayID_offset has 8 elements corresponding to each bit
             std::vector<uint8_t> relative_offset_buf;
             std::vector<uint8_t> arrayID_offset;

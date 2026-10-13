@@ -112,7 +112,6 @@ P2S_L::MemSidePort::recvReqRetry()
         PacketPtr pkt = blockedPacket;
         blockedPacket = nullptr;
         sendPacket(pkt);
-            
         // might fail again, wait for another req retry
     }
     // retry req from cache bank, start writeEvent again from cache write queue
@@ -128,12 +127,10 @@ P2S_L::MemSidePort::recvReqRetry()
 bool
 P2S_L::handleRequest(PacketPtr pkt) {
     
-    if (pendingReqPkt != nullptr) {
-        // needRetry = true;
-        return false;
-    }
-    // currently working on this req
+    if (pendingReqPkt != nullptr || p2sDone == false) return false;
+    
     pendingReqPkt = pkt;
+    p2sDone = false;
 
     const P2S_L_Payload *p2s_L_Payload = pkt->getConstPtr<P2S_L_Payload>();
     // fill the packet field into data members of p2s
@@ -177,9 +174,12 @@ P2S_L::handleResponse(PICPortID picPortID, PacketPtr pkt) {
         return true;
     }
     else if (picPortID == PICPortID::CB) {
+        // TODO need to filter whether p2sDone
         delete pkt;
-        pendingReqPkt->makeResponse();
-        instPort.sendPacket(pendingReqPkt);
+        if (p2sDone) {
+            pendingReqPkt->makeResponse();
+            instPort.sendPacket(pendingReqPkt);
+        }
         return true;
     }
     else {
@@ -197,29 +197,25 @@ P2S_L::processDMAReadEvent() {
     }
     RequestPtr request = std::make_shared<Request>(
         base_dram_addr,
-        64,                                 // TBD: next_row_offset_elem
+        64,                                 // regArray is 64 bytes
         0,                                  // TBD
         requestorId
     );
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
-    // TODO: Need to modify to sendPacket
     DMAPort.sendPacket(pkt);
-    base_dram_addr += next_row_offset_dram; // TBD
+    base_dram_addr += next_row_offset_dram;
 }
 void
 P2S_L::processBitSliceEvent() {
-    // each bit of elements in the whole row
-
     // extract bits from raw data
     uint64_t bitSlice = extractBits(regArray, bit_ptr);
 
-    // determine the address and pack into packets
-
+    // determine the address
     RequestPtr request = std::make_shared<Request>(
-        pic_write_ptr,              // TBD
-        sizeof(uint64_t),    // bitSlice
+        pic_write_ptr,
+        sizeof(uint64_t),           // bitSlice
         0,                          // TBD
         requestorId
     );
@@ -234,9 +230,9 @@ P2S_L::processBitSliceEvent() {
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
     DPRINTF(P2S_L, "Send Request writing to %llx\n", pic_write_ptr);
-    // if (!writeEvent.scheduled()) {
-    //     schedule(writeEvent, clockEdge(Cycles(1)));
-    // }
+    if (!writeEvent.scheduled()) {
+        schedule(writeEvent, clockEdge(Cycles(1)));
+    }
 
     // update the next address
     pic_write_ptr += next_slice_offset_pic; // next_slice_offset_pic = _L_block_row(?)
@@ -256,6 +252,7 @@ P2S_L::processBitSliceEvent() {
         }
         else {
             // the whole L tile is done
+            p2sDone = true;
         }
     }
 }

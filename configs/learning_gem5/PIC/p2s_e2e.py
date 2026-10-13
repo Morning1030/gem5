@@ -26,8 +26,8 @@ system.scheduler = Scheduler(system=system)
 system.cmd_state_helper = CmdStateHelper(system=system)
 
 system.p2s_l = P2S_L(system=system)
-# system.p2s_r = P2S_R(system=system)
-# system.p2s_r_t = P2S_R_T(system=system)
+system.p2s_r = P2S_R(system=system)
+system.p2s_r_t = P2S_R_T(system=system)
 
 system.dma = DMAEngine(
     system=system,
@@ -36,18 +36,6 @@ system.dma = DMAEngine(
     max_outstanding=8,
     tlb_latency=1,
 )
-
-
-system.pic_transport.mmio_port = system.scheduler.inst_port
-system.scheduler.csh_port = system.cmd_state_helper.inst_port
-system.scheduler.p2sl_port = system.p2s_l.inst_port
-# system.scheduler.p2sr_port = system.p2s_r.inst_port
-# system.scheduler.p2srt_port = system.p2s_r_t.inst_port
-
-system.p2s_l.dma_port = system.dma.p2s_side
-# system.p2s_r.dma_port = system.dma.p2s_side
-# system.p2s_r_t.dma_port = system.dma.p2s_side
-
 system.l_sink = P2SRealGoldenSink(
     mode='L',
     base_pic_addr=0x1000,
@@ -57,31 +45,42 @@ system.l_sink = P2SRealGoldenSink(
     exit_on_pass=False,
 )
 
-# system.r_sink = P2SRealGoldenSink(
-#     mode='R',
-#     base_array=6,
-#     rows=64,
-#     cols=8,
-#     precision=7,
-#     buf_num=2,
-#     wordline_nums=512,
-#     exit_on_pass=False,
-# )
+system.r_sink = P2SRealGoldenSink(
+    mode='R',
+    base_array=6,
+    rows=64,
+    cols=8,
+    precision=7,
+    buf_num=2,
+    wordline_nums=512,
+    exit_on_pass=False,
+)
 
-# system.rt_sink = P2SRealGoldenSink(
-#     mode='RT',
-#     base_array=4,
-#     rows=2,
-#     cols=64,
-#     precision=7,
-#     buf_num=2,
-#     wordline_nums=512,
-#     exit_on_pass=True,
-# )
+system.rt_sink = P2SRealGoldenSink(
+    mode='RT',
+    base_array=4,
+    rows=2,
+    cols=64,
+    precision=7,
+    buf_num=2,
+    wordline_nums=512,
+    exit_on_pass=True,
+)
+
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
+system.scheduler.p2sl_port = system.p2s_l.inst_port
+system.scheduler.p2sr_port = system.p2s_r.inst_port
+system.scheduler.p2srt_port = system.p2s_r_t.inst_port
+
+system.p2s_l.dma_port = system.dma.p2s_side
+system.p2s_r.dma_port = system.dma.p2s_side
+system.p2s_r_t.dma_port = system.dma.p2s_side
+
 
 system.p2s_l.cb_port = system.l_sink.port
-# system.p2s_r.cb_port = system.r_sink.port
-# system.p2s_r_t.cb_port = system.rt_sink.port
+system.p2s_r.cb_port = system.r_sink.port
+system.p2s_r_t.cb_port = system.rt_sink.port
 
 system.pic_membus = SystemXBar()
 
@@ -130,3 +129,8 @@ print(
         exit_event.getCause()
     )
 )
+
+# export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)
+# which python3-config   # 确认指向 /usr/bin/python3-config
+# rm -rf build/ALL/gem5.build
+# scons build/ALL/gem5.opt -j$(nproc)
