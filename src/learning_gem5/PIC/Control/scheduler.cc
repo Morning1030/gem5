@@ -391,8 +391,8 @@ Scheduler::processPrepareTaskEvent()
             break;
         }
         case pic::ModuleID::P2S_R: {
-            uint8_t precision = static_cast<uint8_t>((dataPayload >> 8) & 0x7);
-            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 11) &0x3);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 8) & 0x3);
+            uint8_t precision = static_cast<uint8_t>((dataPayload >> 10) &0x7);
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm
@@ -416,14 +416,14 @@ Scheduler::processPrepareTaskEvent()
             break;
         }
         case pic::ModuleID::P2S_R_T: {
-            uint8_t precision = static_cast<uint8_t>((dataPayload >> 8)& 0x7);
-            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 11) &0x3);
+            uint8_t bufNum = static_cast<uint8_t>((dataPayload >> 8) & 0x3);
+            uint8_t precision = static_cast<uint8_t>((dataPayload >> 10) &0x7);
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm
                 sizeof(P2S_R_Payload),
-                    0,                  // TODO
-                    requestorId
+                0,
+                requestorId
             );
 
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);

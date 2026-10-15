@@ -77,7 +77,9 @@ PicTestFrontend::buildProtocolSmokeTrace()
         //     PicFunctionBuilder::p2sr(
         //         0x80030000,
         //         0x00000006,
-        //         {64, 8, 32},
+        //         64,     // row
+        //         2560,    // byte per row
+        //         512,     // offset(col)
         //         3,
         //         2,
         //         7,

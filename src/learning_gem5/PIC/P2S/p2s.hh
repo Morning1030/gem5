@@ -5,6 +5,8 @@
 #include <deque>
 #include <string>
 #include <vector>
+
+#include "mem/cache/pic/pic_dpm_types.hh"
 #include "mem/port.hh"
 #include "params/P2S_L.hh"
 #include "params/P2S_R.hh"
@@ -13,15 +15,27 @@
 
 namespace gem5
 {
-    struct DMARPayload{
-        uint32_t byte_per_row;  // cols
-        uint32_t offset;
-        uint64_t baseAddr_DRAM;
-    };
-    struct DMARTPayload{
-        // row = 1;
-        uint32_t byte_per_row;  // cols
-        uint64_t baseAddr_DRAM;
+    // struct DMALPayload{
+    //     // row = 1;
+    //     // byte_per_row = 512;
+    //     // baseAddr_Array = 0;
+    //     uint32_t offset;
+    //     uint64_t baseAddr_DRAM;
+    // };
+    // struct DMARPayload{
+    //     uint32_t byte_per_row;  // cols
+    //     uint32_t offset;
+    //     uint64_t baseAddr_DRAM;
+    // };
+
+    class DMASenderState : public Packet::SenderState
+    {
+    public:
+        DMADescriptor desc;
+
+        DMASenderState(const DMADescriptor& d)
+        : desc(d)
+        {}
     };
 
     class P2S_L : public ClockedObject {
@@ -139,7 +153,7 @@ namespace gem5
                 public:
                     MemSidePort(const std::string& name, P2S_R *owner, PICPortID picPortID);
                     PacketPtr blockedPacket;
-                    void sendPacket(PacketPtr pkt) {}
+                    void sendPacket(PacketPtr pkt);
             };
             // direct port
             CPUSidePort instPort;

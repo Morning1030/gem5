@@ -1,0 +1,668 @@
+Global frequency set at 1000000000000 ticks per second
+warn: failed to generate dot output from m5out/config.dot
+src/mem/coherent_xbar.cc:140: warn: CoherentXBar system.pic_membus has no snooping ports attached!
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 25.1.0.1
+gem5 compiled Oct 15 2026 14:27:21
+gem5 started Oct 15 2026 14:31:52
+gem5 executing on dandelion, pid 2744840
+command line: build/ALL/gem5.opt --debug-flags=Scheduler,P2S_L configs/learning_gem5/PIC/p2s_e2e.py
+
+Initialized unified P2S L -> R -> RT E2E DRAM patterns
+   2000: system.scheduler: Got request for addr 0x10028000
+   3000: system.scheduler: Got request for addr 0x10028008
+   3000: system.scheduler: Decoding request addr=0x10028000 value=0x80010000
+   3000: system.scheduler: SET_SRC to 0x80010000
+   4000: system.scheduler: Got request for addr 0x10028010
+   4000: system.scheduler: Decoding request addr=0x10028008 value=0x1000
+   4000: system.scheduler: SET_DST to 0x1000
+   5000: system.scheduler: Decoding request addr=0x10028010 value=0x20040
+   5000: system.scheduler: SET_SIZE to (64, 64, 0)
+   5000: system.scheduler: Got request for addr 0x10028018
+   6000: system.scheduler: Decoding request addr=0x10028018 value=0x2000000000000702
+   7000: system.scheduler: raw datapayload: 0x2000000000000702
+   7000: system.scheduler: SET_PARAM P2S
+   8000: system.scheduler: Enqueue the Task to queue   9000: system.scheduler: Send cmd state request  11000: system.scheduler: Send p2sL request to p2sL
+  12000: system.p2s_l: Send DMA Request to 80010000
+  46000: system.p2s_l: DMA response size=64
+  47000: system.p2s_l: Send Request writing bit 0 to 1000
+  48000: system.p2s_l: Send Request writing bit 1 to 1200
+  49000: system.p2s_l: Send Request writing bit 2 to 1400
+  50000: system.p2s_l: Send Request writing bit 3 to 1600
+  51000: system.p2s_l: Send Request writing bit 4 to 1800
+  52000: system.p2s_l: Send Request writing bit 5 to 1a00
+  53000: system.p2s_l: Send Request writing bit 6 to 1c00
+  54000: system.p2s_l: Send Request writing bit 7 to 1e00
+  55000: system.p2s_l: Send DMA Request to 80010040
+  89000: system.p2s_l: DMA response size=64
+  90000: system.p2s_l: Send Request writing bit 0 to 1008
+  91000: system.p2s_l: Send Request writing bit 1 to 1208
+  92000: system.p2s_l: Send Request writing bit 2 to 1408
+  93000: system.p2s_l: Send Request writing bit 3 to 1608
+  94000: system.p2s_l: Send Request writing bit 4 to 1808
+  95000: system.p2s_l: Send Request writing bit 5 to 1a08
+  96000: system.p2s_l: Send Request writing bit 6 to 1c08
+  97000: system.p2s_l: Send Request writing bit 7 to 1e08
+  98000: system.p2s_l: Send DMA Request to 80010080
+ 132000: system.p2s_l: DMA response size=64
+ 133000: system.p2s_l: Send Request writing bit 0 to 1010
+ 134000: system.p2s_l: Send Request writing bit 1 to 1210
+ 135000: system.p2s_l: Send Request writing bit 2 to 1410
+ 136000: system.p2s_l: Send Request writing bit 3 to 1610
+ 137000: system.p2s_l: Send Request writing bit 4 to 1810
+ 138000: system.p2s_l: Send Request writing bit 5 to 1a10
+ 139000: system.p2s_l: Send Request writing bit 6 to 1c10
+ 140000: system.p2s_l: Send Request writing bit 7 to 1e10
+ 141000: system.p2s_l: Send DMA Request to 800100c0
+ 175000: system.p2s_l: DMA response size=64
+ 176000: system.p2s_l: Send Request writing bit 0 to 1018
+ 177000: system.p2s_l: Send Request writing bit 1 to 1218
+ 178000: system.p2s_l: Send Request writing bit 2 to 1418
+ 179000: system.p2s_l: Send Request writing bit 3 to 1618
+ 180000: system.p2s_l: Send Request writing bit 4 to 1818
+ 181000: system.p2s_l: Send Request writing bit 5 to 1a18
+ 182000: system.p2s_l: Send Request writing bit 6 to 1c18
+ 183000: system.p2s_l: Send Request writing bit 7 to 1e18
+ 184000: system.p2s_l: Send DMA Request to 80010100
+ 218000: system.p2s_l: DMA response size=64
+ 219000: system.p2s_l: Send Request writing bit 0 to 1020
+ 220000: system.p2s_l: Send Request writing bit 1 to 1220
+ 221000: system.p2s_l: Send Request writing bit 2 to 1420
+ 222000: system.p2s_l: Send Request writing bit 3 to 1620
+ 223000: system.p2s_l: Send Request writing bit 4 to 1820
+ 224000: system.p2s_l: Send Request writing bit 5 to 1a20
+ 225000: system.p2s_l: Send Request writing bit 6 to 1c20
+ 226000: system.p2s_l: Send Request writing bit 7 to 1e20
+ 227000: system.p2s_l: Send DMA Request to 80010140
+ 261000: system.p2s_l: DMA response size=64
+ 262000: system.p2s_l: Send Request writing bit 0 to 1028
+ 263000: system.p2s_l: Send Request writing bit 1 to 1228
+ 264000: system.p2s_l: Send Request writing bit 2 to 1428
+ 265000: system.p2s_l: Send Request writing bit 3 to 1628
+ 266000: system.p2s_l: Send Request writing bit 4 to 1828
+ 267000: system.p2s_l: Send Request writing bit 5 to 1a28
+ 268000: system.p2s_l: Send Request writing bit 6 to 1c28
+ 269000: system.p2s_l: Send Request writing bit 7 to 1e28
+ 270000: system.p2s_l: Send DMA Request to 80010180
+ 304000: system.p2s_l: DMA response size=64
+ 305000: system.p2s_l: Send Request writing bit 0 to 1030
+ 306000: system.p2s_l: Send Request writing bit 1 to 1230
+ 307000: system.p2s_l: Send Request writing bit 2 to 1430
+ 308000: system.p2s_l: Send Request writing bit 3 to 1630
+ 309000: system.p2s_l: Send Request writing bit 4 to 1830
+ 310000: system.p2s_l: Send Request writing bit 5 to 1a30
+ 311000: system.p2s_l: Send Request writing bit 6 to 1c30
+ 312000: system.p2s_l: Send Request writing bit 7 to 1e30
+ 313000: system.p2s_l: Send DMA Request to 800101c0
+ 347000: system.p2s_l: DMA response size=64
+ 348000: system.p2s_l: Send Request writing bit 0 to 1038
+ 349000: system.p2s_l: Send Request writing bit 1 to 1238
+ 350000: system.p2s_l: Send Request writing bit 2 to 1438
+ 351000: system.p2s_l: Send Request writing bit 3 to 1638
+ 352000: system.p2s_l: Send Request writing bit 4 to 1838
+ 353000: system.p2s_l: Send Request writing bit 5 to 1a38
+ 354000: system.p2s_l: Send Request writing bit 6 to 1c38
+ 355000: system.p2s_l: Send Request writing bit 7 to 1e38
+ 356000: system.p2s_l: Send DMA Request to 80010200
+ 390000: system.p2s_l: DMA response size=64
+ 391000: system.p2s_l: Send Request writing bit 0 to 1040
+ 392000: system.p2s_l: Send Request writing bit 1 to 1240
+ 393000: system.p2s_l: Send Request writing bit 2 to 1440
+ 394000: system.p2s_l: Send Request writing bit 3 to 1640
+ 395000: system.p2s_l: Send Request writing bit 4 to 1840
+ 396000: system.p2s_l: Send Request writing bit 5 to 1a40
+ 397000: system.p2s_l: Send Request writing bit 6 to 1c40
+ 398000: system.p2s_l: Send Request writing bit 7 to 1e40
+ 399000: system.p2s_l: Send DMA Request to 80010240
+ 433000: system.p2s_l: DMA response size=64
+ 434000: system.p2s_l: Send Request writing bit 0 to 1048
+ 435000: system.p2s_l: Send Request writing bit 1 to 1248
+ 436000: system.p2s_l: Send Request writing bit 2 to 1448
+ 437000: system.p2s_l: Send Request writing bit 3 to 1648
+ 438000: system.p2s_l: Send Request writing bit 4 to 1848
+ 439000: system.p2s_l: Send Request writing bit 5 to 1a48
+ 440000: system.p2s_l: Send Request writing bit 6 to 1c48
+ 441000: system.p2s_l: Send Request writing bit 7 to 1e48
+ 442000: system.p2s_l: Send DMA Request to 80010280
+ 476000: system.p2s_l: DMA response size=64
+ 477000: system.p2s_l: Send Request writing bit 0 to 1050
+ 478000: system.p2s_l: Send Request writing bit 1 to 1250
+ 479000: system.p2s_l: Send Request writing bit 2 to 1450
+ 480000: system.p2s_l: Send Request writing bit 3 to 1650
+ 481000: system.p2s_l: Send Request writing bit 4 to 1850
+ 482000: system.p2s_l: Send Request writing bit 5 to 1a50
+ 483000: system.p2s_l: Send Request writing bit 6 to 1c50
+ 484000: system.p2s_l: Send Request writing bit 7 to 1e50
+ 485000: system.p2s_l: Send DMA Request to 800102c0
+ 519000: system.p2s_l: DMA response size=64
+ 520000: system.p2s_l: Send Request writing bit 0 to 1058
+ 521000: system.p2s_l: Send Request writing bit 1 to 1258
+ 522000: system.p2s_l: Send Request writing bit 2 to 1458
+ 523000: system.p2s_l: Send Request writing bit 3 to 1658
+ 524000: system.p2s_l: Send Request writing bit 4 to 1858
+ 525000: system.p2s_l: Send Request writing bit 5 to 1a58
+ 526000: system.p2s_l: Send Request writing bit 6 to 1c58
+ 527000: system.p2s_l: Send Request writing bit 7 to 1e58
+ 528000: system.p2s_l: Send DMA Request to 80010300
+ 562000: system.p2s_l: DMA response size=64
+ 563000: system.p2s_l: Send Request writing bit 0 to 1060
+ 564000: system.p2s_l: Send Request writing bit 1 to 1260
+ 565000: system.p2s_l: Send Request writing bit 2 to 1460
+ 566000: system.p2s_l: Send Request writing bit 3 to 1660
+ 567000: system.p2s_l: Send Request writing bit 4 to 1860
+ 568000: system.p2s_l: Send Request writing bit 5 to 1a60
+ 569000: system.p2s_l: Send Request writing bit 6 to 1c60
+ 570000: system.p2s_l: Send Request writing bit 7 to 1e60
+ 571000: system.p2s_l: Send DMA Request to 80010340
+ 605000: system.p2s_l: DMA response size=64
+ 606000: system.p2s_l: Send Request writing bit 0 to 1068
+ 607000: system.p2s_l: Send Request writing bit 1 to 1268
+ 608000: system.p2s_l: Send Request writing bit 2 to 1468
+ 609000: system.p2s_l: Send Request writing bit 3 to 1668
+ 610000: system.p2s_l: Send Request writing bit 4 to 1868
+ 611000: system.p2s_l: Send Request writing bit 5 to 1a68
+ 612000: system.p2s_l: Send Request writing bit 6 to 1c68
+ 613000: system.p2s_l: Send Request writing bit 7 to 1e68
+ 614000: system.p2s_l: Send DMA Request to 80010380
+ 648000: system.p2s_l: DMA response size=64
+ 649000: system.p2s_l: Send Request writing bit 0 to 1070
+ 650000: system.p2s_l: Send Request writing bit 1 to 1270
+ 651000: system.p2s_l: Send Request writing bit 2 to 1470
+ 652000: system.p2s_l: Send Request writing bit 3 to 1670
+ 653000: system.p2s_l: Send Request writing bit 4 to 1870
+ 654000: system.p2s_l: Send Request writing bit 5 to 1a70
+ 655000: system.p2s_l: Send Request writing bit 6 to 1c70
+ 656000: system.p2s_l: Send Request writing bit 7 to 1e70
+ 657000: system.p2s_l: Send DMA Request to 800103c0
+ 691000: system.p2s_l: DMA response size=64
+ 692000: system.p2s_l: Send Request writing bit 0 to 1078
+ 693000: system.p2s_l: Send Request writing bit 1 to 1278
+ 694000: system.p2s_l: Send Request writing bit 2 to 1478
+ 695000: system.p2s_l: Send Request writing bit 3 to 1678
+ 696000: system.p2s_l: Send Request writing bit 4 to 1878
+ 697000: system.p2s_l: Send Request writing bit 5 to 1a78
+ 698000: system.p2s_l: Send Request writing bit 6 to 1c78
+ 699000: system.p2s_l: Send Request writing bit 7 to 1e78
+ 700000: system.p2s_l: Send DMA Request to 80010400
+ 734000: system.p2s_l: DMA response size=64
+ 735000: system.p2s_l: Send Request writing bit 0 to 1080
+ 736000: system.p2s_l: Send Request writing bit 1 to 1280
+ 737000: system.p2s_l: Send Request writing bit 2 to 1480
+ 738000: system.p2s_l: Send Request writing bit 3 to 1680
+ 739000: system.p2s_l: Send Request writing bit 4 to 1880
+ 740000: system.p2s_l: Send Request writing bit 5 to 1a80
+ 741000: system.p2s_l: Send Request writing bit 6 to 1c80
+ 742000: system.p2s_l: Send Request writing bit 7 to 1e80
+ 743000: system.p2s_l: Send DMA Request to 80010440
+ 777000: system.p2s_l: DMA response size=64
+ 778000: system.p2s_l: Send Request writing bit 0 to 1088
+ 779000: system.p2s_l: Send Request writing bit 1 to 1288
+ 780000: system.p2s_l: Send Request writing bit 2 to 1488
+ 781000: system.p2s_l: Send Request writing bit 3 to 1688
+ 782000: system.p2s_l: Send Request writing bit 4 to 1888
+ 783000: system.p2s_l: Send Request writing bit 5 to 1a88
+ 784000: system.p2s_l: Send Request writing bit 6 to 1c88
+ 785000: system.p2s_l: Send Request writing bit 7 to 1e88
+ 786000: system.p2s_l: Send DMA Request to 80010480
+ 820000: system.p2s_l: DMA response size=64
+ 821000: system.p2s_l: Send Request writing bit 0 to 1090
+ 822000: system.p2s_l: Send Request writing bit 1 to 1290
+ 823000: system.p2s_l: Send Request writing bit 2 to 1490
+ 824000: system.p2s_l: Send Request writing bit 3 to 1690
+ 825000: system.p2s_l: Send Request writing bit 4 to 1890
+ 826000: system.p2s_l: Send Request writing bit 5 to 1a90
+ 827000: system.p2s_l: Send Request writing bit 6 to 1c90
+ 828000: system.p2s_l: Send Request writing bit 7 to 1e90
+ 829000: system.p2s_l: Send DMA Request to 800104c0
+ 863000: system.p2s_l: DMA response size=64
+ 864000: system.p2s_l: Send Request writing bit 0 to 1098
+ 865000: system.p2s_l: Send Request writing bit 1 to 1298
+ 866000: system.p2s_l: Send Request writing bit 2 to 1498
+ 867000: system.p2s_l: Send Request writing bit 3 to 1698
+ 868000: system.p2s_l: Send Request writing bit 4 to 1898
+ 869000: system.p2s_l: Send Request writing bit 5 to 1a98
+ 870000: system.p2s_l: Send Request writing bit 6 to 1c98
+ 871000: system.p2s_l: Send Request writing bit 7 to 1e98
+ 872000: system.p2s_l: Send DMA Request to 80010500
+ 906000: system.p2s_l: DMA response size=64
+ 907000: system.p2s_l: Send Request writing bit 0 to 10a0
+ 908000: system.p2s_l: Send Request writing bit 1 to 12a0
+ 909000: system.p2s_l: Send Request writing bit 2 to 14a0
+ 910000: system.p2s_l: Send Request writing bit 3 to 16a0
+ 911000: system.p2s_l: Send Request writing bit 4 to 18a0
+ 912000: system.p2s_l: Send Request writing bit 5 to 1aa0
+ 913000: system.p2s_l: Send Request writing bit 6 to 1ca0
+ 914000: system.p2s_l: Send Request writing bit 7 to 1ea0
+ 915000: system.p2s_l: Send DMA Request to 80010540
+ 949000: system.p2s_l: DMA response size=64
+ 950000: system.p2s_l: Send Request writing bit 0 to 10a8
+ 951000: system.p2s_l: Send Request writing bit 1 to 12a8
+ 952000: system.p2s_l: Send Request writing bit 2 to 14a8
+ 953000: system.p2s_l: Send Request writing bit 3 to 16a8
+ 954000: system.p2s_l: Send Request writing bit 4 to 18a8
+ 955000: system.p2s_l: Send Request writing bit 5 to 1aa8
+ 956000: system.p2s_l: Send Request writing bit 6 to 1ca8
+ 957000: system.p2s_l: Send Request writing bit 7 to 1ea8
+ 958000: system.p2s_l: Send DMA Request to 80010580
+ 992000: system.p2s_l: DMA response size=64
+ 993000: system.p2s_l: Send Request writing bit 0 to 10b0
+ 994000: system.p2s_l: Send Request writing bit 1 to 12b0
+ 995000: system.p2s_l: Send Request writing bit 2 to 14b0
+ 996000: system.p2s_l: Send Request writing bit 3 to 16b0
+ 997000: system.p2s_l: Send Request writing bit 4 to 18b0
+ 998000: system.p2s_l: Send Request writing bit 5 to 1ab0
+ 999000: system.p2s_l: Send Request writing bit 6 to 1cb0
+1000000: system.p2s_l: Send Request writing bit 7 to 1eb0
+1001000: system.p2s_l: Send DMA Request to 800105c0
+1035000: system.p2s_l: DMA response size=64
+1036000: system.p2s_l: Send Request writing bit 0 to 10b8
+1037000: system.p2s_l: Send Request writing bit 1 to 12b8
+1038000: system.p2s_l: Send Request writing bit 2 to 14b8
+1039000: system.p2s_l: Send Request writing bit 3 to 16b8
+1040000: system.p2s_l: Send Request writing bit 4 to 18b8
+1041000: system.p2s_l: Send Request writing bit 5 to 1ab8
+1042000: system.p2s_l: Send Request writing bit 6 to 1cb8
+1043000: system.p2s_l: Send Request writing bit 7 to 1eb8
+1044000: system.p2s_l: Send DMA Request to 80010600
+1078000: system.p2s_l: DMA response size=64
+1079000: system.p2s_l: Send Request writing bit 0 to 10c0
+1080000: system.p2s_l: Send Request writing bit 1 to 12c0
+1081000: system.p2s_l: Send Request writing bit 2 to 14c0
+1082000: system.p2s_l: Send Request writing bit 3 to 16c0
+1083000: system.p2s_l: Send Request writing bit 4 to 18c0
+1084000: system.p2s_l: Send Request writing bit 5 to 1ac0
+1085000: system.p2s_l: Send Request writing bit 6 to 1cc0
+1086000: system.p2s_l: Send Request writing bit 7 to 1ec0
+1087000: system.p2s_l: Send DMA Request to 80010640
+1121000: system.p2s_l: DMA response size=64
+1122000: system.p2s_l: Send Request writing bit 0 to 10c8
+1123000: system.p2s_l: Send Request writing bit 1 to 12c8
+1124000: system.p2s_l: Send Request writing bit 2 to 14c8
+1125000: system.p2s_l: Send Request writing bit 3 to 16c8
+1126000: system.p2s_l: Send Request writing bit 4 to 18c8
+1127000: system.p2s_l: Send Request writing bit 5 to 1ac8
+1128000: system.p2s_l: Send Request writing bit 6 to 1cc8
+1129000: system.p2s_l: Send Request writing bit 7 to 1ec8
+1130000: system.p2s_l: Send DMA Request to 80010680
+1164000: system.p2s_l: DMA response size=64
+1165000: system.p2s_l: Send Request writing bit 0 to 10d0
+1166000: system.p2s_l: Send Request writing bit 1 to 12d0
+1167000: system.p2s_l: Send Request writing bit 2 to 14d0
+1168000: system.p2s_l: Send Request writing bit 3 to 16d0
+1169000: system.p2s_l: Send Request writing bit 4 to 18d0
+1170000: system.p2s_l: Send Request writing bit 5 to 1ad0
+1171000: system.p2s_l: Send Request writing bit 6 to 1cd0
+1172000: system.p2s_l: Send Request writing bit 7 to 1ed0
+1173000: system.p2s_l: Send DMA Request to 800106c0
+1207000: system.p2s_l: DMA response size=64
+1208000: system.p2s_l: Send Request writing bit 0 to 10d8
+1209000: system.p2s_l: Send Request writing bit 1 to 12d8
+1210000: system.p2s_l: Send Request writing bit 2 to 14d8
+1211000: system.p2s_l: Send Request writing bit 3 to 16d8
+1212000: system.p2s_l: Send Request writing bit 4 to 18d8
+1213000: system.p2s_l: Send Request writing bit 5 to 1ad8
+1214000: system.p2s_l: Send Request writing bit 6 to 1cd8
+1215000: system.p2s_l: Send Request writing bit 7 to 1ed8
+1216000: system.p2s_l: Send DMA Request to 80010700
+1250000: system.p2s_l: DMA response size=64
+1251000: system.p2s_l: Send Request writing bit 0 to 10e0
+1252000: system.p2s_l: Send Request writing bit 1 to 12e0
+1253000: system.p2s_l: Send Request writing bit 2 to 14e0
+1254000: system.p2s_l: Send Request writing bit 3 to 16e0
+1255000: system.p2s_l: Send Request writing bit 4 to 18e0
+1256000: system.p2s_l: Send Request writing bit 5 to 1ae0
+1257000: system.p2s_l: Send Request writing bit 6 to 1ce0
+1258000: system.p2s_l: Send Request writing bit 7 to 1ee0
+1259000: system.p2s_l: Send DMA Request to 80010740
+1293000: system.p2s_l: DMA response size=64
+1294000: system.p2s_l: Send Request writing bit 0 to 10e8
+1295000: system.p2s_l: Send Request writing bit 1 to 12e8
+1296000: system.p2s_l: Send Request writing bit 2 to 14e8
+1297000: system.p2s_l: Send Request writing bit 3 to 16e8
+1298000: system.p2s_l: Send Request writing bit 4 to 18e8
+1299000: system.p2s_l: Send Request writing bit 5 to 1ae8
+1300000: system.p2s_l: Send Request writing bit 6 to 1ce8
+1301000: system.p2s_l: Send Request writing bit 7 to 1ee8
+1302000: system.p2s_l: Send DMA Request to 80010780
+1336000: system.p2s_l: DMA response size=64
+1337000: system.p2s_l: Send Request writing bit 0 to 10f0
+1338000: system.p2s_l: Send Request writing bit 1 to 12f0
+1339000: system.p2s_l: Send Request writing bit 2 to 14f0
+1340000: system.p2s_l: Send Request writing bit 3 to 16f0
+1341000: system.p2s_l: Send Request writing bit 4 to 18f0
+1342000: system.p2s_l: Send Request writing bit 5 to 1af0
+1343000: system.p2s_l: Send Request writing bit 6 to 1cf0
+1344000: system.p2s_l: Send Request writing bit 7 to 1ef0
+1345000: system.p2s_l: Send DMA Request to 800107c0
+1379000: system.p2s_l: DMA response size=64
+1380000: system.p2s_l: Send Request writing bit 0 to 10f8
+1381000: system.p2s_l: Send Request writing bit 1 to 12f8
+1382000: system.p2s_l: Send Request writing bit 2 to 14f8
+1383000: system.p2s_l: Send Request writing bit 3 to 16f8
+1384000: system.p2s_l: Send Request writing bit 4 to 18f8
+1385000: system.p2s_l: Send Request writing bit 5 to 1af8
+1386000: system.p2s_l: Send Request writing bit 6 to 1cf8
+1387000: system.p2s_l: Send Request writing bit 7 to 1ef8
+1388000: system.p2s_l: Send DMA Request to 80010800
+1422000: system.p2s_l: DMA response size=64
+1423000: system.p2s_l: Send Request writing bit 0 to 1100
+1424000: system.p2s_l: Send Request writing bit 1 to 1300
+1425000: system.p2s_l: Send Request writing bit 2 to 1500
+1426000: system.p2s_l: Send Request writing bit 3 to 1700
+1427000: system.p2s_l: Send Request writing bit 4 to 1900
+1428000: system.p2s_l: Send Request writing bit 5 to 1b00
+1429000: system.p2s_l: Send Request writing bit 6 to 1d00
+1430000: system.p2s_l: Send Request writing bit 7 to 1f00
+1431000: system.p2s_l: Send DMA Request to 80010840
+1465000: system.p2s_l: DMA response size=64
+1466000: system.p2s_l: Send Request writing bit 0 to 1108
+1467000: system.p2s_l: Send Request writing bit 1 to 1308
+1468000: system.p2s_l: Send Request writing bit 2 to 1508
+1469000: system.p2s_l: Send Request writing bit 3 to 1708
+1470000: system.p2s_l: Send Request writing bit 4 to 1908
+1471000: system.p2s_l: Send Request writing bit 5 to 1b08
+1472000: system.p2s_l: Send Request writing bit 6 to 1d08
+1473000: system.p2s_l: Send Request writing bit 7 to 1f08
+1474000: system.p2s_l: Send DMA Request to 80010880
+1508000: system.p2s_l: DMA response size=64
+1509000: system.p2s_l: Send Request writing bit 0 to 1110
+1510000: system.p2s_l: Send Request writing bit 1 to 1310
+1511000: system.p2s_l: Send Request writing bit 2 to 1510
+1512000: system.p2s_l: Send Request writing bit 3 to 1710
+1513000: system.p2s_l: Send Request writing bit 4 to 1910
+1514000: system.p2s_l: Send Request writing bit 5 to 1b10
+1515000: system.p2s_l: Send Request writing bit 6 to 1d10
+1516000: system.p2s_l: Send Request writing bit 7 to 1f10
+1517000: system.p2s_l: Send DMA Request to 800108c0
+1551000: system.p2s_l: DMA response size=64
+1552000: system.p2s_l: Send Request writing bit 0 to 1118
+1553000: system.p2s_l: Send Request writing bit 1 to 1318
+1554000: system.p2s_l: Send Request writing bit 2 to 1518
+1555000: system.p2s_l: Send Request writing bit 3 to 1718
+1556000: system.p2s_l: Send Request writing bit 4 to 1918
+1557000: system.p2s_l: Send Request writing bit 5 to 1b18
+1558000: system.p2s_l: Send Request writing bit 6 to 1d18
+1559000: system.p2s_l: Send Request writing bit 7 to 1f18
+1560000: system.p2s_l: Send DMA Request to 80010900
+1594000: system.p2s_l: DMA response size=64
+1595000: system.p2s_l: Send Request writing bit 0 to 1120
+1596000: system.p2s_l: Send Request writing bit 1 to 1320
+1597000: system.p2s_l: Send Request writing bit 2 to 1520
+1598000: system.p2s_l: Send Request writing bit 3 to 1720
+1599000: system.p2s_l: Send Request writing bit 4 to 1920
+1600000: system.p2s_l: Send Request writing bit 5 to 1b20
+1601000: system.p2s_l: Send Request writing bit 6 to 1d20
+1602000: system.p2s_l: Send Request writing bit 7 to 1f20
+1603000: system.p2s_l: Send DMA Request to 80010940
+1637000: system.p2s_l: DMA response size=64
+1638000: system.p2s_l: Send Request writing bit 0 to 1128
+1639000: system.p2s_l: Send Request writing bit 1 to 1328
+1640000: system.p2s_l: Send Request writing bit 2 to 1528
+1641000: system.p2s_l: Send Request writing bit 3 to 1728
+1642000: system.p2s_l: Send Request writing bit 4 to 1928
+1643000: system.p2s_l: Send Request writing bit 5 to 1b28
+1644000: system.p2s_l: Send Request writing bit 6 to 1d28
+1645000: system.p2s_l: Send Request writing bit 7 to 1f28
+1646000: system.p2s_l: Send DMA Request to 80010980
+1680000: system.p2s_l: DMA response size=64
+1681000: system.p2s_l: Send Request writing bit 0 to 1130
+1682000: system.p2s_l: Send Request writing bit 1 to 1330
+1683000: system.p2s_l: Send Request writing bit 2 to 1530
+1684000: system.p2s_l: Send Request writing bit 3 to 1730
+1685000: system.p2s_l: Send Request writing bit 4 to 1930
+1686000: system.p2s_l: Send Request writing bit 5 to 1b30
+1687000: system.p2s_l: Send Request writing bit 6 to 1d30
+1688000: system.p2s_l: Send Request writing bit 7 to 1f30
+1689000: system.p2s_l: Send DMA Request to 800109c0
+1723000: system.p2s_l: DMA response size=64
+1724000: system.p2s_l: Send Request writing bit 0 to 1138
+1725000: system.p2s_l: Send Request writing bit 1 to 1338
+1726000: system.p2s_l: Send Request writing bit 2 to 1538
+1727000: system.p2s_l: Send Request writing bit 3 to 1738
+1728000: system.p2s_l: Send Request writing bit 4 to 1938
+1729000: system.p2s_l: Send Request writing bit 5 to 1b38
+1730000: system.p2s_l: Send Request writing bit 6 to 1d38
+1731000: system.p2s_l: Send Request writing bit 7 to 1f38
+1732000: system.p2s_l: Send DMA Request to 80010a00
+1766000: system.p2s_l: DMA response size=64
+1767000: system.p2s_l: Send Request writing bit 0 to 1140
+1768000: system.p2s_l: Send Request writing bit 1 to 1340
+1769000: system.p2s_l: Send Request writing bit 2 to 1540
+1770000: system.p2s_l: Send Request writing bit 3 to 1740
+1771000: system.p2s_l: Send Request writing bit 4 to 1940
+1772000: system.p2s_l: Send Request writing bit 5 to 1b40
+1773000: system.p2s_l: Send Request writing bit 6 to 1d40
+1774000: system.p2s_l: Send Request writing bit 7 to 1f40
+1775000: system.p2s_l: Send DMA Request to 80010a40
+1809000: system.p2s_l: DMA response size=64
+1810000: system.p2s_l: Send Request writing bit 0 to 1148
+1811000: system.p2s_l: Send Request writing bit 1 to 1348
+1812000: system.p2s_l: Send Request writing bit 2 to 1548
+1813000: system.p2s_l: Send Request writing bit 3 to 1748
+1814000: system.p2s_l: Send Request writing bit 4 to 1948
+1815000: system.p2s_l: Send Request writing bit 5 to 1b48
+1816000: system.p2s_l: Send Request writing bit 6 to 1d48
+1817000: system.p2s_l: Send Request writing bit 7 to 1f48
+1818000: system.p2s_l: Send DMA Request to 80010a80
+1852000: system.p2s_l: DMA response size=64
+1853000: system.p2s_l: Send Request writing bit 0 to 1150
+1854000: system.p2s_l: Send Request writing bit 1 to 1350
+1855000: system.p2s_l: Send Request writing bit 2 to 1550
+1856000: system.p2s_l: Send Request writing bit 3 to 1750
+1857000: system.p2s_l: Send Request writing bit 4 to 1950
+1858000: system.p2s_l: Send Request writing bit 5 to 1b50
+1859000: system.p2s_l: Send Request writing bit 6 to 1d50
+1860000: system.p2s_l: Send Request writing bit 7 to 1f50
+1861000: system.p2s_l: Send DMA Request to 80010ac0
+1895000: system.p2s_l: DMA response size=64
+1896000: system.p2s_l: Send Request writing bit 0 to 1158
+1897000: system.p2s_l: Send Request writing bit 1 to 1358
+1898000: system.p2s_l: Send Request writing bit 2 to 1558
+1899000: system.p2s_l: Send Request writing bit 3 to 1758
+1900000: system.p2s_l: Send Request writing bit 4 to 1958
+1901000: system.p2s_l: Send Request writing bit 5 to 1b58
+1902000: system.p2s_l: Send Request writing bit 6 to 1d58
+1903000: system.p2s_l: Send Request writing bit 7 to 1f58
+1904000: system.p2s_l: Send DMA Request to 80010b00
+1938000: system.p2s_l: DMA response size=64
+1939000: system.p2s_l: Send Request writing bit 0 to 1160
+1940000: system.p2s_l: Send Request writing bit 1 to 1360
+1941000: system.p2s_l: Send Request writing bit 2 to 1560
+1942000: system.p2s_l: Send Request writing bit 3 to 1760
+1943000: system.p2s_l: Send Request writing bit 4 to 1960
+1944000: system.p2s_l: Send Request writing bit 5 to 1b60
+1945000: system.p2s_l: Send Request writing bit 6 to 1d60
+1946000: system.p2s_l: Send Request writing bit 7 to 1f60
+1947000: system.p2s_l: Send DMA Request to 80010b40
+1981000: system.p2s_l: DMA response size=64
+1982000: system.p2s_l: Send Request writing bit 0 to 1168
+1983000: system.p2s_l: Send Request writing bit 1 to 1368
+1984000: system.p2s_l: Send Request writing bit 2 to 1568
+1985000: system.p2s_l: Send Request writing bit 3 to 1768
+1986000: system.p2s_l: Send Request writing bit 4 to 1968
+1987000: system.p2s_l: Send Request writing bit 5 to 1b68
+1988000: system.p2s_l: Send Request writing bit 6 to 1d68
+1989000: system.p2s_l: Send Request writing bit 7 to 1f68
+1990000: system.p2s_l: Send DMA Request to 80010b80
+2024000: system.p2s_l: DMA response size=64
+2025000: system.p2s_l: Send Request writing bit 0 to 1170
+2026000: system.p2s_l: Send Request writing bit 1 to 1370
+2027000: system.p2s_l: Send Request writing bit 2 to 1570
+2028000: system.p2s_l: Send Request writing bit 3 to 1770
+2029000: system.p2s_l: Send Request writing bit 4 to 1970
+2030000: system.p2s_l: Send Request writing bit 5 to 1b70
+2031000: system.p2s_l: Send Request writing bit 6 to 1d70
+2032000: system.p2s_l: Send Request writing bit 7 to 1f70
+2033000: system.p2s_l: Send DMA Request to 80010bc0
+2067000: system.p2s_l: DMA response size=64
+2068000: system.p2s_l: Send Request writing bit 0 to 1178
+2069000: system.p2s_l: Send Request writing bit 1 to 1378
+2070000: system.p2s_l: Send Request writing bit 2 to 1578
+2071000: system.p2s_l: Send Request writing bit 3 to 1778
+2072000: system.p2s_l: Send Request writing bit 4 to 1978
+2073000: system.p2s_l: Send Request writing bit 5 to 1b78
+2074000: system.p2s_l: Send Request writing bit 6 to 1d78
+2075000: system.p2s_l: Send Request writing bit 7 to 1f78
+2076000: system.p2s_l: Send DMA Request to 80010c00
+2110000: system.p2s_l: DMA response size=64
+2111000: system.p2s_l: Send Request writing bit 0 to 1180
+2112000: system.p2s_l: Send Request writing bit 1 to 1380
+2113000: system.p2s_l: Send Request writing bit 2 to 1580
+2114000: system.p2s_l: Send Request writing bit 3 to 1780
+2115000: system.p2s_l: Send Request writing bit 4 to 1980
+2116000: system.p2s_l: Send Request writing bit 5 to 1b80
+2117000: system.p2s_l: Send Request writing bit 6 to 1d80
+2118000: system.p2s_l: Send Request writing bit 7 to 1f80
+2119000: system.p2s_l: Send DMA Request to 80010c40
+2153000: system.p2s_l: DMA response size=64
+2154000: system.p2s_l: Send Request writing bit 0 to 1188
+2155000: system.p2s_l: Send Request writing bit 1 to 1388
+2156000: system.p2s_l: Send Request writing bit 2 to 1588
+2157000: system.p2s_l: Send Request writing bit 3 to 1788
+2158000: system.p2s_l: Send Request writing bit 4 to 1988
+2159000: system.p2s_l: Send Request writing bit 5 to 1b88
+2160000: system.p2s_l: Send Request writing bit 6 to 1d88
+2161000: system.p2s_l: Send Request writing bit 7 to 1f88
+2162000: system.p2s_l: Send DMA Request to 80010c80
+2196000: system.p2s_l: DMA response size=64
+2197000: system.p2s_l: Send Request writing bit 0 to 1190
+2198000: system.p2s_l: Send Request writing bit 1 to 1390
+2199000: system.p2s_l: Send Request writing bit 2 to 1590
+2200000: system.p2s_l: Send Request writing bit 3 to 1790
+2201000: system.p2s_l: Send Request writing bit 4 to 1990
+2202000: system.p2s_l: Send Request writing bit 5 to 1b90
+2203000: system.p2s_l: Send Request writing bit 6 to 1d90
+2204000: system.p2s_l: Send Request writing bit 7 to 1f90
+2205000: system.p2s_l: Send DMA Request to 80010cc0
+2239000: system.p2s_l: DMA response size=64
+2240000: system.p2s_l: Send Request writing bit 0 to 1198
+2241000: system.p2s_l: Send Request writing bit 1 to 1398
+2242000: system.p2s_l: Send Request writing bit 2 to 1598
+2243000: system.p2s_l: Send Request writing bit 3 to 1798
+2244000: system.p2s_l: Send Request writing bit 4 to 1998
+2245000: system.p2s_l: Send Request writing bit 5 to 1b98
+2246000: system.p2s_l: Send Request writing bit 6 to 1d98
+2247000: system.p2s_l: Send Request writing bit 7 to 1f98
+2248000: system.p2s_l: Send DMA Request to 80010d00
+2282000: system.p2s_l: DMA response size=64
+2283000: system.p2s_l: Send Request writing bit 0 to 11a0
+2284000: system.p2s_l: Send Request writing bit 1 to 13a0
+2285000: system.p2s_l: Send Request writing bit 2 to 15a0
+2286000: system.p2s_l: Send Request writing bit 3 to 17a0
+2287000: system.p2s_l: Send Request writing bit 4 to 19a0
+2288000: system.p2s_l: Send Request writing bit 5 to 1ba0
+2289000: system.p2s_l: Send Request writing bit 6 to 1da0
+2290000: system.p2s_l: Send Request writing bit 7 to 1fa0
+2291000: system.p2s_l: Send DMA Request to 80010d40
+2325000: system.p2s_l: DMA response size=64
+2326000: system.p2s_l: Send Request writing bit 0 to 11a8
+2327000: system.p2s_l: Send Request writing bit 1 to 13a8
+2328000: system.p2s_l: Send Request writing bit 2 to 15a8
+2329000: system.p2s_l: Send Request writing bit 3 to 17a8
+2330000: system.p2s_l: Send Request writing bit 4 to 19a8
+2331000: system.p2s_l: Send Request writing bit 5 to 1ba8
+2332000: system.p2s_l: Send Request writing bit 6 to 1da8
+2333000: system.p2s_l: Send Request writing bit 7 to 1fa8
+2334000: system.p2s_l: Send DMA Request to 80010d80
+2368000: system.p2s_l: DMA response size=64
+2369000: system.p2s_l: Send Request writing bit 0 to 11b0
+2370000: system.p2s_l: Send Request writing bit 1 to 13b0
+2371000: system.p2s_l: Send Request writing bit 2 to 15b0
+2372000: system.p2s_l: Send Request writing bit 3 to 17b0
+2373000: system.p2s_l: Send Request writing bit 4 to 19b0
+2374000: system.p2s_l: Send Request writing bit 5 to 1bb0
+2375000: system.p2s_l: Send Request writing bit 6 to 1db0
+2376000: system.p2s_l: Send Request writing bit 7 to 1fb0
+2377000: system.p2s_l: Send DMA Request to 80010dc0
+2411000: system.p2s_l: DMA response size=64
+2412000: system.p2s_l: Send Request writing bit 0 to 11b8
+2413000: system.p2s_l: Send Request writing bit 1 to 13b8
+2414000: system.p2s_l: Send Request writing bit 2 to 15b8
+2415000: system.p2s_l: Send Request writing bit 3 to 17b8
+2416000: system.p2s_l: Send Request writing bit 4 to 19b8
+2417000: system.p2s_l: Send Request writing bit 5 to 1bb8
+2418000: system.p2s_l: Send Request writing bit 6 to 1db8
+2419000: system.p2s_l: Send Request writing bit 7 to 1fb8
+2420000: system.p2s_l: Send DMA Request to 80010e00
+2454000: system.p2s_l: DMA response size=64
+2455000: system.p2s_l: Send Request writing bit 0 to 11c0
+2456000: system.p2s_l: Send Request writing bit 1 to 13c0
+2457000: system.p2s_l: Send Request writing bit 2 to 15c0
+2458000: system.p2s_l: Send Request writing bit 3 to 17c0
+2459000: system.p2s_l: Send Request writing bit 4 to 19c0
+2460000: system.p2s_l: Send Request writing bit 5 to 1bc0
+2461000: system.p2s_l: Send Request writing bit 6 to 1dc0
+2462000: system.p2s_l: Send Request writing bit 7 to 1fc0
+2463000: system.p2s_l: Send DMA Request to 80010e40
+2497000: system.p2s_l: DMA response size=64
+2498000: system.p2s_l: Send Request writing bit 0 to 11c8
+2499000: system.p2s_l: Send Request writing bit 1 to 13c8
+2500000: system.p2s_l: Send Request writing bit 2 to 15c8
+2501000: system.p2s_l: Send Request writing bit 3 to 17c8
+2502000: system.p2s_l: Send Request writing bit 4 to 19c8
+2503000: system.p2s_l: Send Request writing bit 5 to 1bc8
+2504000: system.p2s_l: Send Request writing bit 6 to 1dc8
+2505000: system.p2s_l: Send Request writing bit 7 to 1fc8
+2506000: system.p2s_l: Send DMA Request to 80010e80
+2540000: system.p2s_l: DMA response size=64
+2541000: system.p2s_l: Send Request writing bit 0 to 11d0
+2542000: system.p2s_l: Send Request writing bit 1 to 13d0
+2543000: system.p2s_l: Send Request writing bit 2 to 15d0
+2544000: system.p2s_l: Send Request writing bit 3 to 17d0
+2545000: system.p2s_l: Send Request writing bit 4 to 19d0
+2546000: system.p2s_l: Send Request writing bit 5 to 1bd0
+2547000: system.p2s_l: Send Request writing bit 6 to 1dd0
+2548000: system.p2s_l: Send Request writing bit 7 to 1fd0
+2549000: system.p2s_l: Send DMA Request to 80010ec0
+2583000: system.p2s_l: DMA response size=64
+2584000: system.p2s_l: Send Request writing bit 0 to 11d8
+2585000: system.p2s_l: Send Request writing bit 1 to 13d8
+2586000: system.p2s_l: Send Request writing bit 2 to 15d8
+2587000: system.p2s_l: Send Request writing bit 3 to 17d8
+2588000: system.p2s_l: Send Request writing bit 4 to 19d8
+2589000: system.p2s_l: Send Request writing bit 5 to 1bd8
+2590000: system.p2s_l: Send Request writing bit 6 to 1dd8
+2591000: system.p2s_l: Send Request writing bit 7 to 1fd8
+2592000: system.p2s_l: Send DMA Request to 80010f00
+2626000: system.p2s_l: DMA response size=64
+2627000: system.p2s_l: Send Request writing bit 0 to 11e0
+2628000: system.p2s_l: Send Request writing bit 1 to 13e0
+2629000: system.p2s_l: Send Request writing bit 2 to 15e0
+2630000: system.p2s_l: Send Request writing bit 3 to 17e0
+2631000: system.p2s_l: Send Request writing bit 4 to 19e0
+2632000: system.p2s_l: Send Request writing bit 5 to 1be0
+2633000: system.p2s_l: Send Request writing bit 6 to 1de0
+2634000: system.p2s_l: Send Request writing bit 7 to 1fe0
+2635000: system.p2s_l: Send DMA Request to 80010f40
+2669000: system.p2s_l: DMA response size=64
+2670000: system.p2s_l: Send Request writing bit 0 to 11e8
+2671000: system.p2s_l: Send Request writing bit 1 to 13e8
+2672000: system.p2s_l: Send Request writing bit 2 to 15e8
+2673000: system.p2s_l: Send Request writing bit 3 to 17e8
+2674000: system.p2s_l: Send Request writing bit 4 to 19e8
+2675000: system.p2s_l: Send Request writing bit 5 to 1be8
+2676000: system.p2s_l: Send Request writing bit 6 to 1de8
+2677000: system.p2s_l: Send Request writing bit 7 to 1fe8
+2678000: system.p2s_l: Send DMA Request to 80010f80
+2712000: system.p2s_l: DMA response size=64
+2713000: system.p2s_l: Send Request writing bit 0 to 11f0
+2714000: system.p2s_l: Send Request writing bit 1 to 13f0
+2715000: system.p2s_l: Send Request writing bit 2 to 15f0
+2716000: system.p2s_l: Send Request writing bit 3 to 17f0
+2717000: system.p2s_l: Send Request writing bit 4 to 19f0
+2718000: system.p2s_l: Send Request writing bit 5 to 1bf0
+2719000: system.p2s_l: Send Request writing bit 6 to 1df0
+2720000: system.p2s_l: Send Request writing bit 7 to 1ff0
+2721000: system.p2s_l: Send DMA Request to 80010fc0
+2755000: system.p2s_l: DMA response size=64
+2756000: system.p2s_l: Send Request writing bit 0 to 11f8
+2757000: system.p2s_l: Send Request writing bit 1 to 13f8
+2758000: system.p2s_l: Send Request writing bit 2 to 15f8
+2759000: system.p2s_l: Send Request writing bit 3 to 17f8
+2760000: system.p2s_l: Send Request writing bit 4 to 19f8
+2761000: system.p2s_l: Send Request writing bit 5 to 1bf8
+2762000: system.p2s_l: Send Request writing bit 6 to 1df8
+2763000: system.p2s_l: Send Request writing bit 7 to 1ff8
+Exiting @ tick 18446744073709551615 because simulate() limit reached

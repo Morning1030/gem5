@@ -92,10 +92,10 @@ P2S_R_T::MemSidePort::sendPacket(PacketPtr pkt)
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
     if (sendTimingReq(pkt)) {
         if (pkt->isRead()) {
-            DPRINTF(P2S_R_T, "Successfully send request to DMA\n");
+            // DPRINTF(P2S_R_T, "Successfully send request to DMA\n");
         }
         else if(pkt->isWrite()) {
-            DPRINTF(P2S_R_T, "Successfully send request to cache bank\n");
+            // DPRINTF(P2S_R_T, "Successfully send request to cache bank\n");
         }
     }
     else {
@@ -143,9 +143,14 @@ P2S_R_T::handleRequest(PacketPtr pkt) {
     
     // array offset
     get_array_relative_offset(relative_offset_buf, bufNum);
+    for (int i = 0; i < 7; i++) {
+        inform("relative_offset_buf[%d]=%u", i, relative_offset_buf[i]);
+    }
     arrayID_offset[0] = 0;
-    for (int i = 1; i < 8; i++) arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
-
+    for (int i = 1; i < 8; i++) {
+        arrayID_offset[i] = arrayID_offset[i - 1] + relative_offset_buf[i - 1];
+        inform("arrayID_offset[%d] = %u", i, arrayID_offset[i]);
+    }
     // initialize data memebers
     bit_ptr = 0;
     row_store_ptr = 0;
@@ -160,6 +165,7 @@ P2S_R_T::handleResponse(PICPortID picPortID, PacketPtr pkt) {
         const size_t pktSize = pkt->getSize();
 
         if (pktSize <= bufArray.size()) {
+            DPRINTF(P2S_R_T, "Got DMA response packet size = %u\n", pktSize);
             std::memcpy(bufArray.data(), dmaData, pktSize);
         } else {
             panic("P2S_R_T: bufArray buffer overflow!\n");
@@ -200,12 +206,18 @@ P2S_R_T::processDMAReadEvent() {
 
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
-    // ask DMA to get data by cache controller
     // DMARTPayload* dmaRTPayload = new DMARTPayload{nCols, dramAddr};
     // pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
     // DMARTPayload dmaRTPayload{nCols, dramAddr};
     // pkt->setData(reinterpret_cast<uint8_t*>(&dmaRTPayload));
-
+    DMADescriptor desc {
+        dramAddr,
+        0,
+        nCols,
+        0,
+        0
+    };
+    pkt->pushSenderState(new DMASenderState(desc));
     DMAPort.sendPacket(pkt);
     DPRINTF(P2S_R_T, "Send DMA read request to %llx\n", dramAddr);
     dramAddr += next_row_offset_bytes;
@@ -218,7 +230,8 @@ P2S_R_T::processBitSliceEvent() {
 
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
-    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS + row_store_ptr;
+    // inform("curArrayID = %llu", curArrayID);
+    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS * 8 + row_store_ptr * 8;
  
     RequestPtr request = std::make_shared<Request>(
         arrayAddrEnq,
@@ -236,7 +249,7 @@ P2S_R_T::processBitSliceEvent() {
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
-    DPRINTF(P2S_R_T, "Send Request writing to %llx\n", arrayAddrEnq);
+    DPRINTF(P2S_R_T, "Send Request writing bit %d to %llx\n", bit_ptr, arrayAddrEnq);
     // write to cache bank
     // if (!writeEvent.scheduled()) {
     //     schedule(writeEvent, clockEdge(Cycles(1)));

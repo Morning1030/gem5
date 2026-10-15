@@ -93,10 +93,10 @@ P2S_L::MemSidePort::sendPacket(PacketPtr pkt)
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
     if (sendTimingReq(pkt)) {
         if (pkt->isRead()) {
-            DPRINTF(P2S_L, "Successfully send request to DMA\n");
+            // DPRINTF(P2S_L, "Successfully send request to DMA\n");
         }
         else if(pkt->isWrite()) {
-            DPRINTF(P2S_L, "Successfully send request to cache bank\n");
+            // DPRINTF(P2S_L, "Successfully send request to cache bank\n");
         }
     }
     else {
@@ -141,7 +141,6 @@ P2S_L::handleRequest(PacketPtr pkt) {
     next_row_offset_dram = p2s_L_Payload->next_row_offset_elem;
     _L_block_row = p2s_L_Payload->_L_block_row;
     _L_block_row_ptr = 0;
-    next_slice_offset_pic = p2s_L_Payload->_L_block_row;
     precision = p2s_L_Payload->precision;
     bit_ptr = 0;
 
@@ -154,7 +153,7 @@ P2S_L::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     if (picPortID == PICPortID::DMA) {
         const uint8_t *dmaData = pkt->getConstPtr<uint8_t>();
         const size_t pktSize = pkt->getSize();
-        DPRINTF(P2S_L, "DMA response size=0x%llx\n", static_cast<unsigned long long>(pktSize));
+        DPRINTF(P2S_L, "DMA response size=%u\n", pktSize);
         
         if (pktSize <= regArray.size() * regArray[0].size()) {
             for(int dmaRow = 0; dmaRow < regArray.size(); dmaRow++) {
@@ -169,7 +168,7 @@ P2S_L::handleResponse(PICPortID picPortID, PacketPtr pkt) {
         delete pkt;
 
         bit_ptr = 0;
-        pic_write_ptr = base_picAddr + _L_block_row_ptr;
+        pic_write_ptr = base_picAddr + _L_block_row_ptr * 8;
         schedule(bitSliceEvent, clockEdge(Cycles(1)));
         return true;
     }
@@ -204,7 +203,16 @@ P2S_L::processDMAReadEvent() {
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
+    DMADescriptor desc {
+        base_dram_addr,
+        0,
+        64,
+        0,
+        0
+    };
+    pkt->pushSenderState(new DMASenderState(desc));
     DMAPort.sendPacket(pkt);
+    DPRINTF(P2S_L, "Send DMA Request to %llx\n", base_dram_addr);
     base_dram_addr += next_row_offset_dram;
 }
 void
@@ -229,13 +237,13 @@ P2S_L::processBitSliceEvent() {
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
-    DPRINTF(P2S_L, "Send Request writing to %llx\n", pic_write_ptr);
-    if (!writeEvent.scheduled()) {
-        schedule(writeEvent, clockEdge(Cycles(1)));
-    }
+    DPRINTF(P2S_L, "Send Request writing bit %d to %llx\n", bit_ptr, pic_write_ptr);
+    // if (!writeEvent.scheduled()) {
+    //     schedule(writeEvent, clockEdge(Cycles(1)));
+    // }
 
     // update the next address
-    pic_write_ptr += next_slice_offset_pic; // next_slice_offset_pic = _L_block_row(?)
+    pic_write_ptr += _L_block_row * 8;
 
     // finish one bit slice, move on to the next bit
     bit_ptr++;

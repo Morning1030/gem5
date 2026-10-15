@@ -20,6 +20,7 @@ system.test_frontend = PicTestFrontend(
     start_delay=1,
     inter_command_gap=1,
     exit_on_finish=False,
+    trace="p2s"
 )
 
 system.scheduler = Scheduler(system=system)
@@ -35,7 +36,6 @@ system.dma = DMAEngine(
     block_bytes=64,
     max_outstanding=8,
 )
-
 system.tlb_sched = TLBReqScheduler()
 system.dma.tlb_side = system.tlb_sched.cpu_side
 
