@@ -253,7 +253,7 @@ Mat::processTick()
 
     if (tags != nullptr && wasIdle != isIdleNow) {
         // Job started (wasIdle) or fully finished (isIdleNow) -- report
-        // only; never drives setWayPICMode (see PICLLCTags).
+        // only; never changes a way's PIC state (see PICLLCTags).
         tags->setMatBusy(bankIndex, way, /*busy=*/!isIdleNow);
     }
 

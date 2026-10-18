@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include "base/types.hh"
+#include "mem/port.hh"
 #include "sim/eventq.hh"
 #include "params/SwitchController.hh"
 #include "sim/clocked_object.hh"
@@ -113,6 +114,7 @@ class SwitchController : public ClockedObject
 
   public:
     SwitchController(const SwitchControllerParams &params);
+    void init() override;
     Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
     bool handleDirResponse(PacketPtr pkt);  
     bool handleFlushResponse(PacketPtr pkt);

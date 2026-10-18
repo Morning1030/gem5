@@ -8,39 +8,12 @@
 #include "mem/qport.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
 #include "mem/cache/cache.hh"
-#include "mem/cache/tags/base_set_assoc.hh"
+#include "mem/cache/tags/pic_llc_tags.hh"
 #include "mem/packet.hh"
 #include "params/CacheController.hh"
 
 namespace gem5
 {
-
-class PICTags : public BaseSetAssoc
-{
-  public:
-    using BaseSetAssoc::BaseSetAssoc;
-
-    CacheBlk* findVictim(const CacheBlk::KeyType& key,
-                         const std::size_t size,
-                         std::vector<CacheBlk*>& evict_blks,
-                         const uint64_t partition_id=0) override;
-    bool getSetWayValid(const uint32_t setID, const uint32_t wayID);
-    Addr getSetWayAddr(const uint32_t setID, const uint32_t wayID);
-    Addr getSetWayTag(const uint32_t setID, const uint32_t wayID);
-    bool isWayPICMode(const uint32_t wayID) const;
-    void setWayPICMode(const uint32_t wayID, bool picMode);
-    void setWayRangePICMode(const uint32_t beginWay, const uint32_t endWay, bool picMode);
-
-    // 直接用 (set, way) 拿 block，O(1)
-    CacheBlk*
-    getBlk(const uint32_t setID, const uint32_t wayID) const
-    {
-      return static_cast<CacheBlk*>(indexingPolicy->getEntry(setID, wayID));
-    }
-
-  private:
-    std::vector<bool> PIC_mode; // each element indicates one way
-};
 
 class CacheController : public Cache
 {
@@ -124,7 +97,6 @@ class CacheController : public Cache
 
     PicCtrlPort picCtrlPort;
     PicFlushPort picFlushPort;
-    PICTags *picTags() const { return static_cast<PICTags*>(tags); }
 
     // RTL: switchIdle = 0 只擋 sinkA；sinkC（Release）照常進來
     bool switchBlocked = false;
@@ -140,11 +112,12 @@ class CacheController : public Cache
   public:
     CacheController(const CacheControllerParams &params);
     Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
+    // constructor 已確認 tags 是 PICLLCTags
+    PICLLCTags *picTags() const { return static_cast<PICLLCTags*>(tags); }
+
     bool handlePicCtrlReq(PacketPtr pkt);
     bool handleQueryWayState(PacketPtr pkt);
-    bool handleDrainQuery(PacketPtr pkt);
     bool handleFlushReq(PacketPtr pkt);
-    bool handleWayMode(PacketPtr pkt);
     // 不用 setBlocked：它會擋住整個 cpuSidePort，連 L1 的 writeback 也進不來
     void blockForSwitch() { switchBlocked = true; }
     void unblockForSwitch()
@@ -155,7 +128,6 @@ class CacheController : public Cache
                 schedule(sinkAReplayEvent, clockEdge(Cycles(1)));
         }
     }
-    bool handleSwitchBusy(PacketPtr pkt);
 
     // RTL: Scheduler 的 isScheNoOtherWorks（組合邏輯）
     bool isScheNoOtherWorks() const
@@ -167,8 +139,11 @@ class CacheController : public Cache
     // RTL: runtime_PIC_Mode_levels 暫存器直接接到 Directory（不是訊息）
     void setPicWays(uint32_t beginWay, uint32_t endWay, bool pic)
     {
-        picTags()->setWayRangePICMode(beginWay, endWay, pic);
+        picTags()->setDirPicWays(beginWay, endWay, pic);
     }
+
+    // RTL: switch_resp 時 for_assert := runtime，Bank 才看到新的 PIC 狀態
+    void commitPicWays() { picTags()->commitBankPicState(); }
 };
 
 } // namespace gem5

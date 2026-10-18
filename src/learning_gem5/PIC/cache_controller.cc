@@ -11,86 +11,6 @@
 namespace gem5
 {
 
-CacheBlk*
-PICTags::findVictim(const CacheBlk::KeyType& key,
-                    const std::size_t size,
-                    std::vector<CacheBlk*>& evict_blks,
-                    const uint64_t partition_id)
-{
-    std::vector<ReplaceableEntry*> entries = indexingPolicy->getPossibleEntries(key);
-
-    auto it = entries.begin();
-    while (it != entries.end()) {
-        CacheBlk* blk = static_cast<CacheBlk*>(*it);
-        if (blk && isWayPICMode(blk->getWay())) {
-            it = entries.erase(it);
-        }
-        else {
-            ++it;
-        }
-    }
-
-    if (partitionManager) {
-        partitionManager->filterByPartition(entries, partition_id);
-    }
-
-    CacheBlk* victim = entries.empty() ? nullptr :
-        static_cast<CacheBlk*>(replacementPolicy->getVictim(entries));
-
-    evict_blks.push_back(victim);
-    return victim;
-}
-
-bool
-PICTags::getSetWayValid(const uint32_t setID, const uint32_t wayID)
-{
-    return getBlk(setID, wayID)->isValid();
-}
-
-Addr
-PICTags::getSetWayAddr(const uint32_t setID, const uint32_t wayID)
-{
-    return regenerateBlkAddr(getBlk(setID, wayID));
-}
-
-Addr
-PICTags::getSetWayTag(const uint32_t setID, const uint32_t wayID)
-{
-    return getBlk(setID, wayID)->getTag();
-}
-
-bool
-PICTags::isWayPICMode(const uint32_t wayID) const
-{
-    return wayID < PIC_mode.size() && PIC_mode[wayID];
-}
-
-void
-PICTags::setWayPICMode(const uint32_t wayID, bool picMode)
-{
-    if (PIC_mode.size() < allocAssoc) {
-        PIC_mode.resize(allocAssoc, false);
-    }
-
-    panic_if(wayID >= allocAssoc,
-             "PICTags::setWayPICMode way %u out of range assoc=%u",
-             wayID, allocAssoc);
-
-    PIC_mode[wayID] = picMode;
-}
-
-void
-PICTags::setWayRangePICMode(const uint32_t beginWay, const uint32_t endWay,
-                            bool picMode)
-{
-    panic_if(beginWay > endWay, "PICTags: bad way range [%u, %u]",
-             beginWay, endWay);
-    for (uint32_t w = beginWay; w <= endWay; ++w) {
-        setWayPICMode(w, picMode);
-    }
-}
-
-
 CacheController::CacheController(const CacheControllerParams &params)
     : Cache(params),
     flushLookupLat(params.flush_lookup_lat),
@@ -109,6 +29,9 @@ CacheController::CacheController(const CacheControllerParams &params)
     sinkAReplayEvent([this] { processSinkAReplay(); },
                      name() + ".sinkAReplayEvent")
 {
+    // picTags() 用 static_cast，型別在這裡檢查一次
+    fatal_if(!dynamic_cast<PICLLCTags*>(tags),
+             "%s: tags must be PICLLCTags", name());
 }
 
 bool
@@ -126,8 +49,7 @@ CacheController::recvTimingReq(PacketPtr pkt)
     // switch 期間（或還有沒放完的）A 類請求排隊，保持原本順序
     if (!isSinkCLike(pkt) && (switchBlocked || !heldSinkA.empty())) {
         heldSinkA.push_back(pkt);
-        DPRINTF(CacheController, "SinkA held %s addr=%#x (held=%u)
-",
+        DPRINTF(CacheController, "SinkA held %s addr=%#x (held=%u)\n",
                 pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
         return;
     }
@@ -205,23 +127,6 @@ CacheController::handleQueryWayState(PacketPtr pkt)
 }
 
 bool
-CacheController::handleDrainQuery(PacketPtr pkt)
-{
-    // RTL: !mshr_want_use_dir 的前提是 sinkA 已被 switchIdle 擋住
-    panic_if(!switchBlocked, "%s DrainQuery before blockForSwitch", name());
-
-    // RTL: mshrx_free — miss MSHR 和 eviction / writeback 都要結束
-    const bool isDrained = mshrQueue.isEmpty() && writeBuffer.isEmpty() && flushTxn.pkt == nullptr;
-
-    DPRINTF(CacheController, "DrainQuery: mshr=%d wb=%d -> %d\n", !mshrQueue.isEmpty(), !writeBuffer.isEmpty(), isDrained);
-
-    pkt->makeResponse();
-    pkt->getPtr<DrainQueryRespPayload>()->isDrained = isDrained ? 1u : 0u;
-    picCtrlPort.schedTimingResp(pkt, curTick());   // RTL 是組合邏輯，同拍可見
-    return true;
-}
-
-bool
 CacheController::handleFlushReq(PacketPtr pkt)
 {
     panic_if(flushTxn.pkt != nullptr, "%s second outstanding FlushReq", name());
@@ -260,56 +165,18 @@ CacheController::processFlushDone()
 }
 
 bool
-CacheController::handleWayMode(PacketPtr pkt)
-{
-    const auto *m = pkt->getConstPtr<WayModePayload>();
-
-    picTags()->setWayRangePICMode(m->beginWay, m->endWay, m->picMode != 0);
-
-    pkt->makeResponse();
-    // RTL: fire(T) 讀 SRAM → save_regout(T+1) → sw_resp 第一個 way(T+2)
-    picCtrlPort.schedTimingResp(pkt, clockEdge(Cycles(2)));
-    return true;
-}
-
-bool
 CacheController::handlePicCtrlReq(PacketPtr pkt)
 {
+    // SwitchController 只送 WayQuery；way mode、drain、switch busy 都是
+    // 直接呼叫（setPicWays / isScheNoOtherWorks / blockForSwitch），不走 port
     const auto reg = static_cast<PicCtrlReg>(pkt->getAddr() - PicCtrlBase);
-    panic_if(!isDirReg(reg), "%s bad dir offset %#llx", name(),
-            (unsigned long long)(pkt->getAddr() - PicCtrlBase));
-    // WayQuery 要拿資料回來用 ReadReq，其餘是單純設定用 WriteReq
-    panic_if(reg == PicCtrlReg::WayQuery ? !pkt->isRead() : !pkt->isWrite(),
-             "%s wrong command %s for dir offset %#llx", name(),
-             pkt->cmdString(),
-             (unsigned long long)(pkt->getAddr() - PicCtrlBase));
+    panic_if(reg != PicCtrlReg::WayQuery, "%s unsupported dir offset %#llx",
+             name(), (unsigned long long)(pkt->getAddr() - PicCtrlBase));
+    // WayQuery 要拿資料回來，用 ReadReq
+    panic_if(!pkt->isRead(), "%s wrong command %s for WayQuery", name(),
+             pkt->cmdString());
 
-    switch (reg) {
-    case PicCtrlReg::DrainQuery: return handleDrainQuery(pkt);
-    case PicCtrlReg::WayQuery: return handleQueryWayState(pkt);
-    case PicCtrlReg::WayMode: return handleWayMode(pkt);
-    case PicCtrlReg::SwitchBusy: return handleSwitchBusy(pkt);
-    default: panic("unreachable");
-    }
-}
-
-bool
-CacheController::handleSwitchBusy(PacketPtr pkt)
-{
-    const bool busy = pkt->getConstPtr<SwitchBusyPayload>()->busy != 0;
-
-    if (busy) {
-        blockForSwitch();
-    } else {
-        unblockForSwitch();
-    }
-
-    DPRINTF(CacheController, "SwitchBusy: %s CPU-side requests\n",
-            busy ? "blocking" : "unblocking");
-
-    pkt->makeResponse();
-    picCtrlPort.schedTimingResp(pkt, clockEdge(Cycles(1)));
-    return true;
+    return handleQueryWayState(pkt);
 }
 
 bool
@@ -388,8 +255,7 @@ CacheController::processFlushSchedule()
     // L1 的 writeback 還在路上（在 L1 write buffer，atomic probe 看不到）：
     // RTL MSHR 會等這筆 Release 進來；這裡下一拍重來，屆時 block 已被更新成 dirty
     if (innerHasCopy(addr, blk->isSecure())) {
-        DPRINTF(CacheController, "Flush addr=%#x wait in-flight writeback
-",
+        DPRINTF(CacheController, "Flush addr=%#x wait in-flight writeback\n",
                 addr);
         schedule(flushScheduleEvent, clockEdge(Cycles(1)));
         return;

@@ -43,6 +43,17 @@ SwitchController::SwitchController(const SwitchControllerParams &params)
     panic_if(totalMatNum == 0 || totalMatNum % totalLevels != 0, "%s total_mat_num %u not divisible by total_levels %u", name(), totalMatNum, totalLevels);
 }
 
+void
+SwitchController::init()
+{
+    ClockedObject::init();
+    // RTL: runtime_PIC_Mode_levels 是 RegInit(0)。有接 Switch 時 PIC way
+    // 只能透過 ALLOC 產生，tags 的 initial_pic_ways 必須是 0
+    fatal_if(cache->picTags()->activePICWays() != 0,
+             "%s: tags start with PIC ways set; with a SwitchController, "
+             "PIC ways must come from ALLOC (initial_pic_ways = 0)", name());
+}
+
 SwitchController::CacheCtrlPort::CacheCtrlPort(
     const std::string &name, SwitchController *owner)
     : RequestPort(name, owner), owner(owner)
@@ -340,6 +351,7 @@ SwitchController::tick()
             // 先回 Idle 再回應：Scheduler 可能在 response 裡同步送下一個 request
             switchState = State::Idle;
             picLevelsForAssert = picLevels;    // RTL: switch_resp.fire 才更新
+            cache->commitPicWays();            // Bank 的 PIC 狀態同一拍更新
             respondSwitch();
         }
         break;

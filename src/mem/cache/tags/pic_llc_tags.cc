@@ -22,7 +22,9 @@ PICLLCTags::PICLLCTags(const Params &p)
       numMatsPerBank(p.num_mats_per_bank),
       numSubArraysPerMat(p.num_sub_arrays_per_mat),
       matSliceBytes(p.mat_slice_bytes),
+      // initial_pic_ways seeds both states (tests that drive Mats directly)
       wayPICModeBitmap(p.initial_pic_ways),
+      dirPICModeBitmap(p.initial_pic_ways),
       matBusyBitmap(p.num_banks, 0),
       blkShift(floorLog2(blkSize)),
       bankBits(floorLog2(numBanks))
@@ -42,10 +44,9 @@ PICLLCTags::PICLLCTags(const Params &p)
              allocAssoc);
 
     // Sanity-check Mat geometry against the block size.
-    // Paper: 4 Mats × 16 bytes = 64 bytes = one cache line per way.
+    // Paper: 4 banks × 16 bytes = 64 bytes = one cache line per way.
     // We only warn; the user can intentionally choose different parameters.
-    const unsigned matCoverage =
-        (numMatsPerBank / allocAssoc) * matSliceBytes;
+    const unsigned matCoverage = numBanks * matSliceBytes;
     if (matCoverage != blkSize) {
         warn("PICLLCTags: Mat geometry implies %u bytes/line; "
              "block_size=%u bytes. Adjust num_mats_per_bank or "
@@ -61,14 +62,14 @@ PICLLCTags::PICLLCTags(const Params &p)
 }
 
 // ---------------------------------------------------------------------------
-// accessBlock — tag lookup with PIC-mode arbiter 
+// accessBlock — tag lookup; a hit on a bank-PIC way is a bug
 // ---------------------------------------------------------------------------
 
 CacheBlk*
 PICLLCTags::accessBlock(const PacketPtr pkt, Cycles &lat)
 {
     // check cache hit and miss
-    // if miss -> return nullptr, if hit -> check the way is in PIC mode or not
+    // if miss -> return nullptr, if hit -> the way must not be in PIC mode
     CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
 
     // All ways are read in parallel for tag comparison (one access per way).
@@ -84,21 +85,14 @@ PICLLCTags::accessBlock(const PacketPtr pkt, Cycles &lat)
     if (blk != nullptr) {
         const unsigned way = blk->getWay();
 
-        // Arbiter: deny access while that way is switched into PIC mode.
-        // RTL (BankSellPIC.scala:107-127): the CPU-blocking signal is
-        // cacheLevelEnd/picActivated, driven only by SWITCH -- static,
-        // per-way, unrelated to whether a Mat happens to be mid-job right
-        // now. isMatBusy() is a different, query-only signal (see its own
-        // comment) and must not gate CPU access.
-        if (isWayInPICMode(way)) {
-            //picStats.modeBlockedAccesses++;
-            DPRINTF(CacheTags,
-                    "PICLLCTags: addr %#x blocked — way %u is in PIC "
-                    "mode\n",
-                    pkt->getAddr(), way);
-            lat = lookupLatency;
-            return nullptr;
-        }
+        // RTL (BankSellPIC.scala:107-108) asserts a cache access never
+        // lands on a PIC way; paper Sec. 5.2: PIC ways never hit. Every
+        // block was flushed before its way entered PIC mode, so a hit here
+        // means the switch/flush flow is broken. isMatBusy() is a
+        // different, query-only signal and plays no part here.
+        panic_if(isWayInPICMode(way),
+                 "PICLLCTags: addr %#x hit way %u, which is in PIC mode",
+                 pkt->getAddr(), way);
 
         // Normal cache hit.
         blk->increaseRefCount();
@@ -127,13 +121,12 @@ PICLLCTags::findVictim(const CacheBlk::KeyType& key,
         indexingPolicy->getPossibleEntries(key); 
 
     //step 2
-    // Remove any way currently switched into PIC mode. Those hold live
-    // compute data and must not be evicted. Same isWayInPICMode gate as
-    // accessBlock() -- see its own comment there.
+    // Remove any way whose directory state is PIC (RTL Directory picks
+    // victims with picLevels, already set at the switch's pre_check).
     entries.erase(
         std::remove_if(entries.begin(), entries.end(),
             [this](ReplaceableEntry *e) {
-                return isWayInPICMode(static_cast<CacheBlk*>(e)->getWay());
+                return isWayDirPIC(static_cast<CacheBlk*>(e)->getWay());
             }),
         entries.end());
     
@@ -161,49 +154,52 @@ PICLLCTags::findVictim(const CacheBlk::KeyType& key,
 }
 
 // ---------------------------------------------------------------------------
-// setWayPICMode — runtime mode switch (called by Switch Controller after
-//                 flush is fully complete)
+// setDirPicWays / commitBankPicState — the two PIC states of a switch
 // ---------------------------------------------------------------------------
 
 void
-PICLLCTags::setWayPICMode(unsigned way, bool pic)
+PICLLCTags::setDirPicWays(unsigned beginWay, unsigned endWay, bool pic)
 {
-    fatal_if(way >= allocAssoc,
-             "PICLLCTags::setWayPICMode: way %u out of range (assoc=%u)",
-             way, allocAssoc);
-    fatal_if(way == normalCacheWay,
-             "PICLLCTags::setWayPICMode: way %u is the normal cache way "
-             "and cannot be switched to PIC mode", way);
+    fatal_if(beginWay > endWay || endWay >= allocAssoc,
+             "PICLLCTags::setDirPicWays: bad way range [%u, %u] "
+             "(assoc=%u)", beginWay, endWay, allocAssoc);
+    fatal_if(normalCacheWay >= beginWay && normalCacheWay <= endWay,
+             "PICLLCTags::setDirPicWays: range [%u, %u] has the normal "
+             "cache way %u", beginWay, endWay, normalCacheWay);
 
-    // Safety check: when switching TO PIC mode, the way must already be
-    // fully flushed (no valid blocks remain).  The Cache Controller is
-    // responsible for calling invalidateWay() before calling this function.
+    const uint32_t ways =
+        static_cast<uint32_t>(mask(endWay - beginWay + 1) << beginWay);
     if (pic) {
-        auto remaining = getDirtyBlocksInWay(way);
-        panic_if(!remaining.empty(),
-                 "PICLLCTags::setWayPICMode: way %u still has %zu dirty "
-                 "block(s) — Cache Controller must flush before switching "
-                 "to PIC mode", way, remaining.size());
-    }
-
-    const bool wasSet = static_cast<bool>((wayPICModeBitmap >> way) & 1u);
-    if (wasSet == pic) {
-        DPRINTF(CacheTags,
-                "PICLLCTags: way %u already in %s mode — no change\n",
-                way, pic ? "PIC" : "cache");
-        return;
-    }
-
-    if (pic) {
-        wayPICModeBitmap |= (1u << way);
+        dirPICModeBitmap |= ways;
     } else {
-        wayPICModeBitmap &= ~(1u << way);
+        dirPICModeBitmap &= ~ways;
+    }
+
+    DPRINTF(CacheTags,
+            "PICLLCTags: dir ways [%u, %u] -> %s (dir=0x%08x)\n",
+            beginWay, endWay, pic ? "PIC" : "cache", dirPICModeBitmap);
+}
+
+void
+PICLLCTags::commitBankPicState()
+{
+    // Model-only check (the RTL has no such assert): every way entering
+    // PIC mode must have been fully flushed. Catches flush bugs before a
+    // Mat overwrites live cache data.
+    const uint32_t entering = dirPICModeBitmap & ~wayPICModeBitmap;
+    if (entering) {
+        for (const CacheBlk &blk : blks) {
+            panic_if(blk.isValid() && ((entering >> blk.getWay()) & 1u),
+                     "PICLLCTags::commitBankPicState: way %u set %u is "
+                     "still valid while entering PIC mode",
+                     blk.getWay(), blk.getSet());
+        }
     }
 
     //picStats.modeSwitches++;
+    wayPICModeBitmap = dirPICModeBitmap;
     DPRINTF(CacheTags,
-            "PICLLCTags: way %u -> %s mode (bitmap=0x%08x, active=%u)\n",
-            way, pic ? "PIC" : "cache",
+            "PICLLCTags: bank state committed (bitmap=0x%08x, active=%u)\n",
             wayPICModeBitmap, activePICWays());
 }
 
@@ -273,6 +269,14 @@ PICLLCTags::isWayInPICMode(unsigned way) const
     if (way == normalCacheWay)
         return false;
     return static_cast<bool>((wayPICModeBitmap >> way) & 1u);
+}
+
+bool
+PICLLCTags::isWayDirPIC(unsigned way) const
+{
+    if (way == normalCacheWay)
+        return false;
+    return static_cast<bool>((dirPICModeBitmap >> way) & 1u);
 }
 
 void
