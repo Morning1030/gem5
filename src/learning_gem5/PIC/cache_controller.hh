@@ -8,6 +8,7 @@
 #include "mem/qport.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
 #include "mem/cache/cache.hh"
+#include "mem/cache/pic/access_bank_arb.hh"
 #include "mem/cache/tags/pic_llc_tags.hh"
 #include "mem/packet.hh"
 #include "params/CacheController.hh"
@@ -105,8 +106,33 @@ class CacheController : public Cache
     void processSinkAReplay();
     static bool isSinkCLike(const PacketPtr pkt);
 
+    // ---- Cache / PIC bank 衝突（RTL: BankSellPIC L71、L112-116）----
+    // cache 路徑用到 bank 時 picMem_ready = false，cache 永遠優先，
+    // PIC 請求要等。nullptr = 不模擬（AccessBankArb 的 bank 永遠 ready）
+    AccessBankArb *bankArb;
+    const Cycles bankBusyDelay;            // 收到請求 → 第一個 beat 用 bank
+    const unsigned beatBytes;              // 一個 beat 幾 bytes
+    std::vector<unsigned> bankBusyCnt;     // 多筆 cache 存取可能重疊，用計數器
+    // 讀寫 blk 的 [offset, offset + size) 時，標記用到的 bank
+    void occupyBanks(Addr offset, unsigned size);
+    // bank 在 [start, end) 期間忙碌
+    void markBank(unsigned bank, Tick start, Tick end);
+
   protected:
     void recvTimingReq(PacketPtr pkt) override;
+
+    // ---- 碰到 cache 資料的地方 → occupyBanks ----
+    // handleFill / handleSnoop 不是 virtual：fill 改由 recvTimingResp 處理；
+    // snoop 回資料（handleSnoop）這次先不算
+    void satisfyRequest(PacketPtr pkt, CacheBlk *blk,
+                        bool deferred_response = false,
+                        bool pending_downgrade = false) override;
+    void recvTimingResp(PacketPtr pkt) override;
+    bool access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                PacketList &writebacks) override;
+    // override 單參數版本會遮住 BaseCache::evictBlock(blk, writebacks)
+    using Cache::evictBlock;
+    [[nodiscard]] PacketPtr evictBlock(CacheBlk *blk) override;
 
 
   public:

@@ -29,3 +29,14 @@ class CacheController(Cache):
         10, "inner copy: Probe(toN) -> ProbeAck")
     flush_probe_data_lat = Param.Cycles(
         12, "inner dirty copy: Probe(toN) -> ProbeAckData")
+
+    # ---- Cache / PIC bank 衝突（RTL: BankSellPIC L71、L112-116）----
+    # cache 路徑用到某個 bank 時 picMem_ready = false，cache 永遠優先。
+    # NULL = 不模擬 bank 衝突（現有測試行為不變）
+    bank_arb = Param.AccessBankArb(
+        NULL, "AccessBankArb told which banks the cache path is using")
+    # 近似值，之後對 RTL waveform 校正
+    bank_busy_delay = Param.Cycles(
+        1, "request received -> first bank beat")
+    # 從 Chipyard 預設參數推得（writeBytes=8），待確認實際 config
+    bank_beat_bytes = Param.Unsigned(8, "bytes per bank beat")

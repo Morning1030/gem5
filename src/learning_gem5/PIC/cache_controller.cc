@@ -7,6 +7,7 @@
 #include "base/trace.hh"
 #include "debug/CacheController.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
+#include "mem/cache/mshr.hh"
 
 namespace gem5
 {
@@ -27,11 +28,16 @@ CacheController::CacheController(const CacheControllerParams &params)
     picCtrlPort(params.name + ".pic_ctrl_port", this),
     picFlushPort(params.name + ".pic_flush_port", this),
     sinkAReplayEvent([this] { processSinkAReplay(); },
-                     name() + ".sinkAReplayEvent")
+                     name() + ".sinkAReplayEvent"),
+    bankArb(params.bank_arb),
+    bankBusyDelay(params.bank_busy_delay),
+    beatBytes(params.bank_beat_bytes)
 {
     // picTags() 用 static_cast，型別在這裡檢查一次
     fatal_if(!dynamic_cast<PICLLCTags*>(tags),
              "%s: tags must be PICLLCTags", name());
+    fatal_if(beatBytes == 0, "%s: bank_beat_bytes must be > 0", name());
+    bankBusyCnt.assign(picTags()->bankCount(), 0);
 }
 
 bool
@@ -75,6 +81,125 @@ CacheController::getPort(const std::string &if_name, PortID idx)
     if (if_name == "pic_ctrl_port") return picCtrlPort;
     if (if_name == "pic_flush_port") return picFlushPort;
     return Cache::getPort(if_name, idx);
+}
+
+// ---------------------------------------------------------------------------
+// Cache / PIC bank 衝突（RTL: BankSellPIC L71、L112-116）
+//   cache 路徑用某個 bank 的那拍 picMem_ready = false；AccessBankArb 看到
+//   bank 不 ready 會進 Block、凍結所有 client，每拍自己 poll，不用叫醒它。
+//   beat = 8B、bank = beat % 4：從 Chipyard 預設參數推得（writeBytes=8、
+//   portFactor=4），待確認實際 config。
+//   假設 CacheController 和 AccessBankArb 在同一個 clock domain。
+// ---------------------------------------------------------------------------
+
+void
+CacheController::occupyBanks(Addr offset, unsigned size)
+{
+    if (!bankArb || size == 0)
+        return;
+
+    const unsigned numBanks = picTags()->bankCount();
+    const Addr firstBeat = offset / beatBytes;
+    const Addr lastBeat  = (offset + size - 1) / beatBytes;
+    const Tick start = clockEdge(bankBusyDelay);
+
+    // 第 i 個 beat 在 start 之後第 i 拍，佔用 bank (beat % numBanks) 一拍
+    for (Addr beat = firstBeat; beat <= lastBeat; ++beat) {
+        const unsigned bank = beat % numBanks;
+        const Tick t = start + cyclesToTicks(Cycles(beat - firstBeat));
+        DPRINTF(CacheController, "BankBusy: bank=%u beat=%llu tick=%llu\n",
+                bank, (unsigned long long)beat, (unsigned long long)t);
+        markBank(bank, t, t + clockPeriod());
+    }
+}
+
+void
+CacheController::markBank(unsigned bank, Tick start, Tick end)
+{
+    // 優先權比 AccessBankArb 的 tickEvent（Default_Pri）早：arbiter 同一拍
+    // 就看得到。event 執行完自動刪除（第三個參數 true）
+    constexpr Event::Priority pri = Event::Default_Pri - 1;
+
+    auto *busy = new EventFunctionWrapper([this, bank] {
+        if (++bankBusyCnt[bank] == 1)
+            bankArb->setBankReady(bank, false);
+    }, name() + ".bankBusyEvent", true, pri);
+
+    auto *ready = new EventFunctionWrapper([this, bank] {
+        assert(bankBusyCnt[bank] > 0);
+        if (--bankBusyCnt[bank] == 0)
+            bankArb->setBankReady(bank, true);
+    }, name() + ".bankFreeEvent", true, pri);
+
+    schedule(busy, start);
+    schedule(ready, end);
+}
+
+void
+CacheController::satisfyRequest(PacketPtr pkt, CacheBlk *blk,
+                                bool deferred_response,
+                                bool pending_downgrade)
+{
+    // 命中的讀寫，以及 miss 之後回資料給 L1（serviceMSHRTargets 也走這裡）。
+    // parent 會把 pkt 改成 response，先記下有沒有搬資料；Upgrade /
+    // Invalidate 沒有資料，不算
+    const bool movesData = pkt->isRead() || pkt->isWrite();
+    const Addr offset = pkt->getOffset(blkSize);
+    const unsigned size = pkt->getSize();
+
+    Cache::satisfyRequest(pkt, blk, deferred_response, pending_downgrade);
+
+    if (movesData)
+        occupyBanks(offset, size);
+}
+
+void
+CacheController::recvTimingResp(PacketPtr pkt)
+{
+    // DRAM 的資料填進 blk（RTL: refill 寫 BankedStore）。handleFill 不是
+    // virtual，只能在這裡判斷。parent 會 pop senderState 並 delete pkt，
+    // 所以要在呼叫之前判斷；條件和 BaseCache::recvTimingResp 的 is_fill
+    // 一致，allocate=false 時資料只進 tempBlock，不算
+    bool fill = false;
+    if (!pkt->isWrite() && pkt->hasData() && !pkt->isError()) {
+        const MSHR *mshr = dynamic_cast<const MSHR*>(pkt->senderState);
+        fill = mshr && !mshr->isForward && mshr->allocOnFill() &&
+               (pkt->isRead() || mshr->wasWholeLineWrite);
+    }
+
+    Cache::recvTimingResp(pkt);
+
+    if (fill)
+        occupyBanks(0, blkSize);
+}
+
+bool
+CacheController::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                        PacketList &writebacks)
+{
+    // 只算 L1 writeback / WriteClean 寫進 blk（RTL: sinkC ReleaseData 寫
+    // BankedStore）。命中已經在 satisfyRequest 算過，這裡不重複
+    const bool wbData = pkt->hasData() &&
+        (pkt->isWriteback() || pkt->cmd == MemCmd::WriteClean);
+    const Addr offset = pkt->getOffset(blkSize);
+    const unsigned size = pkt->getSize();
+
+    const bool satisfied = Cache::access(pkt, blk, lat, writebacks);
+
+    // blk 是 nullptr = 沒 allocate，資料往下送，沒寫進這層
+    if (wbData && blk != nullptr)
+        occupyBanks(offset, size);
+    return satisfied;
+}
+
+PacketPtr
+CacheController::evictBlock(CacheBlk *blk)
+{
+    // 被替換掉的 dirty block 讀出來寫回（RTL: SourceC 讀 BankedStore）
+    PacketPtr pkt = Cache::evictBlock(blk);
+    if (pkt && pkt->hasData())
+        occupyBanks(0, blkSize);
+    return pkt;
 }
 
 bool
@@ -208,6 +333,7 @@ CacheController::probeInnerToN(CacheBlk *blk, Addr addr)
     if (probe.cacheResponding()) {           // ProbeAckData
         probe.writeDataToBlock(blk->data, blkSize);
         blk->setCoherenceBits(CacheBlk::DirtyBit);   // RTL: meta.dirty := true
+        occupyBanks(0, blkSize);             // RTL: ProbeAckData 寫回 BankedStore
         return true;
     }
     return false;                            // ProbeAck（無資料）
@@ -282,6 +408,9 @@ CacheController::processFlushRelease()
 
     const bool dirty = blk->isSet(CacheBlk::DirtyBit);
     PacketPtr wb = (dirty || writebackClean) ? writebackBlk(blk) : makeCleanEvict(blk);
+    // ReleaseData 要從 BankedStore 讀出資料；Release（CleanEvict）沒有資料
+    if (wb->hasData())
+        occupyBanks(0, blkSize);
 
     // 記下位址要在 invalidate 之前
     flushTxn.wbAddr   = regenerateBlkAddr(blk);
