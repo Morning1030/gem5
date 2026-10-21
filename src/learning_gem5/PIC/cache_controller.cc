@@ -7,6 +7,7 @@
 #include "base/trace.hh"
 #include "debug/CacheController.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
+#include "learning_gem5/PIC/Switch/switchCtrl.hh"
 #include "mem/cache/mshr.hh"
 
 namespace gem5
@@ -27,6 +28,8 @@ CacheController::CacheController(const CacheControllerParams &params)
     flushWbWaitEvent([this] { processFlushWbWait(); }, name() + ".flushWbWaitEvent"),
     picCtrlPort(params.name + ".pic_ctrl_port", this),
     picFlushPort(params.name + ".pic_flush_port", this),
+    maxHeldSinkA(params.max_held_sink_a),
+    picStats(this),
     sinkAReplayEvent([this] { processSinkAReplay(); },
                      name() + ".sinkAReplayEvent"),
     bankArb(params.bank_arb),
@@ -38,6 +41,13 @@ CacheController::CacheController(const CacheControllerParams &params)
              "%s: tags must be PICLLCTags", name());
     fatal_if(beatBytes == 0, "%s: bank_beat_bytes must be > 0", name());
     bankBusyCnt.assign(picTags()->bankCount(), 0);
+}
+
+CacheController::PicStats::PicStats(statistics::Group *parent)
+    : statistics::Group(parent, "pic"),
+      ADD_STAT(heldSinkAPeak, statistics::units::Count::get(),
+               "Most sinkA requests held at once during a switch")
+{
 }
 
 bool
@@ -53,10 +63,16 @@ void
 CacheController::recvTimingReq(PacketPtr pkt)
 {
     // switch 期間（或還有沒放完的）A 類請求排隊，保持原本順序
-    if (!isSinkCLike(pkt) && (switchBlocked || !heldSinkA.empty())) {
+    if (!isSinkCLike(pkt) && (sinkABlocked() || !heldSinkA.empty())) {
         heldSinkA.push_back(pkt);
         DPRINTF(CacheController, "SinkA held %s addr=%#x (held=%u)\n",
                 pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
+        if (heldSinkA.size() > picStats.heldSinkAPeak.value())
+            picStats.heldSinkAPeak = heldSinkA.size();
+        panic_if(maxHeldSinkA && heldSinkA.size() > maxHeldSinkA,
+                 "%s: %u sinkA requests held during a switch "
+                 "(max_held_sink_a = %u)", name(),
+                 (unsigned)heldSinkA.size(), maxHeldSinkA);
         return;
     }
     Cache::recvTimingReq(pkt);
@@ -66,12 +82,14 @@ void
 CacheController::processSinkAReplay()
 {
     // RTL: sinkA 每拍收一筆
-    if (switchBlocked || heldSinkA.empty())
-        return;
+    if (sinkABlocked() || heldSinkA.empty())
+        return;                 // 下次 unblockForSwitch() 再排
     PacketPtr pkt = heldSinkA.front();
     heldSinkA.pop_front();
+    DPRINTF(CacheController, "SinkA replay %s addr=%#x (held=%u)\n",
+            pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
     Cache::recvTimingReq(pkt);
-    if (!switchBlocked && !heldSinkA.empty() && !sinkAReplayEvent.scheduled())
+    if (!sinkABlocked() && !heldSinkA.empty() && !sinkAReplayEvent.scheduled())
         schedule(sinkAReplayEvent, clockEdge(Cycles(1)));
 }
 
@@ -171,6 +189,11 @@ CacheController::recvTimingResp(PacketPtr pkt)
 
     if (fill)
         occupyBanks(0, blkSize);
+
+    // MSHR 只在 BaseCache::recvTimingResp 裡釋放：最後一筆做完時通知
+    // switch（pre_check 在等 drain 的話它會重新檢查）
+    if (switchCtrl && mshrQueue.isEmpty())
+        switchCtrl->notifyMshrDrained();
 }
 
 bool

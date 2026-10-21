@@ -2,6 +2,7 @@
 #define __LEARNING_GEM5_PIC_SWITCH_CTRL_HH__
 
 #include <cstdint>
+#include <vector>
 #include "base/types.hh"
 #include "mem/port.hh"
 #include "sim/eventq.hh"
@@ -35,27 +36,23 @@ class SwitchController : public ClockedObject
         AddrRangeList getAddrRanges() const override;
     };
 
-    class CacheCtrlPort : public RequestPort    // 接 CacheController 的 pic_ctrl_port
+    // cache_side[idx]：接 CacheController，response 依 idx 分流
+    enum CacheSideIdx : PortID
     {
-      private:
-        SwitchController *owner;
-        PacketPtr blockedPkt = nullptr;
-      public:
-        CacheCtrlPort(const std::string &name, SwitchController *owner);
-        void sendPacket(PacketPtr pkt);
-      protected:
-        bool recvTimingResp(PacketPtr pkt) override;
-        void recvReqRetry() override;
-        void recvRangeChange() override {}
+        DirQuery = 0,       // 接 CacheController 的 pic_ctrl_port
+        Flush = 1,          // 接 CacheController 的 pic_flush_port
+        NumCacheSide = 2
     };
 
-    class FlushPort : public RequestPort
+    // idx 存在 Port::id（建構時傳入），recvTimingResp 依它分流
+    class CacheSidePort : public RequestPort
     {
       private:
         SwitchController *owner;
         PacketPtr blockedPkt = nullptr;
       public:
-        FlushPort(const std::string &name, SwitchController *owner);
+        CacheSidePort(const std::string &name, SwitchController *owner,
+                      PortID id);
         void sendPacket(PacketPtr pkt);
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
@@ -64,8 +61,7 @@ class SwitchController : public ClockedObject
     };
 
     InstPort instPort;
-    CacheCtrlPort cacheCtrlPort;
-    FlushPort flushPort;
+    std::vector<CacheSidePort> cacheSidePorts;
     RequestorID requestorId;
     CacheController *cache;
 
@@ -102,13 +98,31 @@ class SwitchController : public ClockedObject
     bool     snapValid = false;
     uint32_t snapIdx   = 0;
     bool     needUnblock = false;
+    bool     scanWaitingQueue = false;    // scan 卡在 flush queue 滿
+    bool     waitingMshrDrain = false;    // pre_check 在等 MSHR 清空
+    bool     needInstRetry = false;       // 有 switch_req 因為忙碌被拒，要送 retry
+    Tick     reqReadyAt = 0;              // switch_req.ready 的第一拍（回到 switch_idle）
     PacketPtr pendingInstPkt = nullptr;   // switch_resp 要到 resp_op_res 才回
 
     FlushController flushCtl;
     friend class FlushController;
 
-    EventFunctionWrapper tickEvent;
-    void tick();
+    // ---- events：只在狀態會變的那拍被叫醒 ----
+    EventFunctionWrapper preCheckEvent;   // Act/DeactPreCheck
+    EventFunctionWrapper scanEvent;       // ActQueryDir/ActDirResp/CheckFinish + Directory FSM
+    EventFunctionWrapper respEvent;       // RespOpRes
+    EventFunctionWrapper unblockEvent;    // 回到 Idle 那拍放行 sinkA
+    EventFunctionWrapper instRetryEvent;  // 忙碌時被拒的 switch_req，idle 那拍請 requester 重送
+    void processPreCheckEvent();
+    void processScanEvent();
+    void processRespEvent();
+    void processUnblockEvent();
+    void processInstRetryEvent();
+
+    // FlushController 通知：queue 騰出位置 / flush 全部做完
+    void flushDequeued();
+    void flushAllDone();
+
     void sendWayQuery();
     void respondSwitch();
 
@@ -119,6 +133,8 @@ class SwitchController : public ClockedObject
     bool handleDirResponse(PacketPtr pkt);  
     bool handleFlushResponse(PacketPtr pkt);
     bool handleControlRequest(PacketPtr pkt);
+    // CacheController 在最後一筆 MSHR 釋放時呼叫
+    void notifyMshrDrained();
     bool isIdle() const { return switchState == State::Idle; }
 
     // RTL: io.picActivated / io.cacheLevelEnd → BankedStore（PIC 端存取合法性）
