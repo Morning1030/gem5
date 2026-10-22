@@ -27,6 +27,10 @@ class AccessBankArb(ClockedObject):
     # (kClientAutoLoadVec).
     autoload_side = ResponsePort("Port AutoLoadL sends READ requests on")
 
+    # ReadPostProcess.bank_side sends loaded words here as WRITEs
+    # (kClientLoadPostProcess, RTL load_post_process.io.accessBank).
+    load_post_side = ResponsePort("Port ReadPostProcess sends WRITEs on")
+
     # One port per PIC Mat, indexed (matID_in_bank - first_pic_mat) *
     # num_banks + bankID (same order as pic_cache.py's Mat list).
     # Leave unconnected for the old stub mode: grants commit nowhere and

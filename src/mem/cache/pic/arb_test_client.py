@@ -27,3 +27,6 @@ class ArbTestClient(ClockedObject):
     )
     start_delay = Param.Cycles(1, "Cycles before the first op")
     exit_when_done = Param.Bool(False, "End the simulation after the last op")
+    print_reads = Param.Bool(
+        False, "Print every checked read (address, value) to stdout"
+    )

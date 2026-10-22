@@ -46,12 +46,21 @@ system.p2s_l = P2S_L(system=system)
 system.p2s_r = P2S_R(system=system)
 system.p2s_r_t = P2S_R_T(system=system)
 
-system.dma = DMAEngine(
+# Load path, one SimObject per RTL module (PolymorPIC_main_in_cache.scala):
+# P2S -> Load_ctl -> DMA_read_page_split -> ReadPostProcess -> Load_ctl -> P2S
+system.load_ctl = Load_ctl(system=system)
+system.dma = DMA_read_page_split(
     system=system,
     chunk_bytes=64,
     block_bytes=64,
-    max_outstanding=8,
+    max_outstanding=4,
 )
+system.read_post = ReadPostProcess(system=system)
+
+system.load_ctl.dma_side = system.dma.req_side
+system.load_ctl.post_side = system.read_post.req_side
+system.dma.data_side = system.read_post.data_side
+system.read_post.buf_side = system.load_ctl.buf_side
 
 system.tlb_sched = TLBReqScheduler()
 system.dma.tlb_side = system.tlb_sched.cpu_side
@@ -64,15 +73,16 @@ system.scheduler.p2sl_port = system.p2s_l.inst_port
 system.scheduler.p2sr_port = system.p2s_r.inst_port
 system.scheduler.p2srt_port = system.p2s_r_t.inst_port
 
-system.p2s_l.dma_port = system.dma.p2s_side
-system.p2s_r.dma_port = system.dma.p2s_side
-system.p2s_r_t.dma_port = system.dma.p2s_side
+system.p2s_l.dma_port = system.load_ctl.p2s_side
+system.p2s_r.dma_port = system.load_ctl.p2s_side
+system.p2s_r_t.dma_port = system.load_ctl.p2s_side
 
 # Index 0/1/2 = P2S_L/P2S_R/P2S_R_T, matching AccessBankArb's own
 # kClientP2S_L-offset convention (see access_bank_arb.py/.hh).
 system.p2s_l.cb_port = system.bank_arb.p2s_side[0]
 system.p2s_r.cb_port = system.bank_arb.p2s_side[1]
 system.p2s_r_t.cb_port = system.bank_arb.p2s_side[2]
+system.read_post.bank_side = system.bank_arb.load_post_side
 
 system.pic_membus = SystemXBar()
 
