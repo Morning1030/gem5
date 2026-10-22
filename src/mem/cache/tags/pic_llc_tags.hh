@@ -1,39 +1,17 @@
 
-
 /**
  * @file
- * PIC-LLC (Processing-In-Cache Last Level Cache) tag store.
+ * PIC-LLC tag store (PolymorPIC paper, section 4.1.3).
  *
- * Implements the cache bank architecture from the Polymorphic PIC paper
- * (Section 4.1.3):
+ * Cache: 4 banks x 16 ways, one Mat per (bank, way). A Mat holds a 16-byte
+ * slice of every line of its way (4 sub-arrays x 512 rows x 64 bits).
+ * Way 0 is always a normal cache way; ways 1-15 can switch between cache
+ * and PIC mode, one way across all four banks at a time.
  *
- *   Physical organization per bank:
- *     - 16 Mats per bank, each Mat holding 4 SRAM sub-arrays
- *     - Each Mat stores a 16-byte slice of one way across all sets
- *     - SRAM: 64-bit I/O width, 512-wordline configuration
- *     - Total banks: 4 (Bank 0-3)
- *
- *   Way partitioning:
- *     - Way 0  : Normal Cache way — always available for CPU use
- *     - Ways 1–15 : PIC ways — can be in cache mode or PIC/compute mode
- *     - Mode switching granularity: one way across all four banks
- *       (called a "Level" in the paper, Fig. 6(c))
- *
- *   Arbiter:
- *     Per the PolymorPIC paper, the Arbiter is the path selector that
- *     decides, per cache bank, whether the CPU or the PIC/compute path may
- *     touch a way's data -- and enforces isolation between the two (the
- *     PAI mechanism) so ordinary CPU/OS traffic can't land on a way that's
- *     been allocated to AI compute. That's the half implemented here:
- *     - On every tag lookup the arbiter checks wayPICModeBitmap
- *     - If the matched way is currently in PIC mode, CPU access is blocked
- *       (access returns nullptr); the cache controller must retry later
- *     - PIC-mode ways are also excluded from replacement (findVictim)
- *     The *other* half of the paper's Arbiter -- routing DRAM data toward
- *     a p2s engine and routing p2s results into the right Mat, i.e. who
- *     gets the shared physical bank port this cycle -- needs no tag/way
- *     state at all, so it does not live here: see AccessBankArb in
- *     mem/cache/pic/access_bank_arb.hh.
+ * This class keeps the CPU away from PIC-mode ways: a tag hit in a PIC way
+ * is treated as a miss, and PIC ways are never chosen as victims. Which
+ * PIC client gets the bank port is decided by AccessBankArb
+ * (mem/cache/pic/access_bank_arb.hh), not here.
  */
 
 #ifndef __MEM_CACHE_TAGS_PIC_LLC_TAGS_HH__
@@ -56,6 +34,17 @@ namespace gem5
  * Extends BaseSetAssoc so the rest of the cache hierarchy (MSHR, coherence,
  * replacement) remains unchanged.  Only accessBlock() and findVictim() are
  * overridden to enforce the PIC-mode arbiter.
+ *
+ * Compared with the old PICTags,
+ * which only had findVictim(), the PIC-mode flag and (set, way) lookups,
+ * this class adds the parts marked "NEW vs PICTags" below:
+ *   - accessBlock(): the CPU cannot hit in a PIC-mode way
+ *   - setWayPICMode() checks: never way 0, never a way with dirty lines
+ *   - flush support: getDirtyBlocksInWay(), invalidateWay()
+ *   - Mat busy bits: setMatBusy(), isMatBusy()
+ *   - bank info: getBankIndex(), bankCount(), sliceBytes(), blockSize()
+ *   - activePICWays()
+ *   - its own Python params (Tags.py), incl. initial_pic_ways for tests
  */
 class PICLLCTags : public BaseSetAssoc
 {
@@ -67,6 +56,8 @@ class PICLLCTags : public BaseSetAssoc
 
     /**
      * Tag lookup with PIC-mode arbiter.
+     * NEW vs PICTags: PICTags did not override this, so the CPU could hit
+     * in a PIC-mode way.
      *
      * If the matching block lives in a way that is currently in PIC mode,
      * the arbiter denies CPU access and returns nullptr (the hit is invisible
@@ -75,7 +66,7 @@ class PICLLCTags : public BaseSetAssoc
     CacheBlk* accessBlock(const PacketPtr pkt, Cycles &lat) override;
 
     /**
-     * Victim selection restricted to cache-mode ways.
+     * Victim selection restricted to cache-mode ways (same as PICTags).
      *
      * PIC-mode ways hold live compute data and must not be evicted by
      * ordinary CPU misses.
@@ -94,10 +85,13 @@ class PICLLCTags : public BaseSetAssoc
      *
      * @param way  Way index to switch (1 … assoc-1)
      * @param pic  true → PIC mode; false → cache mode
+     *
+     * NEW vs PICTags: refuses way 0 and a way that still has dirty lines.
      */
     void setWayPICMode(unsigned way, bool pic);
 
-    /** Return true if @p way is currently in PIC/compute mode. */
+    /** Return true if @p way is currently in PIC/compute mode.
+     *  (PICTags had this as isWayPICMode().) */
     bool isWayInPICMode(unsigned way) const;
 
     /**
@@ -110,6 +104,8 @@ class PICLLCTags : public BaseSetAssoc
      * state -- a way stays blocked through any idle gap between jobs
      * until SWITCH says otherwise. Driven externally (Mat), not by this
      * class.
+     *
+     * NEW vs PICTags.
      */
     void setMatBusy(unsigned bank, unsigned way, bool busy);
     bool isMatBusy(unsigned bank, unsigned way) const;
@@ -119,6 +115,9 @@ class PICLLCTags : public BaseSetAssoc
      *
      * Bank selection uses log2(numBanks) bits immediately above the block
      * offset, interleaving cache lines across banks at 64-byte granularity.
+     *
+     * NEW vs PICTags (PICTags had no notion of banks), as are bankCount(),
+     * sliceBytes(), blockSize() and activePICWays() below.
      */
     unsigned getBankIndex(Addr addr) const;
 
@@ -141,6 +140,7 @@ class PICLLCTags : public BaseSetAssoc
     // -----------------------------------------------------------------------
     // Flush support — called by Cache Controller on behalf of Switch
     // Controller when switching a way from cache mode to PIC mode.
+    // NEW vs PICTags: getDirtyBlocksInWay() and invalidateWay().
     //
     // Sequence (Cache Controller is responsible for steps 2-4):
     //   1. getDirtyBlocksInWay(way)  → cache bank provides dirty block list
@@ -167,6 +167,8 @@ class PICLLCTags : public BaseSetAssoc
      *
      * Used by the Switch Controller (DCF, Section 5.1) to directly query
      * the Directory by position rather than by address.
+     * Replaces PICTags::getSetWayValid()/getSetWayAddr(), which scanned
+     * every block on each call.
      *
      * @param way  Way index
      * @param set  Set index
