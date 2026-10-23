@@ -327,9 +327,9 @@ P2S_R::processBitSliceEvent() {
     bitSliceQueue.push_back(bitSlicePkt);
     DPRINTF(P2S_R, "Send bit=%u bitslice writing to %llx\n", bit_ptr, arrayAddrEnq);
     // write to cache bank
-    // if (!writeEvent.scheduled()) {
-    //     schedule(writeEvent, clockEdge(Cycles(1)));
-    // }
+    if (!writeEvent.scheduled()) {
+        schedule(writeEvent, clockEdge(Cycles(1)));
+    }
 
     // per bit
     bit_ptr++;

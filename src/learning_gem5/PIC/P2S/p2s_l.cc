@@ -238,9 +238,9 @@ P2S_L::processBitSliceEvent() {
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
     DPRINTF(P2S_L, "Send Request writing bit %d to %llx\n", bit_ptr, pic_write_ptr);
-    // if (!writeEvent.scheduled()) {
-    //     schedule(writeEvent, clockEdge(Cycles(1)));
-    // }
+    if (!writeEvent.scheduled()) {
+        schedule(writeEvent, clockEdge(Cycles(1)));
+    }
 
     // update the next address
     pic_write_ptr += _L_block_row * 8;

@@ -125,6 +125,10 @@ system.memory = SimpleMemory(range=system.mem_ranges[0], latency='10ns')
 system.memory.port = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
+# scheduler
+system.scheduler = Scheduler(system=system)
+system.cmd_state_helper = CmdStateHelper(system=system)
+
 # Load path, one SimObject per RTL module.
 system.load_ctl = Load_ctl()
 system.dma = DMA_read_page_split(chunk_bytes=64, block_bytes=64,
@@ -132,6 +136,7 @@ system.dma = DMA_read_page_split(chunk_bytes=64, block_bytes=64,
 system.tlb_sched = TLBReqScheduler()
 system.read_post = ReadPostProcess()
 
+system.load.cmd_side = system.scheduler.ld_port
 system.load_ctl.dma_side = system.dma.req_side
 system.load_ctl.post_side = system.read_post.req_side
 system.dma.data_side = system.read_post.data_side
