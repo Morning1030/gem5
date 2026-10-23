@@ -347,7 +347,7 @@ P2S_R::processBitSliceEvent() {
                 curBufColPtrInBlock = 0;
                 // per block
                 if ((curBlockColPtrGlobal + blockNColInMem) == nCols) {
-                    // TODO send p2s_done
+                    p2sDone = true;
                 }
                 else {
                     curBlockColPtrGlobal += blockNColInMem;

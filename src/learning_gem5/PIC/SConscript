@@ -60,3 +60,5 @@ DebugFlag('Accumulator', 'PolymorPIC standalone accumulator')
 # ACC E2E test-only components
 SimObject('ACC/AccMockBank.py', sim_objects=['AccMockBank'])
 Source('ACC/acc_mock_bank.cc')
+
+SimObject('Switch/SwitchCtrl.py')
