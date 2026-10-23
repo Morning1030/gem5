@@ -81,7 +81,7 @@
  * ---------------------------------------------------------------------
  * AccessBankArb is now a ClockedObject with a real gem5 port for each of
  * the three P2S engines (p2s_side, a VectorResponsePort -- modeled on
- * DMAEngine's p2s_side in pic_dma_engine.hh). This replaces an earlier
+ * DMA_read_page_split's p2s_side in dma_read_page_split.hh). This replaces an earlier
  * approach where P2S_L/R/R_T held a raw pointer to a shared AccessBankArb
  * and called postRequest()/submitP2SWrite() directly as plain C++ calls
  * (a direct Decoupled-style wire, matching the RTL literally) -- that
@@ -93,10 +93,11 @@
  *   p2s_side[2] <-> P2S_R_T.cb_port
  *
  * Port index doubles as (BankArbClient - kClientP2S_L), i.e. index 0/1/2
- * map to kClientP2S_L/kClientP2S_R/kClientP2S_R_T. Client ids 0-3
- * (load_post_process/bankFetch_module/accumulator/autoLoadVec) have no
- * gem5 SimObject yet and stay unconnected -- postRequest()/tick() still
- * accept them by id for whenever that changes.
+ * map to kClientP2S_L/kClientP2S_R/kClientP2S_R_T. Client 0
+ * (load_post_process) is ReadPostProcess on load_post_side, same WRITE
+ * protocol. Client 3 (autoLoadVec) is autoload_side. Clients 1-2
+ * (bankFetch_module/accumulator) have no gem5 SimObject yet --
+ * postRequest()/tick() still accept them by id for whenever that changes.
  *
  * Request: a P2S engine sends a MemCmd::WriteReq packet carrying a
  * P2SWritePayload (pic_dpm_types.hh) on its cb_port. handleRequest()
@@ -211,7 +212,7 @@ class AccessBankArb : public ClockedObject
   public:
     // mod: p2s_arbiter
     // Must come before anything else that names Params -- see the
-    // identical note in pic_dma_engine.hh's DMAEngine class.
+    // identical note in dma_read_page_split.hh's DMA_read_page_split class.
     typedef AccessBankArbParams Params;
 
     explicit AccessBankArb(const Params &p);
@@ -240,10 +241,9 @@ class AccessBankArb : public ClockedObject
 
     /**
      * mod: p2s_arbiter
-     * Port on the P2S-facing side that receives bit-plane WRITE requests.
-     * One instance per connection (vector port); id doubles as
-     * (BankArbClient - kClientP2S_L) -- see the file header comment.
-     * Modeled directly on DMAEngine::P2SPort (pic_dma_engine.hh).
+     * Port for a WRITE client: the three P2S engines (p2s_side) and
+     * ReadPostProcess (load_post_side). id is the BankArbClient id
+     * (kClientP2S_L.. for p2s_side, kClientLoadPostProcess).
      */
     class P2SPort : public ResponsePort
     {
@@ -400,14 +400,14 @@ class AccessBankArb : public ClockedObject
     // above so the constructor's member-init list can stay in the same
     // relative order as before with these appended at the end) ----
 
-    /** Handle one bit-plane WRITE request from P2S port index @p portIdx
-     *  (0/1/2 = P2S_L/P2S_R/P2S_R_T). Unpacks the P2SWritePayload and
-     *  posts it to the arbiter under clientId = kClientP2S_L + portIdx;
-     *  the packet itself is held in pendingReqPkt until granted. Returns
+    /** Handle one WRITE request from client @p clientId (a P2S engine
+     *  or ReadPostProcess). Unpacks the P2SWritePayload and posts it to
+     *  the arbiter; the packet itself is held in pendingReqPkt until
+     *  granted. Returns
      *  false if that client already has an outstanding request (mirrors
      *  postRequest()'s valid-held-high case) -- caller should set
      *  needRetry and wait for trySendRetry(). */
-    bool handleRequest(PacketPtr pkt, int portIdx);
+    bool handleRequest(PacketPtr pkt, unsigned clientId);
 
     /** Handle one L-row READ request from AutoLoadL. Posts it under
      *  kClientAutoLoadVec; held in pendingReqPkt until granted. Returns
@@ -423,11 +423,13 @@ class AccessBankArb : public ClockedObject
      *  is pending or the arbiter is still Blocked. */
     void processTickEvent();
 
-    /** Send @p pkt out p2s_side port index @p portIdx. */
-    void sendResponse(PacketPtr pkt, int portIdx);
+    /** The WRITE port of client @p clientId. */
+    P2SPort &writePort(unsigned clientId);
 
     std::vector<P2SPort> p2sPorts;
     AutoLoadPort autoLoadPort;
+    /** Client 0 (kClientLoadPostProcess): ReadPostProcess bank writes. */
+    P2SPort loadPostPort;
 
     /** clientId -> the request packet held until that client is granted;
      *  see handleRequest()/handleAutoLoadRequest(). */

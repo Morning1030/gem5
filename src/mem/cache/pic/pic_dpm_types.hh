@@ -12,16 +12,70 @@ namespace gem5
 {
 
 /**
- * Destination buffer tag.  Mirrors DataDir in the RTL.
- *
- * DMA-scheduling state: P2SOpState::dest feeds DMAEngine::issue()'s call to
- * Host::bufRows(op.dest), which sizes the reassembly credit window.
+ * Where ReadPostProcess sends loaded data. Mirrors DataDir in
+ * ReadPostProcess.scala.
  */
-enum class P2SDest : uint8_t
+enum class DataDir : uint8_t
 {
-    L  = 0,
-    R  = 1,
-    RT = 2,
+    Bank  = 0,  //!< write into the cache banks through AccessBankArb
+    P2SL  = 1,  //!< P2S_L input buffer
+    P2SR  = 2,  //!< P2S_R input buffer
+    P2SRT = 3,  //!< P2S_R_T input buffer
+};
+
+/**
+ * One load request into Load_ctl. Mirrors Load_req in Load_ctl.scala.
+ * Padding (PadInfo) is carried but not implemented downstream yet.
+ */
+struct LoadReq
+{
+    uint32_t bytePerRow = 0;  //!< bytes to fetch per row
+    uint32_t row = 0;         //!< number of rows
+    uint32_t offset = 0;      //!< DRAM stride between rows, in bytes
+    Addr baseAddrDram = 0;    //!< virtual address of the first row
+    Addr baseAddrArray = 0;   //!< array address (64-bit words) to write to
+    bool padding = false;
+    uint32_t padSize = 0;
+    DataDir dataDir = DataDir::Bank;
+};
+
+/**
+ * One row read, Load_ctl -> DMA_read_page_split. Mirrors DMA_read_req in
+ * DMA_read_page_split.scala. lastRow is the separate io.lastRow wire in
+ * the RTL, carried with the request here.
+ */
+struct DMAReadReq
+{
+    uint64_t nByte;
+    uint64_t baseAddrDram;
+    uint64_t lastRow;
+};
+
+/**
+ * Load_ctl -> ReadPostProcess setup. Mirrors ReadPostProcess_req in
+ * ReadPostProcess.scala.
+ */
+struct ReadPostProcessReq
+{
+    uint64_t bankBaseAddr;
+    uint64_t bankEndAddr;
+    uint32_t padding;
+    uint32_t padSize;
+    uint32_t dataDir;
+    uint32_t reserved;
+};
+
+/**
+ * One 64-bit beat of the DMA_read_page_split -> ReadPostProcess stream.
+ * Mirrors StreamChannel(64): keep has one bit per valid byte; last marks
+ * the final beat of the whole load.
+ */
+struct StreamBeat
+{
+    uint64_t data;
+    uint8_t keep;
+    uint8_t last;
+    uint8_t pad[6];
 };
 
 /**
@@ -81,7 +135,7 @@ struct DMADescriptor
  * Carries a virtual address, not physical: splitting is pure address
  * arithmetic (page boundaries fall out of the low bits of the vaddr) and
  * has no need to translate. Translation happens later, per chunk, right
- * before it's sent -- see DMAEngine::issue().
+ * before it's sent -- see DMA_read_page_split::issue().
  */
 struct AddrChunk
 {
@@ -92,112 +146,15 @@ struct AddrChunk
 };
 
 /**
- * Per-operation state.  Metadata lives here for the whole lifetime of the
- * op and never travels with the data: DMA response packets carry only an
- * opId and a buffer offset, and the consumer looks the rest back up.
- *
- * DMAEngine itself reads/writes opId, desc, pending, buf, rowRemaining,
- * rowsPerGroup, groupRemaining, outstanding, and dest (via
- * Host::bufRows(op.dest)). `bitWidth`, `transpose`, `groupsCompleted`,
- * `pendingWrites`, and `finished()` are consumed downstream of the DMA
- * engine, once a completed group is handed off.
- */
-struct P2SOpState
-{
-    uint32_t opId       = 0;
-    bool     transpose  = false;
-    uint8_t  bitWidth   = 8;
-    P2SDest  dest       = P2SDest::R;
-
-    DMADescriptor desc;
-
-    /** Chunks still waiting to be issued. */
-    std::deque<AddrChunk> pending;
-
-    /** Reassembly storage, indexed [rowIdx * bytesPerRow + rowOffset]. */
-    std::vector<uint8_t> buf;
-
-    /** Bytes still missing per row; a row is ready when this hits zero. */
-    std::vector<uint32_t> rowRemaining;
-
-    /**
-     * How many descriptor rows make up one array wordline group.
-     *
-     *   t=false : 1   (one contiguous run already spans the 64 bitlines)
-     *   t=true  : 64  (strided gather; each descriptor row is one element)
-     *
-     * Getting this into the structure now is what keeps P2S_R_T a
-     * parameterisation rather than a rewrite.
-     */
-    uint32_t rowsPerGroup = 1;
-
-    /** Descriptor rows still missing per group. */
-    std::vector<uint32_t> groupRemaining;
-
-    /** Groups handed to the P2S unit so far.  Drives the credit window. */
-    uint32_t groupsCompleted = 0;
-
-    uint32_t numGroups() const
-    {
-        return desc.numRows / rowsPerGroup;
-    }
-
-    /** DMA reads issued but not yet returned. */
-    uint32_t outstanding = 0;
-
-    /** Current page translation (page numbers). */
-    bool pageValid = false;
-    Addr vpn = 0;
-    Addr ppn = 0;
-
-    /** A TLB query for this op is in flight. */
-    bool tlbInFlight = false;
-
-    /** Wordline writes still queued in the bank arbiter. */
-    uint32_t pendingWrites = 0;
-
-    bool dmaDone() const
-    {
-        return pending.empty() && outstanding == 0;
-    }
-
-    bool finished() const
-    {
-        return dmaDone() && groupsCompleted == numGroups() &&
-               pendingWrites == 0;
-    }
-};
-
-/**
- * Sender state attached to every DMA read packet.  Intentionally tiny:
- * enough to find the op and the slot, nothing more.
+ * Sender state on a DMA read: which chunk of the current page segment
+ * it is, so responses can be put back in order.
  */
 class PICDMASenderState : public Packet::SenderState
 {
   public:
-    PICDMASenderState(uint32_t _opId, uint32_t _rowIdx, uint32_t _rowOffset,
-                      uint32_t _size)
-        : opId(_opId), rowIdx(_rowIdx), rowOffset(_rowOffset), size(_size)
-    {}
+    explicit PICDMASenderState(uint32_t _chunkIdx) : chunkIdx(_chunkIdx) {}
 
-    const uint32_t opId;
-    const uint32_t rowIdx;
-    const uint32_t rowOffset;
-    const uint32_t size;
-};
-
-/**
- * Sender state on a TLB query: the op and virtual page it was for.
- */
-class PICTlbSenderState : public Packet::SenderState
-{
-  public:
-    PICTlbSenderState(uint32_t _opId, Addr _vpn)
-        : opId(_opId), vpn(_vpn)
-    {}
-
-    const uint32_t opId;
-    const Addr vpn;
+    const uint32_t chunkIdx;
 };
 
 }  // namespace gem5

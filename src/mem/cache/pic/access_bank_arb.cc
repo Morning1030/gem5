@@ -63,6 +63,7 @@ AccessBankArb::AccessBankArb(const Params &p)
       blockedBankId(0),
       bankReadyVec(p.num_banks, true),
       autoLoadPort(p.name + ".autoload_side", this),
+      loadPostPort(p.name + ".load_post_side", kClientLoadPostProcess, this),
       tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent"),
       requestorId(p.system->getRequestorId(this)),
       matsPerBank(p.mats_per_bank),
@@ -99,7 +100,7 @@ AccessBankArb::AccessBankArb(const Params &p)
              p.port_p2s_side_connection_count);
     for (int i = 0; i < p.port_p2s_side_connection_count; ++i) {
         p2sPorts.emplace_back(
-            p.name + csprintf(".p2s_side[%d]", i), i, this);
+            p.name + csprintf(".p2s_side[%d]", i), kClientP2S_L + i, this);
     }
 
     const unsigned numMats =
@@ -124,6 +125,9 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
     if (if_name == "autoload_side") {
         return autoLoadPort;
     }
+    if (if_name == "load_post_side") {
+        return loadPostPort;
+    }
     if (if_name == "mat_side" &&
         static_cast<size_t>(idx) < matPorts.size()) {
         return matPorts[idx];
@@ -140,10 +144,10 @@ AccessBankArb::P2SPort::sendPacket(PacketPtr pkt)
 {
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
 
-    DPRINTF(PICBankArb, "AccessBankArb: sending ack %s to P2S[%d]\n",
+    DPRINTF(PICBankArb, "AccessBankArb: sending ack %s to client %d\n",
             pkt->print(), id);
     if (!sendTimingResp(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: P2S[%d] refused ack, will retry\n",
+        DPRINTF(PICBankArb, "AccessBankArb: client %d refused ack, will retry\n",
                 id);
         blockedPacket = pkt;
     }
@@ -154,7 +158,7 @@ AccessBankArb::P2SPort::getAddrRanges() const
 {
     // Private point-to-point link to one P2S engine, not decoded off a
     // shared bus -- claim the whole address space like other such links
-    // in this tree (e.g. DMAEngine::P2SPort).
+    // in this tree (e.g. DMA_read_page_split::P2SPort).
     AddrRangeList ranges;
     ranges.push_back(AddrRange(0, MaxAddr));
     return ranges;
@@ -165,7 +169,7 @@ AccessBankArb::P2SPort::trySendRetry()
 {
     if (needRetry && blockedPacket == nullptr) {
         needRetry = false;
-        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to P2S[%d]\n",
+        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to client %d\n",
                 id);
         sendRetryReq();
     }
@@ -174,7 +178,7 @@ AccessBankArb::P2SPort::trySendRetry()
 bool
 AccessBankArb::P2SPort::recvTimingReq(PacketPtr pkt)
 {
-    DPRINTF(PICBankArb, "AccessBankArb: got write req %s from P2S[%d]\n",
+    DPRINTF(PICBankArb, "AccessBankArb: got write req %s from client %d\n",
             pkt->print(), id);
 
     if (blockedPacket || needRetry) {
@@ -273,15 +277,14 @@ AccessBankArb::AutoLoadPort::recvRespRetry()
 // ---------------------------------------------------------------------------
 
 bool
-AccessBankArb::handleRequest(PacketPtr pkt, int portIdx)
+AccessBankArb::handleRequest(PacketPtr pkt, unsigned clientId)
 {
     panic_if(pkt->getSize() != sizeof(P2SWritePayload),
-             "AccessBankArb: P2S[%d] sent a %u-byte write payload, "
-             "expected %zu", portIdx, pkt->getSize(),
+             "AccessBankArb: client %u sent a %u-byte write payload, "
+             "expected %zu", clientId, pkt->getSize(),
              sizeof(P2SWritePayload));
 
     const auto *payload = pkt->getConstPtr<P2SWritePayload>();
-    const unsigned clientId = kClientP2S_L + portIdx;
 
     if (!submitP2SWrite(clientId, static_cast<uint32_t>(payload->arrayAddr),
                          payload->bitSlice)) {
@@ -367,17 +370,16 @@ AccessBankArb::processTickEvent()
                 finishAutoLoad(reinterpret_cast<const uint8_t *>(&zero));
             }
         } else {
-            const int portIdx =
-                static_cast<int>(grant->clientId) - kClientP2S_L;
             DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
-                    "acking P2S[%d]\n", grant->clientId,
-                    grant->committedThisCycle ? "ready" : "busy", portIdx);
+                    "acking it\n", grant->clientId,
+                    grant->committedThisCycle ? "ready" : "busy");
 
+            P2SPort &port = writePort(grant->clientId);
             pkt->makeResponse();
-            sendResponse(pkt, portIdx);
+            port.sendPacket(pkt);
             // The client's one pending-request slot just freed up -- let
             // it send its next write if one was refused earlier.
-            p2sPorts[portIdx].trySendRetry();
+            port.trySendRetry();
         }
     }
 
@@ -391,10 +393,12 @@ AccessBankArb::processTickEvent()
     }
 }
 
-void
-AccessBankArb::sendResponse(PacketPtr pkt, int portIdx)
+AccessBankArb::P2SPort &
+AccessBankArb::writePort(unsigned clientId)
 {
-    p2sPorts[portIdx].sendPacket(pkt);
+    if (clientId == kClientLoadPostProcess)
+        return loadPostPort;
+    return p2sPorts[clientId - kClientP2S_L];
 }
 
 bool

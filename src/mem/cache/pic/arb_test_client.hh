@@ -74,6 +74,7 @@ class ArbTestClient : public ClockedObject
     const bool isP2S;
     const bool isRaw;
     const bool exitWhenDone;
+    const bool printReads;
     const Cycles startDelay;
 
     std::vector<Op> ops;

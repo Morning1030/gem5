@@ -1,29 +1,40 @@
 # -*- mode:python -*-
 #
-# PolymorPIC DMA engine for gem5: address-chunk splitting and DMA response
-# reassembly, plus the P2S-facing/memory-facing ports (DMAEngine is a real
-# SimObject -- see pic_dma_engine.hh for the port topology and the
-# "one request from P2S = one row = one response" design note).
+# PolymorPIC load path for gem5, one SimObject per RTL module:
+#   Load_ctl -> DMA_read_page_split (+ TLBReqScheduler) -> ReadPostProcess
+#   -> AccessBankArb (bank) or back through Load_ctl (P2S buffers).
 
 # import the SCons environment
 Import('*')
 
 # mod: p2s_arbiter
-SimObject('pic_dma_engine.py', sim_objects=['DMAEngine'])
+SimObject('load_ctl.py', sim_objects=['Load_ctl'])
+SimObject('dma_read_page_split.py', sim_objects=['DMA_read_page_split'])
+SimObject('read_post_process.py', sim_objects=['ReadPostProcess'])
 SimObject('access_bank_arb.py', sim_objects=['AccessBankArb'])
 SimObject('tlb_req_scheduler.py', sim_objects=['TLBReqScheduler'])
 SimObject('mat_sink.py', sim_objects=['MatSink'])
 SimObject('arb_test_client.py', sim_objects=['ArbTestClient'])
+SimObject('load_test_client.py', sim_objects=['LoadTestClient'])
 
 # only list .cc files here; .hh files are automatically included by the build system
-Source('pic_dma_engine.cc')
+Source('load_ctl.cc')
+Source('dma_read_page_split.cc')
+Source('read_post_process.cc')
 Source('access_bank_arb.cc')
 Source('tlb_req_scheduler.cc')
 Source('mat_sink.cc')
 Source('arb_test_client.cc')
+Source('load_test_client.cc')
 
-# use -debug-flags=PICDMA to open the debug output for the DMA engine
-DebugFlag('PICDMA', 'DMA request generation, page split, responses')
+# use -debug-flags=PICLoadCtl to open the debug output for Load_ctl
+DebugFlag('PICLoadCtl', 'Load_ctl: client arbitration, rows, load done')
+
+# use -debug-flags=PICDMA to open the debug output for DMA_read_page_split
+DebugFlag('PICDMA', 'DMA_read_page_split: page segments, TLB, DRAM reads')
+
+# use -debug-flags=PICReadPost to open the debug output for ReadPostProcess
+DebugFlag('PICReadPost', 'ReadPostProcess: setup, aligned words out')
 
 # use -debug-flags=PICBankArb to open the debug output for the bank arbiter
 DebugFlag('PICBankArb', 'Bank access arbiter: P2S req/resp, grants, blocks')

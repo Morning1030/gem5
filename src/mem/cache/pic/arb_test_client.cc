@@ -21,6 +21,7 @@ ArbTestClient::ArbTestClient(const Params &p) :
     isP2S(p.kind == "p2s"),
     isRaw(p.kind == "raw"),
     exitWhenDone(p.exit_when_done),
+    printReads(p.print_reads),
     startDelay(p.start_delay)
 {
     fatal_if(p.kind != "p2s" && p.kind != "autoload" && p.kind != "raw",
@@ -111,6 +112,9 @@ ArbTestClient::handleResp(PacketPtr pkt)
         panic_if(!op.anyValue && got != op.data,
                  "%s: read of %#x returned %#x, expected %#x", name(),
                  op.addr, got, op.data);
+        if (printReads && !op.anyValue) {
+            inform("%s: read %#x = %#x OK", name(), op.addr, got);
+        }
         ++readsChecked;
     }
     delete pkt;

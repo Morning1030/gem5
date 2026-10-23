@@ -177,6 +177,9 @@ class FALRU(BaseTags):
 #mod PIC-LLC class
 class PICLLCTags(BaseSetAssoc):
     """
+    Replaces the old PICTags (no Python params of its own). The parameters
+    below are all NEW vs PICTags.
+
     PIC-LLC (Processing-In-Cache Last Level Cache) tag store.
 
     Models the cache bank architecture from Section 4.1.3 of the Polymorphic
