@@ -7,89 +7,11 @@
 #include "base/trace.hh"
 #include "debug/CacheController.hh"
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
+#include "learning_gem5/PIC/Switch/switchCtrl.hh"
+#include "mem/cache/mshr.hh"
 
 namespace gem5
 {
-
-CacheBlk*
-PICTags::findVictim(const CacheBlk::KeyType& key,
-                    const std::size_t size,
-                    std::vector<CacheBlk*>& evict_blks,
-                    const uint64_t partition_id)
-{
-    std::vector<ReplaceableEntry*> entries = indexingPolicy->getPossibleEntries(key);
-
-    auto it = entries.begin();
-    while (it != entries.end()) {
-        CacheBlk* blk = static_cast<CacheBlk*>(*it);
-        if (blk && isWayPICMode(blk->getWay())) {
-            it = entries.erase(it);
-        }
-        else {
-            ++it;
-        }
-    }
-
-    if (partitionManager) {
-        partitionManager->filterByPartition(entries, partition_id);
-    }
-
-    CacheBlk* victim = entries.empty() ? nullptr :
-        static_cast<CacheBlk*>(replacementPolicy->getVictim(entries));
-
-    evict_blks.push_back(victim);
-    return victim;
-}
-
-bool
-PICTags::getSetWayValid(const uint32_t setID, const uint32_t wayID)
-{
-    return getBlk(setID, wayID)->isValid();
-}
-
-Addr
-PICTags::getSetWayAddr(const uint32_t setID, const uint32_t wayID)
-{
-    return regenerateBlkAddr(getBlk(setID, wayID));
-}
-
-Addr
-PICTags::getSetWayTag(const uint32_t setID, const uint32_t wayID)
-{
-    return getBlk(setID, wayID)->getTag();
-}
-
-bool
-PICTags::isWayPICMode(const uint32_t wayID) const
-{
-    return wayID < PIC_mode.size() && PIC_mode[wayID];
-}
-
-void
-PICTags::setWayPICMode(const uint32_t wayID, bool picMode)
-{
-    if (PIC_mode.size() < allocAssoc) {
-        PIC_mode.resize(allocAssoc, false);
-    }
-
-    panic_if(wayID >= allocAssoc,
-             "PICTags::setWayPICMode way %u out of range assoc=%u",
-             wayID, allocAssoc);
-
-    PIC_mode[wayID] = picMode;
-}
-
-void
-PICTags::setWayRangePICMode(const uint32_t beginWay, const uint32_t endWay,
-                            bool picMode)
-{
-    panic_if(beginWay > endWay, "PICTags: bad way range [%u, %u]",
-             beginWay, endWay);
-    for (uint32_t w = beginWay; w <= endWay; ++w) {
-        setWayPICMode(w, picMode);
-    }
-}
-
 
 CacheController::CacheController(const CacheControllerParams &params)
     : Cache(params),
@@ -106,8 +28,25 @@ CacheController::CacheController(const CacheControllerParams &params)
     flushWbWaitEvent([this] { processFlushWbWait(); }, name() + ".flushWbWaitEvent"),
     picCtrlPort(params.name + ".pic_ctrl_port", this),
     picFlushPort(params.name + ".pic_flush_port", this),
+    maxHeldSinkA(params.max_held_sink_a),
+    picStats(this),
     sinkAReplayEvent([this] { processSinkAReplay(); },
-                     name() + ".sinkAReplayEvent")
+                     name() + ".sinkAReplayEvent"),
+    bankArb(params.bank_arb),
+    bankBusyDelay(params.bank_busy_delay),
+    beatBytes(params.bank_beat_bytes)
+{
+    // picTags() 用 static_cast，型別在這裡檢查一次
+    fatal_if(!dynamic_cast<PICLLCTags*>(tags),
+             "%s: tags must be PICLLCTags", name());
+    fatal_if(beatBytes == 0, "%s: bank_beat_bytes must be > 0", name());
+    bankBusyCnt.assign(picTags()->bankCount(), 0);
+}
+
+CacheController::PicStats::PicStats(statistics::Group *parent)
+    : statistics::Group(parent, "pic"),
+      ADD_STAT(heldSinkAPeak, statistics::units::Count::get(),
+               "Most sinkA requests held at once during a switch")
 {
 }
 
@@ -124,11 +63,16 @@ void
 CacheController::recvTimingReq(PacketPtr pkt)
 {
     // switch 期間（或還有沒放完的）A 類請求排隊，保持原本順序
-    if (!isSinkCLike(pkt) && (switchBlocked || !heldSinkA.empty())) {
+    if (!isSinkCLike(pkt) && (sinkABlocked() || !heldSinkA.empty())) {
         heldSinkA.push_back(pkt);
-        DPRINTF(CacheController, "SinkA held %s addr=%#x (held=%u)
-",
+        DPRINTF(CacheController, "SinkA held %s addr=%#x (held=%u)\n",
                 pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
+        if (heldSinkA.size() > picStats.heldSinkAPeak.value())
+            picStats.heldSinkAPeak = heldSinkA.size();
+        panic_if(maxHeldSinkA && heldSinkA.size() > maxHeldSinkA,
+                 "%s: %u sinkA requests held during a switch "
+                 "(max_held_sink_a = %u)", name(),
+                 (unsigned)heldSinkA.size(), maxHeldSinkA);
         return;
     }
     Cache::recvTimingReq(pkt);
@@ -138,12 +82,14 @@ void
 CacheController::processSinkAReplay()
 {
     // RTL: sinkA 每拍收一筆
-    if (switchBlocked || heldSinkA.empty())
-        return;
+    if (sinkABlocked() || heldSinkA.empty())
+        return;                 // 下次 unblockForSwitch() 再排
     PacketPtr pkt = heldSinkA.front();
     heldSinkA.pop_front();
+    DPRINTF(CacheController, "SinkA replay %s addr=%#x (held=%u)\n",
+            pkt->cmdString(), pkt->getAddr(), (unsigned)heldSinkA.size());
     Cache::recvTimingReq(pkt);
-    if (!switchBlocked && !heldSinkA.empty() && !sinkAReplayEvent.scheduled())
+    if (!sinkABlocked() && !heldSinkA.empty() && !sinkAReplayEvent.scheduled())
         schedule(sinkAReplayEvent, clockEdge(Cycles(1)));
 }
 
@@ -153,6 +99,130 @@ CacheController::getPort(const std::string &if_name, PortID idx)
     if (if_name == "pic_ctrl_port") return picCtrlPort;
     if (if_name == "pic_flush_port") return picFlushPort;
     return Cache::getPort(if_name, idx);
+}
+
+// ---------------------------------------------------------------------------
+// Cache / PIC bank 衝突（RTL: BankSellPIC L71、L112-116）
+//   cache 路徑用某個 bank 的那拍 picMem_ready = false；AccessBankArb 看到
+//   bank 不 ready 會進 Block、凍結所有 client，每拍自己 poll，不用叫醒它。
+//   beat = 8B、bank = beat % 4：從 Chipyard 預設參數推得（writeBytes=8、
+//   portFactor=4），待確認實際 config。
+//   假設 CacheController 和 AccessBankArb 在同一個 clock domain。
+// ---------------------------------------------------------------------------
+
+void
+CacheController::occupyBanks(Addr offset, unsigned size)
+{
+    if (!bankArb || size == 0)
+        return;
+
+    const unsigned numBanks = picTags()->bankCount();
+    const Addr firstBeat = offset / beatBytes;
+    const Addr lastBeat  = (offset + size - 1) / beatBytes;
+    const Tick start = clockEdge(bankBusyDelay);
+
+    // 第 i 個 beat 在 start 之後第 i 拍，佔用 bank (beat % numBanks) 一拍
+    for (Addr beat = firstBeat; beat <= lastBeat; ++beat) {
+        const unsigned bank = beat % numBanks;
+        const Tick t = start + cyclesToTicks(Cycles(beat - firstBeat));
+        DPRINTF(CacheController, "BankBusy: bank=%u beat=%llu tick=%llu\n",
+                bank, (unsigned long long)beat, (unsigned long long)t);
+        markBank(bank, t, t + clockPeriod());
+    }
+}
+
+void
+CacheController::markBank(unsigned bank, Tick start, Tick end)
+{
+    // 優先權比 AccessBankArb 的 tickEvent（Default_Pri）早：arbiter 同一拍
+    // 就看得到。event 執行完自動刪除（第三個參數 true）
+    constexpr Event::Priority pri = Event::Default_Pri - 1;
+
+    auto *busy = new EventFunctionWrapper([this, bank] {
+        if (++bankBusyCnt[bank] == 1)
+            bankArb->setBankReady(bank, false);
+    }, name() + ".bankBusyEvent", true, pri);
+
+    auto *ready = new EventFunctionWrapper([this, bank] {
+        assert(bankBusyCnt[bank] > 0);
+        if (--bankBusyCnt[bank] == 0)
+            bankArb->setBankReady(bank, true);
+    }, name() + ".bankFreeEvent", true, pri);
+
+    schedule(busy, start);
+    schedule(ready, end);
+}
+
+void
+CacheController::satisfyRequest(PacketPtr pkt, CacheBlk *blk,
+                                bool deferred_response,
+                                bool pending_downgrade)
+{
+    // 命中的讀寫，以及 miss 之後回資料給 L1（serviceMSHRTargets 也走這裡）。
+    // parent 會把 pkt 改成 response，先記下有沒有搬資料；Upgrade /
+    // Invalidate 沒有資料，不算
+    const bool movesData = pkt->isRead() || pkt->isWrite();
+    const Addr offset = pkt->getOffset(blkSize);
+    const unsigned size = pkt->getSize();
+
+    Cache::satisfyRequest(pkt, blk, deferred_response, pending_downgrade);
+
+    if (movesData)
+        occupyBanks(offset, size);
+}
+
+void
+CacheController::recvTimingResp(PacketPtr pkt)
+{
+    // DRAM 的資料填進 blk（RTL: refill 寫 BankedStore）。handleFill 不是
+    // virtual，只能在這裡判斷。parent 會 pop senderState 並 delete pkt，
+    // 所以要在呼叫之前判斷；條件和 BaseCache::recvTimingResp 的 is_fill
+    // 一致，allocate=false 時資料只進 tempBlock，不算
+    bool fill = false;
+    if (!pkt->isWrite() && pkt->hasData() && !pkt->isError()) {
+        const MSHR *mshr = dynamic_cast<const MSHR*>(pkt->senderState);
+        fill = mshr && !mshr->isForward && mshr->allocOnFill() &&
+               (pkt->isRead() || mshr->wasWholeLineWrite);
+    }
+
+    Cache::recvTimingResp(pkt);
+
+    if (fill)
+        occupyBanks(0, blkSize);
+
+    // MSHR 只在 BaseCache::recvTimingResp 裡釋放：最後一筆做完時通知
+    // switch（pre_check 在等 drain 的話它會重新檢查）
+    if (switchCtrl && mshrQueue.isEmpty())
+        switchCtrl->notifyMshrDrained();
+}
+
+bool
+CacheController::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                        PacketList &writebacks)
+{
+    // 只算 L1 writeback / WriteClean 寫進 blk（RTL: sinkC ReleaseData 寫
+    // BankedStore）。命中已經在 satisfyRequest 算過，這裡不重複
+    const bool wbData = pkt->hasData() &&
+        (pkt->isWriteback() || pkt->cmd == MemCmd::WriteClean);
+    const Addr offset = pkt->getOffset(blkSize);
+    const unsigned size = pkt->getSize();
+
+    const bool satisfied = Cache::access(pkt, blk, lat, writebacks);
+
+    // blk 是 nullptr = 沒 allocate，資料往下送，沒寫進這層
+    if (wbData && blk != nullptr)
+        occupyBanks(offset, size);
+    return satisfied;
+}
+
+PacketPtr
+CacheController::evictBlock(CacheBlk *blk)
+{
+    // 被替換掉的 dirty block 讀出來寫回（RTL: SourceC 讀 BankedStore）
+    PacketPtr pkt = Cache::evictBlock(blk);
+    if (pkt && pkt->hasData())
+        occupyBanks(0, blkSize);
+    return pkt;
 }
 
 bool
@@ -205,23 +275,6 @@ CacheController::handleQueryWayState(PacketPtr pkt)
 }
 
 bool
-CacheController::handleDrainQuery(PacketPtr pkt)
-{
-    // RTL: !mshr_want_use_dir 的前提是 sinkA 已被 switchIdle 擋住
-    panic_if(!switchBlocked, "%s DrainQuery before blockForSwitch", name());
-
-    // RTL: mshrx_free — miss MSHR 和 eviction / writeback 都要結束
-    const bool isDrained = mshrQueue.isEmpty() && writeBuffer.isEmpty() && flushTxn.pkt == nullptr;
-
-    DPRINTF(CacheController, "DrainQuery: mshr=%d wb=%d -> %d\n", !mshrQueue.isEmpty(), !writeBuffer.isEmpty(), isDrained);
-
-    pkt->makeResponse();
-    pkt->getPtr<DrainQueryRespPayload>()->isDrained = isDrained ? 1u : 0u;
-    picCtrlPort.schedTimingResp(pkt, curTick());   // RTL 是組合邏輯，同拍可見
-    return true;
-}
-
-bool
 CacheController::handleFlushReq(PacketPtr pkt)
 {
     panic_if(flushTxn.pkt != nullptr, "%s second outstanding FlushReq", name());
@@ -260,56 +313,18 @@ CacheController::processFlushDone()
 }
 
 bool
-CacheController::handleWayMode(PacketPtr pkt)
-{
-    const auto *m = pkt->getConstPtr<WayModePayload>();
-
-    picTags()->setWayRangePICMode(m->beginWay, m->endWay, m->picMode != 0);
-
-    pkt->makeResponse();
-    // RTL: fire(T) 讀 SRAM → save_regout(T+1) → sw_resp 第一個 way(T+2)
-    picCtrlPort.schedTimingResp(pkt, clockEdge(Cycles(2)));
-    return true;
-}
-
-bool
 CacheController::handlePicCtrlReq(PacketPtr pkt)
 {
+    // SwitchController 只送 WayQuery；way mode、drain、switch busy 都是
+    // 直接呼叫（setPicWays / isScheNoOtherWorks / blockForSwitch），不走 port
     const auto reg = static_cast<PicCtrlReg>(pkt->getAddr() - PicCtrlBase);
-    panic_if(!isDirReg(reg), "%s bad dir offset %#llx", name(),
-            (unsigned long long)(pkt->getAddr() - PicCtrlBase));
-    // WayQuery 要拿資料回來用 ReadReq，其餘是單純設定用 WriteReq
-    panic_if(reg == PicCtrlReg::WayQuery ? !pkt->isRead() : !pkt->isWrite(),
-             "%s wrong command %s for dir offset %#llx", name(),
-             pkt->cmdString(),
-             (unsigned long long)(pkt->getAddr() - PicCtrlBase));
+    panic_if(reg != PicCtrlReg::WayQuery, "%s unsupported dir offset %#llx",
+             name(), (unsigned long long)(pkt->getAddr() - PicCtrlBase));
+    // WayQuery 要拿資料回來，用 ReadReq
+    panic_if(!pkt->isRead(), "%s wrong command %s for WayQuery", name(),
+             pkt->cmdString());
 
-    switch (reg) {
-    case PicCtrlReg::DrainQuery: return handleDrainQuery(pkt);
-    case PicCtrlReg::WayQuery: return handleQueryWayState(pkt);
-    case PicCtrlReg::WayMode: return handleWayMode(pkt);
-    case PicCtrlReg::SwitchBusy: return handleSwitchBusy(pkt);
-    default: panic("unreachable");
-    }
-}
-
-bool
-CacheController::handleSwitchBusy(PacketPtr pkt)
-{
-    const bool busy = pkt->getConstPtr<SwitchBusyPayload>()->busy != 0;
-
-    if (busy) {
-        blockForSwitch();
-    } else {
-        unblockForSwitch();
-    }
-
-    DPRINTF(CacheController, "SwitchBusy: %s CPU-side requests\n",
-            busy ? "blocking" : "unblocking");
-
-    pkt->makeResponse();
-    picCtrlPort.schedTimingResp(pkt, clockEdge(Cycles(1)));
-    return true;
+    return handleQueryWayState(pkt);
 }
 
 bool
@@ -341,6 +356,7 @@ CacheController::probeInnerToN(CacheBlk *blk, Addr addr)
     if (probe.cacheResponding()) {           // ProbeAckData
         probe.writeDataToBlock(blk->data, blkSize);
         blk->setCoherenceBits(CacheBlk::DirtyBit);   // RTL: meta.dirty := true
+        occupyBanks(0, blkSize);             // RTL: ProbeAckData 寫回 BankedStore
         return true;
     }
     return false;                            // ProbeAck（無資料）
@@ -388,8 +404,7 @@ CacheController::processFlushSchedule()
     // L1 的 writeback 還在路上（在 L1 write buffer，atomic probe 看不到）：
     // RTL MSHR 會等這筆 Release 進來；這裡下一拍重來，屆時 block 已被更新成 dirty
     if (innerHasCopy(addr, blk->isSecure())) {
-        DPRINTF(CacheController, "Flush addr=%#x wait in-flight writeback
-",
+        DPRINTF(CacheController, "Flush addr=%#x wait in-flight writeback\n",
                 addr);
         schedule(flushScheduleEvent, clockEdge(Cycles(1)));
         return;
@@ -416,6 +431,9 @@ CacheController::processFlushRelease()
 
     const bool dirty = blk->isSet(CacheBlk::DirtyBit);
     PacketPtr wb = (dirty || writebackClean) ? writebackBlk(blk) : makeCleanEvict(blk);
+    // ReleaseData 要從 BankedStore 讀出資料；Release（CleanEvict）沒有資料
+    if (wb->hasData())
+        occupyBanks(0, blkSize);
 
     // 記下位址要在 invalidate 之前
     flushTxn.wbAddr   = regenerateBlkAddr(blk);

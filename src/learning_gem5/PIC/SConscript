@@ -35,13 +35,17 @@ SimObject('AutoLoadL/AutoLoadL.py', sim_objects=['AutoLoadL'])
 Source('AutoLoadL/AutoLoadL.cc')
 DebugFlag('AutoLoadL', 'PolymorPIC AutoLoadL')
 
-# CacheController: owns PICLLCTags. Registered so the name exists for
-# pic_cache.py to reference -- CacheController.py's base class
-# (ClockedObject, should be BaseCache) is still broken, deferred; this
-# joins scheduler.hh/p2s.hh in the known-failing build until that's fixed.
-# SimObject('CacheController.py', sim_objects=['CacheController'])
-# Source('cache_controller.cc')
-# DebugFlag('CacheController', 'PolymorPIC CacheController')
+# CacheController: the PIC-aware LLC (subclass of gem5's Cache). Owns the
+# tag store and serves SwitchController's dir-query / flush ports.
+SimObject('CacheController.py', sim_objects=['CacheController'])
+Source('cache_controller.cc')
+DebugFlag('CacheController', 'PolymorPIC CacheController')
+
+# SwitchController: cache <-> PIC way switching (RTL SwitchCtl)
+SimObject('Switch/SwitchCtrl.py', sim_objects=['SwitchController'])
+Source('Switch/switchCtrl.cc')
+Source('Switch/Flushctrl.cc')
+DebugFlag('SwitchCtrl', 'PolymorPIC SwitchController')
 
 # Mat: one PIC Mat, one SimObject (retired MatBank, which batched a
 # whole bank's Mats behind one shared tick event)

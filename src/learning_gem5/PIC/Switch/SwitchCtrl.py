@@ -11,8 +11,10 @@ class SwitchController(ClockedObject):
         "System used to allocate the SwitchController requestor ID")
 
     inst_port = ResponsePort("Control port receiving switch requests from Scheduler")
-    cache_ctrl_port = RequestPort("Port to CacheController PIC control")
-    flush_port = RequestPort("Flush request port to CacheController")
+    # idx 0: dir query -> CacheController.pic_ctrl_port
+    # idx 1: flush     -> CacheController.pic_flush_port
+    cache_side = VectorRequestPort(
+        "Ports to CacheController: [0] dir query, [1] flush")
     
     num_sets = Param.Unsigned(1024, "LLC sets")
     num_ways = Param.Unsigned(16, "LLC associativity")
