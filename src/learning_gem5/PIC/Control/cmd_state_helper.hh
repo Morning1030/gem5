@@ -17,12 +17,10 @@ namespace gem5
     {
         MAIN_SETTER,
         READER,
-        LD_L,
-        LD_R,
+        LOAD,
+        STORE,
         EXE,
-        LD_P,
         ACC,    // 6
-        ST_P,
         P2S_L,
         P2S_R,
         P2S_R_T,

@@ -133,6 +133,19 @@ PicTestFrontend::buildProtocolSmokeTrace()
 
         return;
     }
+    if (trace == "load") {
+        append(
+            PicFunctionBuilder::load(
+                0x00003000,
+                0x00004000,
+                512,
+                64,
+                128,
+                1
+            ));
+
+        return;
+    }
 
 
     panic(

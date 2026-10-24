@@ -32,13 +32,13 @@ class PicFunctionBuilder
 
   public:
     static std::vector<PicSetRequest>
-    load(uint64_t dramSource, uint64_t onChipDestination, SizeFields size,
-         uint8_t commandId)
+    load(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
+         uint16_t byte_per_row, uint16_t offset, uint8_t commandId)
     {
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, dramSource, "LOAD SET_SRC");
         add(out, SetRegister::Dst, onChipDestination, "LOAD SET_DST");
-        add(out, SetRegister::Size, packSize(size), "LOAD SET_SIZE");
+        add(out, SetRegister::Size, packSize({rows, byte_per_row, offset}), "LOAD SET_SIZE");
         launch(out, ModuleID::LOAD, commandId, 0);
         return out;
     }

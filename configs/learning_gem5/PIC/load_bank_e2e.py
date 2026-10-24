@@ -125,6 +125,21 @@ system.memory = SimpleMemory(range=system.mem_ranges[0], latency='10ns')
 system.memory.port = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
+# test case front-end
+system.pic_transport = PicMmioTransport(
+    system=system,
+    request_gap=1,
+    protocol_retry_delay=50,
+)
+
+system.test_frontend = PicTestFrontend(
+    transport=system.pic_transport,
+    start_delay=1,
+    inter_command_gap=1,
+    exit_on_finish=False,
+    trace="load"
+)
+
 # scheduler
 system.scheduler = Scheduler(system=system)
 system.cmd_state_helper = CmdStateHelper(system=system)
@@ -136,7 +151,9 @@ system.dma = DMA_read_page_split(chunk_bytes=64, block_bytes=64,
 system.tlb_sched = TLBReqScheduler()
 system.read_post = ReadPostProcess()
 
-system.load.cmd_side = system.scheduler.ld_port
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
+system.load_ctl.cmd_side = system.scheduler.ld_port
 system.load_ctl.dma_side = system.dma.req_side
 system.load_ctl.post_side = system.read_post.req_side
 system.dma.data_side = system.read_post.data_side
@@ -157,12 +174,12 @@ system.idle_p2s = [ArbTestClient(kind='p2s', ops=[]) for _ in range(3)]
 for i, c in enumerate(system.idle_p2s):
     c.port = system.bank_arb.p2s_side[i]
 
-system.loader = LoadTestClient(
-    loads=[f"{src:#x} {dst:#x} {row} {bpr} {off}"
-           for _, src, dst, row, bpr, off in CASES],
-    exit_when_done=True,
-)
-system.loader.port = system.load_ctl.cmd_side
+# system.loader = LoadTestClient(
+#     loads=[f"{src:#x} {dst:#x} {row} {bpr} {off}"
+#            for _, src, dst, row, bpr, off in CASES],
+#     exit_when_done=True,
+# )
+# system.loader.port = system.load_ctl.cmd_side
 
 # Read back through the arbiter, by array address.
 system.arb_reader = ArbTestClient(
@@ -242,3 +259,11 @@ with open(os.path.join(outdir, 'load_test_result.txt'), 'w') as f:
     f.write(f"{len(expected)} words + {len(guards)} guards read back "
             f"through the arbiter: {total_reads} reads, all matched\n")
 print(f"PASS: {total_reads} reads matched @ tick {m5.curTick()}")
+
+# export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)
+# which python3-config   # 确认指向 /usr/bin/python3-config
+# rm -rf build/ALL/gem5.build
+# scons build/ALL/gem5.opt -j$(nproc)
+# build/ALL/gem5.opt \
+#   --debug-flags=Scheduler \
+#   configs/learning_gem5/PIC/load_bank_e2e.py

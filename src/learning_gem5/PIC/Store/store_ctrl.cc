@@ -191,7 +191,10 @@ StoreCtrl::processBankFetchEvent()
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
+    BankFetchReq bankFetchReq{src, dst, fetchSize};
+    pkt->pushSenderState(new BankFetchSenderState(bankFetchReq));
     bankFetchPort.sendPacket(pkt);
+    
     DPRINTF(StoreCtrl, "Send bankFetch Request to %llx, requesting %u bytes\n", src, fetchSize);
     
 }
@@ -222,4 +225,7 @@ StoreCtrl::processDMAWriteEvent()
         schedule(bankFetchEvent, clockEdge(Cycles(1)));
     }    
 }
+// revise:
+// don't need response from bankFetch
+// push senderState including DRAM address to BankFetch
 }

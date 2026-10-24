@@ -337,7 +337,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::LOAD;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            nextEnqTask.clientID = QryTabClient::LOAD;
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
             break;
@@ -359,7 +359,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::STORE;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            nextEnqTask.clientID = QryTabClient::STORE;
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
             break;
@@ -559,7 +559,7 @@ Scheduler::processPrepareTaskEvent()
 void
 Scheduler::processEnqueEvent() {
     nextTask.push_back(nextEnqTask);
-    DPRINTF(Scheduler, "Enqueue the Task to queue");
+    DPRINTF(Scheduler, "Enqueue the Task to queue\n");
     schedule(setCmdEvent, clockEdge(Cycles(1)));
 }
 void
@@ -579,7 +579,7 @@ Scheduler::processSetCmdEvent(){
     pkt->setData(reinterpret_cast<uint8_t*>(&queryPayload));
     cmdStateHelperPort.sendPacket(pkt);
 
-    DPRINTF(Scheduler, "Send cmd state request");
+    DPRINTF(Scheduler, "Send cmd state request\n");
 
     if (currState == TaskState::IDLE && !triggerEvent.scheduled()) {
         schedule(triggerEvent, clockEdge(Cycles(1)));

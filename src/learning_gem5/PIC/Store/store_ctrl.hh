@@ -1,5 +1,5 @@
-#ifndef __LEARNING_GEM5_P2S_HH__
-#define __LEARNING_GEM5_P2S_HH__
+#ifndef __LEARNING_GEM5_STORE_CTRL_HH__
+#define __LEARNING_GEM5_STORE_CTRL_HH__
 
 #include <string>
 #include "mem/port.hh"
@@ -8,6 +8,15 @@
 
 namespace gem5
 {
+    struct BankFetchReq {
+        uint64_t src;
+        uint64_t dst;
+        uint32_t nBytes;
+    };
+    struct BankFetchSenderState : public Packet::SenderState {
+        BankFetchReq req;
+        explicit BankFetchSenderState(const BankFetchReq &r) : req(r) {}
+    };
     class StoreCtrl : public ClockedObject
     {
         public:

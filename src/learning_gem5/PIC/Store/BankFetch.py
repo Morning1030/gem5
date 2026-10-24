@@ -11,6 +11,6 @@ class BankFetch(ClockedObject):
         Parent.any, "System used to allocate BankFetch requestor ID"
     )
 
-    inst_port = ResponsePort("CPU side port, receives MMIO requests")
-    store_ctrl_port = RequestPort("DMA side port, request to write data")
-    bank_fetch_port = RequestPort("Cache Bank side port, request to take data from cache bank")
+    inst_port = ResponsePort("Store Ctrl port, get request to fetch data")
+    cb_port = RequestPort("Cache Bank side port, request to take data from cache bank")
+    dma_port = RequestPort("DMA write page split port, send data to DMA write")

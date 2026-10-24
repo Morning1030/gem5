@@ -146,3 +146,6 @@ print(
 # which python3-config   # 确认指向 /usr/bin/python3-config
 # rm -rf build/ALL/gem5.build
 # scons build/ALL/gem5.opt -j$(nproc)
+# build/ALL/gem5.opt \
+#   --debug-flags=PicMmioTransport,PicTestFrontend,Scheduler,P2S_L,P2S_R,P2S_R_T \
+#   configs/learning_gem5/PIC/p2s_e2e.py
