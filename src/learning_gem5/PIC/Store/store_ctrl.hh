@@ -19,8 +19,6 @@ namespace gem5
     };
     class StoreCtrl : public ClockedObject
     {
-        public:
-            enum class PICPortID {DMA, BANKFETCH};
         private:
             class CPUSidePort : public ResponsePort
             {
@@ -45,13 +43,12 @@ namespace gem5
                     bool recvTimingResp(PacketPtr pkt) override;
                     void recvReqRetry() override;
                 public:
-                    MemSidePort(const std::string &name, StoreCtrl *owner, PICPortID picPortID);
+                    MemSidePort(const std::string &name, StoreCtrl *owner);
                     PacketPtr blockedPacket;
                     bool needRetry;
                     void sendPacket(PacketPtr pkt);
             };
             CPUSidePort instPort;
-            MemSidePort dmaPort;
             MemSidePort bankFetchPort;
 
             RequestorID requestorId;
@@ -67,11 +64,9 @@ namespace gem5
             uint16_t row_store_ptr;
             uint16_t fetchSize;
 
-            const size_t dataSize;
             std::vector<uint8_t> bankFetchPayload;
 
             EventFunctionWrapper bankFetchEvent;
-            EventFunctionWrapper dmaWriteEvent;
 
         protected:
         public:
@@ -80,7 +75,6 @@ namespace gem5
             bool handleRequest(PacketPtr pkt);
             bool handleResponse(PacketPtr pkt);
             void processBankFetchEvent();
-            void processDMAReadEvent();
     };
 }
 #endif

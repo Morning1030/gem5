@@ -17,6 +17,14 @@ Source('pic_test_frontend.cc')
 DebugFlag('PicMmioTransport', 'Frontend-independent PolymorPIC MMIO transport')
 DebugFlag('PicTestFrontend', 'PolymorPIC P2S end-to-end test frontend')
 
+# Store
+SimObject('Store/StoreCtrl.py', sim_objects=['StoreCtrl'])
+SimObject('Store/BankFetch.py', sim_objects=['BankFetch'])
+Source('Store/store_ctrl.cc')
+Source('Store/bank_fetch.cc')
+DebugFlag('StoreCtrl', 'DMA store controller')
+# DebugFlag('BankFetch', 'fetching data from cache bank to DMA')
+
 # P2S implementations
 SimObject('P2S/P2S.py', sim_objects=['P2S_L', 'P2S_R', 'P2S_R_T'])
 Source('P2S/p2s_l.cc')

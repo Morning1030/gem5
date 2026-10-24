@@ -1,7 +1,8 @@
-#include "src/learning_gem5/PIC/Store/bank_fetch.hh"
-#include "src/learning_gem5/PIC/Store/store_ctrl.hh"
+#include "learning_gem5/PIC/Store/bank_fetch.hh"
+#include "learning_gem5/PIC/Store/store_ctrl.hh"
 #include "sim/system.hh"
 
+#include <bit>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -15,10 +16,14 @@ constexpr uint64_t bitlineNum = 64;
 BankFetch::BankFetch(const BankFetchParams &params) :
     ClockedObject(params),
     instPort(params.name + ".inst_port", this),
-    cacheBankPort(params.name + ".cb_port", this),
-    dmaWritePort(params.name + ".dma_port", this),
+    cacheBankPort(params.name + ".cb_port", this, PICPortID::CB),
+    dmaWritePort(params.name + ".dma_port", this, PICPortID::DMA),
     requestorId(params.system->getRequestorId(this, "BankFetch")),
     pendingReqPkt(nullptr),
+    cacheBankData(pageSize + bitlineNum / 8),
+    pageFetchEvent([this]{this->processPageFetchEvent();}, "pageFetchEvent"),
+    atomicBankFetchEvent([this]{this->processAtomicBankFetchEvent();}, "atomicBankFetchEvent"),
+    alignEvent([this]{this->processAlignEvent();}, "alignEvent")
 {}
 Port&
 BankFetch::getPort(const std::string &if_name, PortID idx)
@@ -75,8 +80,7 @@ BankFetch::MemSidePort::MemSidePort(
     RequestPort(name),
     owner(owner),
     picPortID(picPortID),
-    blockedPacket(nullptr),
-    needRetry(false)
+    blockedPacket(nullptr)
 {}
 bool
 BankFetch::MemSidePort::recvTimingResp(PacketPtr pkt) {
@@ -89,9 +93,9 @@ BankFetch::MemSidePort::sendPacket(PacketPtr pkt)
     if (sendTimingReq(pkt)) {
         // to dma
         if (pkt->isWrite()) {
-            if (owner->cacheBankPort.needRetry == true) {
-                owner->cacheBankPort.sendRetryReq();
-            }
+            // if (owner->cacheBankPort.needRetry == true) {
+            //     owner->cacheBankPort.sendRetryReq();
+            // }
             // DPRINTF(BankFetch, "Successfully send request to DMA\n");
         }
         // to cache bank
@@ -113,25 +117,32 @@ BankFetch::MemSidePort::recvReqRetry()
     sendPacket(pkt);
     // might fail again, wait for another req retry
 }
+bool
 BankFetch::handleRequest(PacketPtr pkt)
 {
     if (pendingReqPkt != nullptr) return false;
+    pendingReqPkt = pkt;
 
     BankFetchSenderState* b = pkt->findNextSenderState<BankFetchSenderState>();
     panic_if(b == nullptr, "missing BankFetchSenderState");
 
     const BankFetchReq& bankFetchReq = b->req;
 
-    src = BankFetchReq.src;
-    dst = BankFetchReq.dst;
-    nBytes = BankFetchReq.nBytes;
+    src = bankFetchReq.src;
+    dst = bankFetchReq.dst;
+    nBytes = bankFetchReq.nBytes;
     // DMA variables
-    v_addr_ptr = 0; // DRAM address ptr
+    v_addr_ptr = dst; // DRAM address ptr
     final_v_addr = dst + nBytes;
-    next_page_begin_addr = ((v_addr_ptr >> log2(pageSize)) +1U) << log2(pageSize);
+    next_page_begin_addr = ((v_addr_ptr >> __builtin_ctz(pageSize)) + 1U) << __builtin_ctz(pageSize);
     
     // bank fetch variables
     nextBankAddr = src;
+    validNBytes = (final_v_addr > next_page_begin_addr) ? next_page_begin_addr - v_addr_ptr : final_v_addr - v_addr_ptr;
+    startRow = nextBankAddr >> __builtin_ctz(bitlineNum / 8);
+    endRow = (nextBankAddr + validNBytes - 1) >> __builtin_ctz(bitlineNum / 8);
+    bankRowPtr = startRow;
+    rowsReceived = 0;
         
     // isLastPage= next_page_begin_addr>=final_v_addr
     if (!pageFetchEvent.scheduled()) {
@@ -140,7 +151,8 @@ BankFetch::handleRequest(PacketPtr pkt)
     return true;
 
 }
-BankFetch::handleResponse(PacketPtr pkt)
+bool
+BankFetch::handleResponse(PICPortID picPortID, PacketPtr pkt)
 {
     panic_if(pkt->getSize() != bitlineNum / 8, "Receive more than one workline data!\n");
 
@@ -158,15 +170,9 @@ BankFetch::handleResponse(PacketPtr pkt)
     delete pkt;
     return true;
 }
+void
 BankFetch::processPageFetchEvent()
 {
-    // validNByte, startRow, endRow for this page
-    validNBytes = (final_v_addr > next_page_begin_addr) ? next_page_begin_addr - v_addr_ptr : final_v_addr - v_addr_ptr;
-    startRow = nextBankAddr >> log2(bitlineNum / 8);
-    endRow = (nextBankAddr + validNBytes) >> log2(bitlineNum / 8);
-
-    bankRowPtr = startRow;
-
     // TBD what format does arbiter accept
     RequestPtr request = std::make_shared<Request>(
         bankRowPtr,
@@ -176,8 +182,6 @@ BankFetch::processPageFetchEvent()
     );
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
-    
-    pkt->pushSenderState(new AtomicBankFetchSenderState(offset, lcb));
 
     bankFetchAtomicQueue.push_back(pkt);    
     if (!atomicBankFetchEvent.scheduled()) {
@@ -188,6 +192,7 @@ BankFetch::processPageFetchEvent()
         schedule(pageFetchEvent, clockEdge(Cycles(1)));
     }
 }
+void
 BankFetch::processAtomicBankFetchEvent()
 {
     if (!bankFetchAtomicQueue.empty()) {
@@ -204,6 +209,7 @@ BankFetch::processAtomicBankFetchEvent()
         }
     }
 }
+void
 BankFetch::processAlignEvent()
 {
     // algin the response from cache bank to a dma write requests
@@ -217,19 +223,29 @@ BankFetch::processAlignEvent()
     );
     PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
     pkt->allocate();
-    pkt->setData(reinterpret_cast<uint8_t*>(cacheBankData.data() + offset));
+    pkt->setData((cacheBankData.data() + offset));
 
     dmaWritePort.sendPacket(pkt);
+    v_addr_ptr = next_page_begin_addr;
+    nextBankAddr += validNBytes;
     // not only one page
     if (v_addr_ptr < final_v_addr) {
         // update address for next page 
-        v_addr_ptr = next_page_begin_addr;
-        nextBankAddr += validNBytes;
+        next_page_begin_addr = ((v_addr_ptr >> __builtin_ctz(pageSize)) + 1U) << __builtin_ctz(pageSize);
+
+        // validNByte, startRow, endRow for this page
+        validNBytes = (final_v_addr > next_page_begin_addr) ? next_page_begin_addr - v_addr_ptr : final_v_addr - v_addr_ptr;
+        startRow = nextBankAddr >> __builtin_ctz(bitlineNum / 8);
+        endRow = (nextBankAddr + validNBytes - 1) >> __builtin_ctz(bitlineNum / 8);
+        bankRowPtr = startRow;
+        rowsReceived = 0;
         
-        baseAddrBankRow = nextBankAddr >> bankAddrOffsetBits
-        reqReg.baseAddrBankRowOffset:=nextBankAddr(bankAddrOffsetBits-1,0)
-        if (!pageFetchEvent.scheduled)
+        if (!pageFetchEvent.scheduled())
             schedule(pageFetchEvent, clockEdge(Cycles(1)));
+    }
+    else {
+        pendingReqPkt->makeResponse();
+        instPort.sendPacket(pendingReqPkt);
     }
 }
 }
