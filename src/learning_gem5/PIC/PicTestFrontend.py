@@ -28,7 +28,14 @@ class PicTestFrontend(ClockedObject):
 
     trace = Param.String(
         "p2s",
-        "Fixed frontend trace: p2s or acc",
+        "Frontend trace: p2s, acc, or load (commands from load_cmds)",
+    )
+
+    load_cmds = VectorParam.String(
+        [],
+        "trace 'load': one LOAD per entry, "
+        "'<src> <dst> <row> <bytePerRow> <offset>' (src = DRAM vaddr, "
+        "dst = array address in 64-bit words); command IDs count from 1",
     )
 
     acc_bit_width_code = Param.Unsigned(

@@ -1,5 +1,7 @@
 #include "learning_gem5/PIC/pic_test_frontend.hh"
 
+#include <sstream>
+
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/PicTestFrontend.hh"
@@ -17,6 +19,7 @@ PicTestFrontend::PicTestFrontend(const PicTestFrontendParams &params)
       interCommandGap(params.inter_command_gap),
       exitOnFinish(params.exit_on_finish),
       trace(params.trace),
+      loadCmds(params.load_cmds),
       accBitWidthCode(static_cast<uint8_t>(params.acc_bit_width_code)),
       sendEvent([this] { processSendEvent(); }, name() + ".send_event")
 {
@@ -101,6 +104,30 @@ PicTestFrontend::buildProtocolSmokeTrace()
         return;
     }
 
+
+    if (trace == "load") {
+        // One LOAD (SET_SRC, SET_DST, SET_SIZE, SET_PARAM) per entry.
+        uint8_t commandId = 1;
+        for (const std::string &line : loadCmds) {
+            std::istringstream in(line);
+            std::string src, dst, row, bpr, off;
+            in >> src >> dst >> row >> bpr >> off;
+            panic_if(off.empty(), "%s bad load command '%s'", name(), line);
+
+            SizeFields size{
+                static_cast<uint16_t>(std::stoul(row, nullptr, 0)),
+                static_cast<uint16_t>(std::stoul(bpr, nullptr, 0)),
+                static_cast<uint16_t>(std::stoul(off, nullptr, 0))};
+            panic_if(!validSize(size),
+                     "%s load '%s' does not fit SET_SIZE (row and "
+                     "bytePerRow 11 bits, offset 15 bits)", name(), line);
+
+            append(PicFunctionBuilder::load(
+                std::stoull(src, nullptr, 0), std::stoull(dst, nullptr, 0),
+                size, commandId++));
+        }
+        return;
+    }
 
     if (trace == "acc") {
 

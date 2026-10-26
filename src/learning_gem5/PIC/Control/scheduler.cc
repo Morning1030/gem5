@@ -164,7 +164,7 @@ Scheduler::handleRequest(PacketPtr pkt)
     //     schedule(decodeEvent, clockEdge(Cycles(1)));
     // }
     if (!instQueue.empty() && currState == TaskState::IDLE &&
-        !decodeEvent.scheduled()) { 
+        !decodeEvent.scheduled() && !prepareTaskEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
     return true;
@@ -176,10 +176,19 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
     DPRINTF(Scheduler, "Got downstream response for addr %#llx\n",
             static_cast<unsigned long long>(pkt->getAddr()));
 
+    // Set below only when this response ends the running task.
+    isEnqCmd = false;
+
     switch (picPortID) {
         case PICPortID::CC:
             panic_if(!pkt->isResponse(),"Scheduler expected CC completion response");
             DPRINTF(Scheduler, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            break;
+        case PICPortID::LD:
+            // Load_ctl answers when the whole LOAD is in the banks (RTL busy_load falling).
+            isEnqCmd = true;
+            panic_if(!pkt->isResponse(),"Scheduler expected LD completion response");
+            DPRINTF(Scheduler, "LD COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SL:
             isEnqCmd = true;
@@ -223,6 +232,12 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
     if (isEnqCmd) {
         delete pkt;
         currState = TaskState::IDLE;
+        // Decoding and dispatch stop while a task runs; pick them back up.
+        if (!instQueue.empty() && !decodeEvent.scheduled() &&
+            !prepareTaskEvent.scheduled())
+            schedule(decodeEvent, clockEdge(Cycles(1)));
+        if (!nextTask.empty() && !triggerEvent.scheduled())
+            schedule(triggerEvent, clockEdge(Cycles(1)));
     }
 
     return true;
@@ -282,7 +297,7 @@ Scheduler::processDecodeEvent()
         case static_cast<uint64_t>(pic::SetRegister::Size): {
             row = static_cast<uint16_t>(dataPayload & 0x7FF);                      // 11 bit LSB
             byte_per_row = static_cast<uint16_t>((dataPayload >> 11) & 0x7FF);     // 11 bit
-            offset = static_cast<uint16_t>((dataPayload >> 22)& 0x3FFF);            // 15 bit
+            offset = static_cast<uint16_t>((dataPayload >> 22)& 0x7FFF);            // 15 bit
             DPRINTF(Scheduler, "SET_SIZE to (%u, %u, %u)\n", row, byte_per_row, offset);
             delete pkt;
             break;
@@ -299,8 +314,12 @@ Scheduler::processDecodeEvent()
 
     }
 
-    // waiting for instructions, self looping at each cycle
-    if (currState == TaskState::IDLE && !instQueue.empty()) {
+    // waiting for instructions, self looping at each cycle. After a
+    // SET_PARAM, wait for processPrepareTaskEvent: the next SETs belong to
+    // the next command and must not overwrite src/dst/size before this
+    // task has taken them (RTL CMD_resolver latches them at SET_PARAM).
+    if (currState == TaskState::IDLE && !instQueue.empty() &&
+        !prepareTaskEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));    // temporarily set to 1
     }
 
@@ -313,6 +332,13 @@ Scheduler::processPrepareTaskEvent()
 {
     uint64_t dataPayload = paramPkt->getLE<uint64_t>();
     delete paramPkt;                                               // maybe like this?
+
+    // This task takes src/dst/size below, in this event; the next
+    // command's SETs can be decoded from the next cycle on.
+    if (currState == TaskState::IDLE && !instQueue.empty() &&
+        !decodeEvent.scheduled()) {
+        schedule(decodeEvent, clockEdge(Cycles(1)));
+    }
 
     // Task nextEnqTask;
     pic::ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
