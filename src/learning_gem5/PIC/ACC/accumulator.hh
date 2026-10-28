@@ -66,6 +66,8 @@ class Accumulator : public ClockedObject
 
     const uint64_t wordlineNums;
     const uint64_t arraysPerMat;
+    const bool exitOnDone;
+    const Cycles exitDelay;
 
     State state = State::IDLE;
 

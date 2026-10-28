@@ -8,6 +8,7 @@
 #include "debug/Accumulator.hh"
 #include "mem/packet_access.hh"
 #include "mem/request.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -19,6 +20,8 @@ Accumulator::Accumulator(const AccumulatorParams &params)
       requestorId(params.system->getRequestorId(this, "Accumulator")),
       wordlineNums(params.wordline_nums),
       arraysPerMat(params.arrays_per_mat),
+      exitOnDone(params.exit_on_done),
+      exitDelay(params.exit_delay),
       readEvent([this] { processReadEvent(); },".read_event"),
       writeEvent([this] { processWriteEvent(); }, "write_event")
 {
@@ -59,6 +62,12 @@ Accumulator::CPUSidePort::sendPacket(PacketPtr pkt)
     if (sendTimingResp(pkt)) {
         owner->pendingReqPkt = nullptr;
         blockedPacket = nullptr;
+        // done goes out when the last write is issued, not when it lands,
+        // so exitDelay must cover the arbiter and the Mat
+        if (owner->exitOnDone) {
+            exitSimLoop(owner->name() + " done", 0,
+                        curTick() + owner->cyclesToTicks(owner->exitDelay));
+        }
     }
     else blockedPacket = pkt;
 }
@@ -95,10 +104,12 @@ Accumulator::MemSidePort::sendPacket(PacketPtr pkt)
     if (sendTimingReq(pkt)) {
         blockedPacket = nullptr;
         if (pkt->isRead()) {
-            owner->schedule(owner->readEvent, owner->clockEdge(Cycles(1)));
+            if (!owner->readEvent.scheduled())
+                owner->schedule(owner->readEvent, owner->clockEdge(Cycles(1)));
         }
         else if (pkt->isWrite()) {
-            owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
+            if (!owner->writeEvent.scheduled())
+                owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
         }
     }
     else {
@@ -178,6 +189,10 @@ Accumulator::processReadEvent()
 {
     // if last round send packet is blocked then don't continue
     if (state != State::READ || cacheBankPort.blockedPacket != nullptr) {
+        return;
+    }
+    // every source of this row already sent (RTL: valid := !finishRead)
+    if (readSourcePtr >= sourceCount) {
         return;
     }
 

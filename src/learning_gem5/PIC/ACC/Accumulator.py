@@ -30,3 +30,10 @@ class Accumulator(ClockedObject):
         4,
         "PolymorPIC arrays per Mat; ACC source groups are spaced by this many arrays"
     )
+
+    exit_on_done = Param.Bool(
+        False, "Exit the simulation after reporting done to the Scheduler"
+    )
+    exit_delay = Param.Cycles(
+        100, "Cycles from done to exit, so the last write reaches the Mat"
+    )
