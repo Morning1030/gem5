@@ -65,10 +65,10 @@ PicTestFrontend::buildProtocolSmokeTrace()
         // append(
         //     PicFunctionBuilder::p2sl(
         //         0x80010000,
-        //         0x00001000,
-        //         64,
-        //         64,
-        //         0,
+        //         0x00002000,    // mat 1 (mat 0 is a normal cache way)
+        //         64,     // row
+        //         64,     // byte per row (unused by P2S_L)
+        //         128,    // offset (row stride in bytes)
         //         2,
         //         7));
 
@@ -76,10 +76,10 @@ PicTestFrontend::buildProtocolSmokeTrace()
         // append(
         //     PicFunctionBuilder::p2sr(
         //         0x80030000,
-        //         0x00000006,
+        //         0x00000016,    // base arrayID 22 -> mats 1~2
         //         64,     // row
-        //         2560,    // byte per row
-        //         512,     // offset(col)
+        //         512,     // byte per row (nCols)
+        //         2560,    // offset (row stride in bytes)
         //         3,
         //         2,
         //         7,
@@ -89,7 +89,7 @@ PicTestFrontend::buildProtocolSmokeTrace()
         append(
             PicFunctionBuilder::p2srt(
                 0x80020000,
-                0x00000004,
+                0x00000014,    // base arrayID 20 -> mats 1~2
                 128,
                 64,
                 64,
