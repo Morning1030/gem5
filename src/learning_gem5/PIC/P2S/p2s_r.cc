@@ -1,5 +1,6 @@
 #include "learning_gem5/PIC/P2S/p2s.hh"
 #include "learning_gem5/PIC/Control/scheduler.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 #include <algorithm>
@@ -21,6 +22,8 @@ P2S_R::P2S_R(const P2S_RParams &params) :
     requestorId(params.system->getRequestorId(this, "P2S_R")),
     pendingReqPkt(nullptr),
     p2sDone(true),
+    exitOnDone(params.exit_on_done),
+    exitDelay(params.exit_delay),
     relative_offset_buf(7),
     arrayID_offset(8),
     mem0(64, std::vector<uint8_t>(128, 0)),      // SRAM block is 64 * 128
@@ -68,6 +71,10 @@ P2S_R::CPUSidePort::sendPacket(PacketPtr pkt)
         blockedPacket = nullptr;
         // p2sDone = true;
         DPRINTF(P2S_R, "P2S COMPLETE: send back to scheduler\n");
+        if (owner->exitOnDone) {
+            exitSimLoop(owner->name() + " done", 0,
+                        curTick() + owner->cyclesToTicks(owner->exitDelay));
+        }
     }
     else blockedPacket = pkt;
 }
@@ -189,56 +196,45 @@ P2S_R::handleResponse(PICPortID picPortID, PacketPtr pkt) {
         // DPRINTF(P2S_R, "DMA data packet size = %u\n", pktSize);
         // size_t writeOffset = writeMemAddr * 8;
 
-        // std::vector<uint8_t> mem0 is 64 * 128, therefore each resp from dma will only take 8 elements in each row
-        // if (curBlockRowPtr < mem0.size() && pktSize <= mem0[curBlockRowPtr].size()) {
-        //     std::memcpy(mem0[curBlockRowPtr].data(), dmaData, pktSize);
-        // } else {
-        //     panic("P2S_R: mem0 buffer overflow! curBlockRowPtr=%u\n", curBlockRowPtr);
-        // }
-        if (pktSize <= mem0.size() * mem0[0].size()) {
-            for (int dmaRow = 0; dmaRow < mem0.size(); dmaRow++) {
-                size_t copySize = std::min(mem0[dmaRow].size(), pktSize - dmaRow * mem0[dmaRow].size());
-                if (copySize > 0) {
-                    std::memcpy(mem0[dmaRow].data(), dmaData + dmaRow * mem0[dmaRow].size(), copySize);
-                }
-            }
-            DPRINTF(P2S_R, "Got DMA response packet size = %u\n", pktSize);
-        }
-        else {
-            panic("P2S_R: mem0 buffer overflow! pktSize=%u\n", pktSize);
+        // std::vector<uint8_t> mem0 is 64 * 128, one DMA response fills one row of it
+        if (curBlockRowPtr < mem0.size() && pktSize <= mem0[curBlockRowPtr].size()) {
+            std::memcpy(mem0[curBlockRowPtr].data(), dmaData, pktSize);
+            DPRINTF(P2S_R, "Got DMA response packet size = %u for mem0 row %u\n", pktSize, curBlockRowPtr);
+        } else {
+            panic("P2S_R: mem0 buffer overflow! curBlockRowPtr=%u pktSize=%u\n", curBlockRowPtr, pktSize);
         }
 
         delete pkt;
 
         // the whole row finishes
-        // curBlockRowPtr++;
-        // curRowDramAddrOffset += next_row_offset_bytes;
+        curBlockRowPtr++;
+        curRowDramAddrOffset += next_row_offset_bytes;
 
         // the whole block finishes
-        // if (curBlockRowPtr == curBlockNRows) {
-        //     curBlockRowPtr = 0;
-        //     curBlockColPtr += curBlockNCols;
-        //     curRowDramAddrOffset = 0;
-        //     curBlockDramBaseAddrPtr += curBlockNCols;
-        //     readMemAddr = 0;
-        //     // fill dma from SRAM block into buffer
-        //     schedule(loadBufferEvent, clockEdge(Cycles(1)));
-
+        if (curBlockRowPtr == curBlockNRows) {
+            curBlockRowPtr = 0;
+            curBlockColPtr += curBlockNCols;
+            curRowDramAddrOffset = 0;
+            curBlockDramBaseAddrPtr += curBlockNCols;
+            readMemAddr = 0;
+            // fill dma from SRAM block into buffer
+            if (!loadBufferEvent.scheduled()) {
+                schedule(loadBufferEvent, clockEdge(Cycles(1)));
+            }
+        }
         // schedule for the next row DMA
-        // } else {
-        //     schedule(dmaReadEvent, clockEdge(Cycles(1)));
-        // }
-        curBlockColPtr += curBlockNCols;
-        curBlockDramBaseAddrPtr += curBlockNCols;
-        readMemAddr = 0;
-        if (!loadBufferEvent.scheduled()) {
-            schedule(loadBufferEvent, clockEdge(Cycles(1)));
+        else {
+            schedule(dmaReadEvent, clockEdge(Cycles(1)));
         }
         return true;
     }
     else if (picPortID == PICPortID::CB) {
         delete pkt;
-        if (p2sDone) {
+        // Done only after the last queued write is acked. The RTL P2S_R
+        // busy does not include its sliceDataQueue: it drops to 0 once the
+        // last slice is enqueued, with up to 8 writes not yet through the
+        // arbiter.
+        if (p2sDone && bitSliceQueue.empty()) {
             pendingReqPkt->makeResponse();
             instPort.sendPacket(pendingReqPkt);
         }
@@ -253,31 +249,34 @@ P2S_R::handleResponse(PICPortID picPortID, PacketPtr pkt) {
 
 void
 P2S_R::processDMAReadEvent() {
-    // read 128 col into SRAM block
+    // read one row (up to 128 col) of the block into SRAM block, as RTL
+    // P2S_R_ctl does: one DMA request per row, P2S_R steps the row stride
+    if (DMAPort.blockedPacket != nullptr) {
+        DPRINTF(P2S_R, "There is still DMA blocked Packet, DMA read is stalled\n");
+        return;
+    }
     curBlockNCols = std::min(128U, nCols - curBlockColPtr);
+    const Addr rowAddr = curBlockDramBaseAddrPtr + curRowDramAddrOffset;
     RequestPtr request = std::make_shared<Request>(
-        curBlockDramBaseAddrPtr,            // TBD
-        mem0.size() * mem0[0].size(),                       // next_row_offset_elem, base_dram_addr
-        0,                                  
+        rowAddr,
+        curBlockNCols,                      // this row's bytes
+        0,
         requestorId
     );
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
     DMADescriptor desc {
-        curBlockDramBaseAddrPtr,
+        rowAddr,
         0,
         curBlockNCols,
-        0,
+        1,
         next_row_offset_bytes
     };
-    // pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRPayload));
-    // DMARPayload dmaRPayload{curBlockNCols, next_row_offset_bytes, curBlockDramBaseAddrPtr + curRowDramAddrOffset};
-    // pkt->setData(reinterpret_cast<uint8_t*>(&dmaRPayload));
     pkt->pushSenderState(new DMASenderState(desc));
     DMAPort.sendPacket(pkt);
-    DPRINTF(P2S_R, "Send DMA read request to %llx\n", curBlockDramBaseAddrPtr);
-    
+    DPRINTF(P2S_R, "Send DMA read request to %llx\n", rowAddr);
+
 }
 void
 P2S_R::processLoadBufferEvent() {
@@ -307,12 +306,12 @@ P2S_R::processBitSliceEvent() {
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
     // inform("curArrayID = %llu", curArrayID);
-    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS * 8 + (curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr)*8;
+    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS + curBlockColPtrGlobal + curBufColPtrInBlock + curEnqBlockInBufColPtr;
     
     // pack into packets
     RequestPtr request = std::make_shared<Request>(
         arrayAddrEnq,                // the target MMIO address of cache bank (TODO)
-        sizeof(uint64_t),     // store address + bitSlice
+        sizeof(P2SWritePayload),     // store address + bitSlice
         0,                           // flags
         requestorId
     );
@@ -321,8 +320,8 @@ P2S_R::processBitSliceEvent() {
     bitSlicePkt->allocate();
     // P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
     // bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
-    // P2SWritePayload p2sWritePayload{arrayAddrEnq, bitSlice};
-    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&bitSlice));
+    P2SWritePayload p2sWritePayload{arrayAddrEnq, bitSlice};
+    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&p2sWritePayload));
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
     DPRINTF(P2S_R, "Send bit=%u bitslice writing to %llx\n", bit_ptr, arrayAddrEnq);
@@ -379,18 +378,6 @@ P2S_R::processWriteEvent() {
         }
         else {
             // p2s is stalled, need to wait for cache bank notify to retry
-        }
-    }
-    else if (p2sDone) {
-        // send p2s_done to scheduler
-        pendingReqPkt->makeResponse();
-        if (instPort.sendTimingResp(pendingReqPkt)) {
-            DPRINTF(
-            P2S_R,
-            "CONTROL COMPLETE: final CacheBank write accepted\n");
-
-            pendingReqPkt = nullptr;
-            p2sDone = false;
         }
     }
 }

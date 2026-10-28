@@ -1,5 +1,6 @@
 #include "learning_gem5/PIC/P2S/p2s.hh"
 #include "learning_gem5/PIC/Control/scheduler.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 #include <algorithm>
@@ -17,6 +18,8 @@ P2S_L::P2S_L(const P2S_LParams &params) :
     requestorId(params.system->getRequestorId(this, "P2S_L")),
     pendingReqPkt(nullptr),
     p2sDone(true),
+    exitOnDone(params.exit_on_done),
+    exitDelay(params.exit_delay),
     regArray(8, std::vector<uint8_t>(8, 0)),
     dmaReadEvent([this]{this->processDMAReadEvent();}, "dmaReadEvent"),
     bitSliceEvent([this]{this->processBitSliceEvent();}, "bitSliceEvent"),
@@ -59,6 +62,10 @@ P2S_L::CPUSidePort::sendPacket(PacketPtr pkt)
         blockedPacket = nullptr;
         // p2sDone = true;
         DPRINTF(P2S_L, "P2S COMPLETE: send back to scheduler\n");
+        if (owner->exitOnDone) {
+            exitSimLoop(owner->name() + " done", 0,
+                        curTick() + owner->cyclesToTicks(owner->exitDelay));
+        }
     }
     else blockedPacket = pkt;
 }
@@ -168,14 +175,14 @@ P2S_L::handleResponse(PICPortID picPortID, PacketPtr pkt) {
         delete pkt;
 
         bit_ptr = 0;
-        pic_write_ptr = base_picAddr + _L_block_row_ptr * 8;
+        pic_write_ptr = base_picAddr + _L_block_row_ptr;
         schedule(bitSliceEvent, clockEdge(Cycles(1)));
         return true;
     }
     else if (picPortID == PICPortID::CB) {
-        // TODO need to filter whether p2sDone
         delete pkt;
-        if (p2sDone) {
+        // done only after the last queued write is acked
+        if (p2sDone && bitSliceQueue.empty()) {
             pendingReqPkt->makeResponse();
             instPort.sendPacket(pendingReqPkt);
         }
@@ -223,7 +230,7 @@ P2S_L::processBitSliceEvent() {
     // determine the address
     RequestPtr request = std::make_shared<Request>(
         pic_write_ptr,
-        sizeof(uint64_t),           // bitSlice
+        sizeof(P2SWritePayload),    // store address + bitSlice
         0,                          // TBD
         requestorId
     );
@@ -232,8 +239,8 @@ P2S_L::processBitSliceEvent() {
     bitSlicePkt->allocate();
     // P2SWritePayload *p2sWritePayload = new P2SWritePayload{pic_write_ptr, bitSlice};
     // bitSlicePkt->dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
-    // P2SWritePayload p2sWritePayload{pic_write_ptr, bitSlice};
-    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&bitSlice));
+    P2SWritePayload p2sWritePayload{pic_write_ptr, bitSlice};
+    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&p2sWritePayload));
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);
@@ -243,7 +250,7 @@ P2S_L::processBitSliceEvent() {
     }
 
     // update the next address
-    pic_write_ptr += _L_block_row * 8;
+    pic_write_ptr += _L_block_row;
 
     // finish one bit slice, move on to the next bit
     bit_ptr++;

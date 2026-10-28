@@ -15,6 +15,13 @@ class P2S_L(ClockedObject):
     dma_port = RequestPort("Request port to DMA")
     cb_port = RequestPort("Request port to PIC Cache Bank")
 
+    exit_on_done = Param.Bool(
+        False, "Exit the simulation after reporting done to the Scheduler"
+    )
+    exit_delay = Param.Cycles(
+        100, "Cycles from done to exit, so the last writes reach the Mats"
+    )
+
 
 class P2S_R(ClockedObject):
     type = "P2S_R"
@@ -29,6 +36,13 @@ class P2S_R(ClockedObject):
     inst_port = ResponsePort("CPU side port, receives MMIO requests")
     dma_port = RequestPort("Request port to DMA")
     cb_port = RequestPort("Request port to PIC Cache Bank")
+
+    exit_on_done = Param.Bool(
+        False, "Exit the simulation after reporting done to the Scheduler"
+    )
+    exit_delay = Param.Cycles(
+        100, "Cycles from done to exit, so the last writes reach the Mats"
+    )
 
 
 class P2S_R_T(ClockedObject):
@@ -45,3 +59,10 @@ class P2S_R_T(ClockedObject):
     inst_port = ResponsePort("CPU side port, receives MMIO requests")
     dma_port = RequestPort("Request port to DMA")
     cb_port = RequestPort("Request port to PIC Cache Bank")
+
+    exit_on_done = Param.Bool(
+        False, "Exit the simulation after reporting done to the Scheduler"
+    )
+    exit_delay = Param.Cycles(
+        100, "Cycles from done to exit, so the last writes reach the Mats"
+    )
