@@ -65,4 +65,3 @@ DebugFlag('Accumulator', 'PolymorPIC standalone accumulator')
 SimObject('ACC/AccMockBank.py', sim_objects=['AccMockBank'])
 Source('ACC/acc_mock_bank.cc')
 
-SimObject('Switch/SwitchCtrl.py')
