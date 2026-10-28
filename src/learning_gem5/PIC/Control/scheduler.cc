@@ -379,7 +379,7 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_L_Payload p2s_L_Payload{src, dst, byte_per_row, row, precision};
+            P2S_L_Payload p2s_L_Payload{src, dst, offset, row, precision};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_L_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_L;
@@ -404,7 +404,7 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
+            P2S_R_Payload p2s_R_Payload{src, dst, offset, row, byte_per_row, precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R;
@@ -429,7 +429,7 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_T_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
+            P2S_R_Payload p2s_R_T_Payload{src, dst, offset, row, byte_per_row, precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_T_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R_T;
