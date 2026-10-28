@@ -31,6 +31,10 @@ class AccessBankArb(ClockedObject):
     # (kClientLoadPostProcess, RTL load_post_process.io.accessBank).
     load_post_side = ResponsePort("Port ReadPostProcess sends WRITEs on")
 
+    # The Accumulator's bank_port sends 8-byte READ/WRITE requests here
+    # (kClientAccumulator); the address is the 17-bit array address.
+    acc_side = ResponsePort("Port the Accumulator sends READ/WRITE requests on")
+
     # One port per PIC Mat, indexed (matID_in_bank - first_pic_mat) *
     # num_banks + bankID (same order as pic_cache.py's Mat list).
     # Leave unconnected for the old stub mode: grants commit nowhere and
