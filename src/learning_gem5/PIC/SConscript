@@ -20,9 +20,13 @@ DebugFlag('PicTestFrontend', 'PolymorPIC P2S end-to-end test frontend')
 # Store
 SimObject('Store/StoreCtrl.py', sim_objects=['StoreCtrl'])
 SimObject('Store/BankFetch.py', sim_objects=['BankFetch'])
+SimObject('Store/DMAWritePageSplit.py', sim_objects=['DMAWritePageSplit'])
 Source('Store/store_ctrl.cc')
 Source('Store/bank_fetch.cc')
-DebugFlag('StoreCtrl', 'DMA store controller')
+Source('Store/dma_write_page_split.cc')
+DebugFlag('StoreCtrl')
+DebugFlag('BankFetch')
+DebugFlag('DMAWrite')
 # DebugFlag('BankFetch', 'fetching data from cache bank to DMA')
 
 # P2S implementations

@@ -233,7 +233,7 @@ BankFetch::processAlignEvent()
         // update address for next page 
         next_page_begin_addr = ((v_addr_ptr >> __builtin_ctz(pageSize)) + 1U) << __builtin_ctz(pageSize);
 
-        // validNByte, startRow, endRow for this page
+        // validNBytes, startRow, endRow for this page
         validNBytes = (final_v_addr > next_page_begin_addr) ? next_page_begin_addr - v_addr_ptr : final_v_addr - v_addr_ptr;
         startRow = nextBankAddr >> __builtin_ctz(bitlineNum / 8);
         endRow = (nextBankAddr + validNBytes - 1) >> __builtin_ctz(bitlineNum / 8);
