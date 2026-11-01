@@ -198,6 +198,10 @@ P2S_R_T::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     }
 }
 
+// Scala: P2S_R_T_ctl, state req_dma -- one Load_req per row
+// (byte_per_row = nCols, row = 1, offset DontCare); after it is sent,
+// dramAddr += next_row_offset_bytes. Load_ctl only reads the packet's
+// address and size, so nothing else rides on the packet.
 void
 P2S_R_T::processDMAReadEvent() {
     // read one row in R Tile
@@ -218,14 +222,6 @@ P2S_R_T::processDMAReadEvent() {
     // pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
     // DMARTPayload dmaRTPayload{nCols, dramAddr};
     // pkt->setData(reinterpret_cast<uint8_t*>(&dmaRTPayload));
-    DMADescriptor desc {
-        dramAddr,
-        0,
-        nCols,
-        0,
-        0
-    };
-    pkt->pushSenderState(new DMASenderState(desc));
     DMAPort.sendPacket(pkt);
     DPRINTF(P2S_R_T, "Send DMA read request to %llx\n", dramAddr);
     dramAddr += next_row_offset_bytes;

@@ -363,7 +363,9 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::LOAD;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            // CmdStateHelper.scala: LD_P = 5. Must be set: CmdStateHelper
+            // indexes its per-client queues with it.
+            nextEnqTask.clientID = QryTabClient::LD_P;
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
             break;
@@ -385,7 +387,8 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::STORE;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            // nextEnqTask.clientID = 
+            // CmdStateHelper.scala: ST_P = 7.
+            nextEnqTask.clientID = QryTabClient::ST_P;
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
             break;
@@ -405,6 +408,8 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
+            // Scala: CMD_resolver_new.enq_P2SL -- next_row_offset_elem is
+            // SET_SIZE offset (rowOffset), _L_block_row is row.
             P2S_L_Payload p2s_L_Payload{src, dst, offset, row, precision};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_L_Payload));
 
@@ -430,7 +435,11 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_Payload{src, dst, offset, row, byte_per_row, precision, bufNum};
+            // Scala: CMD_resolver_new.enq_P2SR -- next_row_offset_bytes is
+            // SET_SIZE offset (rowOffset), nRows is row, nCols is
+            // bytePerRow (matR_Col). Fields in P2S_R_Payload order.
+            P2S_R_Payload p2s_R_Payload{src, dst, offset, row, byte_per_row,
+                                        precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R;
@@ -455,7 +464,10 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_T_Payload{src, dst, offset, row, byte_per_row, precision, bufNum};
+            // Scala: CMD_resolver_new.enq_P2SR (if_T routes it to
+            // P2S_R_T) -- same fields as P2S_R above.
+            P2S_R_Payload p2s_R_T_Payload{src, dst, offset, row, byte_per_row,
+                                          precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_T_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R_T;

@@ -64,6 +64,11 @@ PicTestFrontend::buildProtocolSmokeTrace()
 {
     if (trace == "p2s") {
 
+        // SET_SIZE follows CMD_resolver_new.scala: row = rows, bytePerRow =
+        // bytes read per row (nCols), offset = DRAM stride between rows.
+        // Keep the values in sync with BLOCKS in p2s_test_data.py and CMDS
+        // in check_p2s_mat.py.
+
         // P2S_L
         // append(
         //     PicFunctionBuilder::p2sl(
@@ -93,9 +98,9 @@ PicTestFrontend::buildProtocolSmokeTrace()
             PicFunctionBuilder::p2srt(
                 0x80020000,
                 0x00000014,    // base arrayID 20 -> mats 1~2
-                128,
-                64,
-                64,
+                128,    // row
+                64,     // byte per row (nCols)
+                64,     // offset (row stride in bytes)
                 4,
                 2,
                 7,
