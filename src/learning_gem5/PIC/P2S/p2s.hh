@@ -84,6 +84,8 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            bool exitOnDone;
+            Cycles exitDelay;
 
             // variables
             uint64_t base_dram_addr;
@@ -164,6 +166,8 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            bool exitOnDone;
+            Cycles exitDelay;
 
             // request params
             uint64_t dramAddr;
@@ -271,6 +275,8 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            bool exitOnDone;
+            Cycles exitDelay;
 
             // request params
             uint64_t dramAddr;

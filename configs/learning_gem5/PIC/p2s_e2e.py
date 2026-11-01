@@ -1,5 +1,26 @@
+# P2S L / R / RT end-to-end: Scheduler -> P2S -> AccessBankArb -> real Mats
+# (PICCache). Pick the P2S command to run in pic_test_frontend.cc
+# (trace "p2s"). Check what landed in the Mats with --debug-flags=MatBank:
+# every Mat write prints "bank B way W: write array A row R = 0x...", and
+# the 17-bit array address is (W << 13) | (B << 11) | (A << 9) | R.
+
+import os
+import sys
+
 import m5
 from m5.objects import *
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', '..', '..', 'src', 'learning_gem5', 'PIC'),
+)
+from pic_cache import PICCache
+
+# p2s_test_data sits next to this config; gem5 does not always put the
+# config's own directory on sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import p2s_test_data
 
 system = System()
 root = Root(full_system=False, system=system)
@@ -26,9 +47,12 @@ system.test_frontend = PicTestFrontend(
 system.scheduler = Scheduler(system=system)
 system.cmd_state_helper = CmdStateHelper(system=system)
 
-system.p2s_l = P2S_L(system=system)
-system.p2s_r = P2S_R(system=system)
-system.p2s_r_t = P2S_R_T(system=system)
+# The frontend's exit_on_finish fires once the SETs are sent, before P2S has
+# written anything, so the run ends when the P2S under test reports done.
+# Run one P2S command per simulation: the first done ends it.
+system.p2s_l = P2S_L(system=system, exit_on_done=True)
+system.p2s_r = P2S_R(system=system, exit_on_done=True)
+system.p2s_r_t = P2S_R_T(system=system, exit_on_done=True)
 
 # Load path, one SimObject per RTL module (PolymorPIC_main_in_cache.scala):
 # P2S -> Load_ctl -> DMA_read_page_split -> ReadPostProcess -> Load_ctl -> P2S
@@ -48,36 +72,14 @@ system.read_post.buf_side = system.load_ctl.buf_side
 system.tlb_sched = TLBReqScheduler()
 system.dma.tlb_side = system.tlb_sched.cpu_side
 
-system.l_sink = P2SRealGoldenSink(
-    mode='L',
-    base_pic_addr=0x1000,
-    rows=64,
-    cols=64,
-    precision=7,
-    exit_on_pass=False,
-)
+# Mats are storage only: start_cycles keeps them from starting their own
+# cal() job, which would drop every external write. Way 0 is the normal
+# cache way; all other ways are in PIC mode.
+cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
 
-system.r_sink = P2SRealGoldenSink(
-    mode='R',
-    base_array=6,
-    rows=64,
-    cols=8,
-    precision=7,
-    buf_num=2,
-    wordline_nums=512,
-    exit_on_pass=False,
-)
-
-system.rt_sink = P2SRealGoldenSink(
-    mode='RT',
-    base_array=4,
-    rows=2,
-    cols=64,
-    precision=7,
-    buf_num=2,
-    wordline_nums=512,
-    exit_on_pass=True,
-)
+system.bank_arb = AccessBankArb(num_banks=4)
+for mat in cache.mats:
+    system.bank_arb.mat_side = mat.array_side
 
 system.pic_transport.mmio_port = system.scheduler.inst_port
 system.scheduler.csh_port = system.cmd_state_helper.inst_port
@@ -89,10 +91,11 @@ system.p2s_l.dma_port = system.load_ctl.p2s_side
 system.p2s_r.dma_port = system.load_ctl.p2s_side
 system.p2s_r_t.dma_port = system.load_ctl.p2s_side
 
-
-system.p2s_l.cb_port = system.l_sink.port
-system.p2s_r.cb_port = system.r_sink.port
-system.p2s_r_t.cb_port = system.rt_sink.port
+# Index 0/1/2 = P2S_L/P2S_R/P2S_R_T (AccessBankArb's kClientP2S_L offset).
+system.p2s_l.cb_port = system.bank_arb.p2s_side[0]
+system.p2s_r.cb_port = system.bank_arb.p2s_side[1]
+system.p2s_r_t.cb_port = system.bank_arb.p2s_side[2]
+system.read_post.bank_side = system.bank_arb.load_post_side
 
 system.pic_membus = SystemXBar()
 
@@ -107,31 +110,9 @@ system.pic_memory.port = system.pic_membus.mem_side_ports
 
 m5.instantiate()
 
-for row in range(64):
-    addr = 0x80010000 + row * 128
-    data = bytearray(
-        ((row + col) & 0xff)
-        for col in range(64)
-    )
-    root.system.physProxy.write(addr, data)
+p2s_test_data.write_all(root.system.physProxy)
 
-for row in range(64):
-    addr = 0x80030000 + row * 32
-    data = bytearray(
-        ((row * 13 + col * 29 + 7) & 0xff)
-        for col in range(8)
-    )
-    root.system.physProxy.write(addr, data)
-
-for row in range(2):
-    addr = 0x80020000 + row * 128
-    data = bytearray(
-        ((row + col) & 0xff)
-        for col in range(64)
-    )
-    root.system.physProxy.write(addr, data)
-
-print('Initialized unified P2S L -> R -> RT E2E DRAM patterns')
+print('Initialized unified P2S L -> R -> RT PIC cache E2E DRAM patterns')
 
 exit_event = m5.simulate()
 

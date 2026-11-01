@@ -85,7 +85,7 @@ struct QueryPayload
 class Scheduler : public ClockedObject
 {
   public:
-    enum class PICPortID{CC, LD, ST, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
+    enum class PICPortID {CC, LD, ST, P2SL, P2SR, P2SRT, CB, ACC, SC, CSH};
     enum class TaskState
     {
       IDLE,

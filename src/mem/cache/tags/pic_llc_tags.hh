@@ -8,10 +8,25 @@
  * Way 0 is always a normal cache way; ways 1-15 can switch between cache
  * and PIC mode, one way across all four banks at a time.
  *
- * This class keeps the CPU away from PIC-mode ways: a tag hit in a PIC way
- * is treated as a miss, and PIC ways are never chosen as victims. Which
- * PIC client gets the bank port is decided by AccessBankArb
- * (mem/cache/pic/access_bank_arb.hh), not here.
+ *   Arbiter:
+ *     Per the PolymorPIC paper, the Arbiter is the path selector that
+ *     decides, per cache bank, whether the CPU or the PIC/compute path may
+ *     touch a way's data -- and enforces isolation between the two (the
+ *     PAI mechanism) so ordinary CPU/OS traffic can't land on a way that's
+ *     been allocated to AI compute. That's the half implemented here:
+ *     - Two per-way PIC states, as in the RTL:
+ *         dirPICModeBitmap (runtime_PIC_Mode_levels): set at the switch's
+ *           pre_check; findVictim() never picks these ways
+ *         wayPICModeBitmap (runtime_PIC_Mode_levels_for_assert): the bank
+ *           state, copied from dir by commitBankPicState() at switch_resp;
+ *           Mats may only touch these ways
+ *     - A CPU hit on a bank-PIC way is a bug (the way was flushed before
+ *       entering PIC mode), so accessBlock() panics on it
+ *     The *other* half of the paper's Arbiter -- routing DRAM data toward
+ *     a p2s engine and routing p2s results into the right Mat, i.e. who
+ *     gets the shared physical bank port this cycle -- needs no tag/way
+ *     state at all, so it does not live here: see AccessBankArb in
+ *     mem/cache/pic/access_bank_arb.hh.
  */
 
 #ifndef __MEM_CACHE_TAGS_PIC_LLC_TAGS_HH__
@@ -23,6 +38,7 @@
 
 //#include "base/statistics.hh"
 #include "mem/cache/tags/base_set_assoc.hh"
+#include "mem/cache/tags/indexing_policies/base.hh"
 #include "params/PICLLCTags.hh"
 
 namespace gem5
@@ -55,21 +71,15 @@ class PICLLCTags : public BaseSetAssoc
     ~PICLLCTags() = default;
 
     /**
-     * Tag lookup with PIC-mode arbiter.
-     * NEW vs PICTags: PICTags did not override this, so the CPU could hit
-     * in a PIC-mode way.
-     *
-     * If the matching block lives in a way that is currently in PIC mode,
-     * the arbiter denies CPU access and returns nullptr (the hit is invisible
-     * to the CPU until the way is returned to cache mode).
+     * Tag lookup. A hit on a way whose bank state is PIC panics (RTL
+     * BankSellPIC L107-108 asserts; paper Sec. 5.2: PIC ways never hit).
+     * Every other case is a normal hit/miss.
      */
     CacheBlk* accessBlock(const PacketPtr pkt, Cycles &lat) override;
 
     /**
-     * Victim selection restricted to cache-mode ways (same as PICTags).
-     *
-     * PIC-mode ways hold live compute data and must not be evicted by
-     * ordinary CPU misses.
+     * Victim selection restricted to ways whose directory state is cache
+     * mode (RTL Directory picks victims with picLevels).
      */
     CacheBlk* findVictim(const CacheBlk::KeyType& key,
                          const std::size_t size,
@@ -77,21 +87,23 @@ class PICLLCTags : public BaseSetAssoc
                          const uint64_t partition_id=0) override;
 
     /**
-     * Switch one PIC way between cache mode and PIC/compute mode.
-     *
-     * The switch applies across all four banks simultaneously, matching
-     * the "Level" granularity defined in Fig. 6(c).  Way 0 (normalCacheWay)
-     * cannot be switched.
-     *
-     * @param way  Way index to switch (1 … assoc-1)
-     * @param pic  true → PIC mode; false → cache mode
-     *
-     * NEW vs PICTags: refuses way 0 and a way that still has dirty lines.
+     * Set the directory PIC state of ways [beginWay, endWay] (RTL
+     * runtime_PIC_Mode_levels, effective at the switch's pre_check).
+     * The normal cache way cannot be switched.
      */
-    void setWayPICMode(unsigned way, bool pic);
+    void setDirPicWays(unsigned beginWay, unsigned endWay, bool pic);
 
-    /** Return true if @p way is currently in PIC/compute mode.
-     *  (PICTags had this as isWayPICMode().) */
+    /** Directory state: true if @p way is in PIC mode for replacement. */
+    bool isWayDirPIC(unsigned way) const;
+
+    /**
+     * Bank state := directory state (RTL L159: for_assert := runtime,
+     * at switch_resp). Ways newly entering PIC mode must be invalid in
+     * every set -- a model-only check, the RTL has no such assert.
+     */
+    void commitBankPicState();
+
+    /** Bank state: true if Mats may use @p way (RTL _for_assert). */
     bool isWayInPICMode(unsigned way) const;
 
     /**
@@ -122,7 +134,7 @@ class PICLLCTags : public BaseSetAssoc
     unsigned getBankIndex(Addr addr) const;
 
     /**
-     * Return number of PIC ways currently in compute mode.
+     * Return number of PIC ways currently in compute mode (bank state).
      * Useful for debugging and statistics collection.
      */
     unsigned activePICWays() const;
@@ -138,24 +150,17 @@ class PICLLCTags : public BaseSetAssoc
     unsigned sliceBytes() const { return matSliceBytes; }
 
     // -----------------------------------------------------------------------
-    // Flush support — called by Cache Controller on behalf of Switch
-    // Controller when switching a way from cache mode to PIC mode.
-    // NEW vs PICTags: getDirtyBlocksInWay() and invalidateWay().
-    //
-    // Sequence (Cache Controller is responsible for steps 2-4):
-    //   1. getDirtyBlocksInWay(way)  → cache bank provides dirty block list
-    //   2. For each dirty block: send writeback packet to DRAM
-    //   3. For each block: send snoop/invalidation to L1 (cache coherence)
-    //   4. Wait for all acks
-    //   5. invalidateWay(way)        → cache bank clears all entries
-    //   6. setWayPICMode(way, true)  → cache bank marks way as PIC mode
+    // Switch sequence (SwitchController + CacheController):
+    //   1. pre_check: setDirPicWays(begin, end, true) -> no new victims
+    //   2. per set: query the directory, flush every valid block
+    //      (writeback + L1 probe) through CacheController
+    //   3. switch_resp: commitBankPicState() -> Mats may use the ways
+    // The helpers below are not used by that flow; kept for tests/tools.
     // -----------------------------------------------------------------------
 
     /**
      * Scan way @p way across all sets and return every valid dirty block.
      *
-     * The Cache Controller uses this list to issue writeback packets to DRAM.
-     * Must be called before invalidateWay() and setWayPICMode().
      *
      * @param way  PIC way to flush (must not be normalCacheWay)
      * @return     All valid CacheBlks in that way that have DirtyBit set
@@ -175,6 +180,17 @@ class PICLLCTags : public BaseSetAssoc
      * @return     Pointer to the matching CacheBlk, or nullptr if not found
      */
     CacheBlk* getBlockByWaySet(unsigned way, unsigned set) const;
+
+    /**
+     * O(1) block lookup by (set, way).
+     * NOTE: argument order is the reverse of getBlockByWaySet(way, set).
+     */
+    CacheBlk*
+    getBlk(const uint32_t setID, const uint32_t wayID) const
+    {
+        return static_cast<CacheBlk*>(
+            indexingPolicy->getEntry(setID, wayID));
+    }
 
     /**
      * Invalidate every valid block in way @p way across all sets.
@@ -210,11 +226,17 @@ class PICLLCTags : public BaseSetAssoc
     const unsigned matSliceBytes;
 
     /**
-     * Per-way mode bitmap.  Bit i set → way i is in PIC/compute mode.
-     * Bit normalCacheWay is always 0 and is protected by setWayPICMode().
-     * Up to 32 ways are supported (uint32_t).
+     * Bank PIC state (RTL runtime_PIC_Mode_levels_for_assert). Bit i set
+     * → Mats may use way i. Only commitBankPicState() changes it.
+     * Bit normalCacheWay is always 0. Up to 32 ways (uint32_t).
      */
     uint32_t wayPICModeBitmap;
+
+    /**
+     * Directory PIC state (RTL runtime_PIC_Mode_levels). Bit i set → way i
+     * is excluded from replacement. Changed by setDirPicWays().
+     */
+    uint32_t dirPICModeBitmap;
 
     /** matBusyBitmap[bank] bit i = way i busy (real-time access gate). */
     std::vector<uint32_t> matBusyBitmap;

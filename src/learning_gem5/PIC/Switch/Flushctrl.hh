@@ -5,6 +5,7 @@
 #include <queue>
 #include "base/types.hh"
 #include "mem/packet.hh"
+#include "sim/eventq.hh"
 
 #include "learning_gem5/PIC/Switch/pic_payloads.hh"
 
@@ -13,13 +14,21 @@ namespace gem5
 
 class SwitchController;   // forward declare
 
+// 同一 tick 的先後：port response（Default_Pri）→ SwitchController 的 event
+// → FlushController 的 event。switch 讀的是「本拍開始時」的 flush 狀態
+// （queue 滿不滿、flush 全部做完沒），所以 flush 的 event 排在後面。
+constexpr Event::Priority SwitchEventPri = Event::CPU_Tick_Pri;
+constexpr Event::Priority FlushEventPri  = Event::CPU_Tick_Pri + 1;
+
 // =====================================================================
 //  FlushController — flush FSM (RTL: flush_queue + flush FSM in SwitchCtl_pic)
 //
-//  沒有自己的 event：每拍由 SwitchController::tick() 呼叫 tick()。
-//  enqueueFlush() 只 push，下一拍的 tick() 才看得到（Chisel Queue 語意）。
+//  不是 SimObject：SwitchController 底下的一般 class，沒有自己的 port，
+//  event 透過 owner 排程，FlushReq 走 owner 的 cache_side[Flush]。
+//  enqueueFlush() push 的項目下一拍才看得到（Chisel Queue 語意）。
 //
-//  States:  Idle (deq) → SendFlushReq (fire) → WaitFlushDone → Idle
+//  States:  Idle (deqEvent) → SendFlushReq (sendEvent) → WaitFlushDone
+//           → FlushDone 回來 (doneEvent) → Idle
 // =====================================================================
 
 class FlushController {
@@ -31,24 +40,26 @@ class FlushController {
     SwitchController *owner;
     State flushState = State::Idle;
 
-    struct FlushEntry { uint32_t setID; Addr tag; };
+    struct FlushEntry { uint32_t setID; Addr tag; Tick visibleAt; };
     std::queue<FlushEntry> flushQueue;
-    FlushEntry currentEntry{0, 0};
-    bool doneSeen = false;                         // io.flushDone（組合訊號）
+    FlushEntry currentEntry{0, 0, 0};
 
-    void sendFlushReq();
+    EventFunctionWrapper deqEvent;     // flush_idle：deq
+    EventFunctionWrapper sendEvent;    // send_flush_req：flushReq.valid
+    EventFunctionWrapper doneEvent;    // wait_flushDone → flush_idle
+
+    void processDeqEvent();
+    void processSendEvent();
+    void processDoneEvent();
 
   public:
-    explicit FlushController(SwitchController *owner) : owner(owner) {}
+    explicit FlushController(SwitchController *owner);
 
     /** RTL flush_queue.io.enq.ready */
     bool queueNotFull() const { return flushQueue.size() < kQueueDepth; }
 
-    /** 只 push，下一拍才看得到 */
+    /** push，下一拍才看得到；flush idle 時排 deqEvent */
     void enqueueFlush(uint32_t setID, Addr tag);
-
-    /** 由 SwitchController::tick 每拍呼叫 */
-    void tick();
 
     /** Handle flush-done response from CacheController. */
     bool handleFlushResponse(PacketPtr pkt);
