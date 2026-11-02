@@ -189,6 +189,26 @@ packExeParams(ExeParams value)
            (value.validRRows & mask(10));
 }
 
+// Scala: CMD_resolver_new.enq_EXE -- splits EXE's "others" back into its
+// fields. Same layout as packExeParams (ISA.c EXE(): first field in the
+// lowest bits), so the frontend and the Scheduler cannot drift apart.
+constexpr ExeParams
+unpackExeParams(uint64_t others)
+{
+    return {
+        static_cast<uint16_t>(others & mask(10)),
+        static_cast<uint8_t>((others >> 10) & mask(2)),
+        static_cast<uint8_t>((others >> 12) & mask(2)),
+        static_cast<uint8_t>((others >> 14) & mask(3)),
+        static_cast<uint8_t>((others >> 17) & mask(3)),
+        static_cast<uint8_t>((others >> 20) & mask(8)),
+        static_cast<bool>((others >> 28) & 1),
+        static_cast<bool>((others >> 29) & 1),
+        static_cast<bool>((others >> 30) & 1),
+        static_cast<bool>((others >> 31) & 1)
+    };
+}
+
 constexpr uint64_t packSwitchParams(bool allocate, uint8_t levels)
 {
     return (static_cast<uint64_t>(levels & mask(5)) << 1) |

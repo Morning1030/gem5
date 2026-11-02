@@ -272,6 +272,8 @@ class MatFSM
     bool readMArrayEnWirePrev_ = false;
     bool writeWBufWirePrev_ = false;
     uint64_t mArrayReadAddrWirePrev_ = 0;
+    // RegNext(write_M_array_En_wire) = io.write_M_Array_En
+    bool writeMArrayEnWirePrev_ = false;
 
     // ---- wires (combinational; recomputed every step()) ---------------
     bool writeWBufWire_ = false;

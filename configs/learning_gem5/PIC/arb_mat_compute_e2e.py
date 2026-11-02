@@ -111,10 +111,12 @@ system.idle.port = system.bank_arb.p2s_side[2]
 # Read back after compute: the C data, the M results (sub-array 0), and the
 # rows that were written during or after compute.
 # M results of the baseline run (sub-array 0, row -> value); the other rows
-# of the first M_ROWS stay zero. Regression values from this model, not from
-# the RTL.
+# of the first M_ROWS stay zero. These are what the RTL writes (checked
+# with a cycle-level transliteration of Controller.scala); row 2 lanes 1..3
+# hold what wBuf still had from row 1. cal_mat_e2e.py checks cal() against
+# an independent golden model.
 GOLD = {addr(1, 0, 0, r): v for r, v in enumerate(
-    [0x4c004b0048, 0x51004c004c004b, 0x51004c004c004f])}
+    [0x51004c004b0048, 0x51004c004c004b, 0x51004c004c004f])}
 expect = dict((a, d) for a, d in fill)
 for a, d in during:
     if mode == 'after':

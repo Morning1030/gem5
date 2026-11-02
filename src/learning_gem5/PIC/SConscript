@@ -56,6 +56,11 @@ Source('mat/mat_datapath.cc')
 Source('mat/mat_mac.cc')
 DebugFlag('MatBank', 'PolymorPIC Mat FSM <-> AutoLoadL/CacheController')
 
+# MatSetUpRouter: Scheduler EXE (cb_port) -> the target Mat's set-up
+# (RTL BanksShell/Bank set_up_io)
+SimObject('mat/MatSetUpRouter.py', sim_objects=['MatSetUpRouter'])
+Source('mat/mat_setup_router.cc')
+
 # ACC implementation
 SimObject('ACC/Accumulator.py', sim_objects=['Accumulator'])
 Source('ACC/accumulator.cc')

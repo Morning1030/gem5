@@ -84,14 +84,16 @@ AutoLoadL::arbitrate()
     }
 }
 
+// Scala: AutoLoadL, state read_mem -- accessArrayReq.bits.addr := vec_addr,
+// the Mat's subarrayID_rowID: a 17-bit array address (one 64-bit word per
+// address), which AccessBankArb decodes as is.
 // read_mem: wait for the cache bank / arbiter to accept the read.
 void
 AutoLoadL::processReadMem()
 {
     const AutoLoadLPayload *req = curPkt->getConstPtr<AutoLoadLPayload>();
-    // ASSUMPTION: `source` is a row index, one 64-bit vec_buf word per row.
     RequestPtr request = std::make_shared<Request>(
-        req->source * sizeof(uint64_t), sizeof(uint64_t), 0, requestorId);
+        req->source, sizeof(uint64_t), 0, requestorId);
     PacketPtr rd = new Packet(request, MemCmd::ReadReq);
     rd->allocate();
 

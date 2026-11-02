@@ -1,0 +1,140 @@
+Global frequency set at 1000000000000 ticks per second
+warn: No dot file generated. Please install pydot to generate the dot file and pdf.
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 25.1.0.1
+gem5 compiled Nov  1 2026 16:08:47
+gem5 started Nov  2 2026 00:56:45
+gem5 executing on Christines-MacBook-Air.local, pid 30893
+command line: build/RISCV/gem5.opt --debug-flags=MatBank,Scheduler --outdir=m5out/cal_fe_u16 configs/learning_gem5/PIC/cal_frontend_e2e.py u16
+
+case u16: 35 words written before the job, EXE sent @ cycle 1350, read back @ cycle 3350
+src/mem/cache/pic/arb_test_client.cc:66: info: system.idle_p2s1: 0 ops done, 0 reads checked
+src/mem/cache/pic/arb_test_client.cc:66: info: system.idle_p2s0: 0 ops done, 0 reads checked
+   2000: system.mats00: bank 0 way 1: write array 0 row 0 = 0xdead000000002000
+   4000: system.mats00: bank 0 way 1: write array 0 row 1 = 0xdead000000002001
+   6000: system.mats00: bank 0 way 1: write array 0 row 2 = 0xdead000000002002
+   8000: system.mats00: bank 0 way 1: write array 0 row 3 = 0xdead000000002003
+  10000: system.mats00: bank 0 way 1: write array 1 row 0 = 0xcbb8422467f7180c
+  12000: system.mats00: bank 0 way 1: write array 1 row 1 = 0x547adcd80f6e3801
+  14000: system.mats00: bank 0 way 1: write array 1 row 2 = 0x6062888091347c8a
+  16000: system.mats00: bank 0 way 1: write array 1 row 3 = 0xe2715d4d958ab4a0
+  18000: system.mats00: bank 0 way 1: write array 1 row 4 = 0x951903dcd9956cb1
+  20000: system.mats00: bank 0 way 1: write array 1 row 5 = 0x66cf5ab4529820bb
+  22000: system.mats00: bank 0 way 1: write array 1 row 6 = 0x3f0bf457d38f9857
+  24000: system.mats00: bank 0 way 1: write array 1 row 7 = 0xccd8aab1e7486cd0
+  26000: system.mats00: bank 0 way 1: write array 1 row 8 = 0x73ec129705805df0
+  28000: system.mats00: bank 0 way 1: write array 1 row 9 = 0x8a012f71ad52c6c0
+  30000: system.mats00: bank 0 way 1: write array 2 row 0 = 0x3097a639c70cad23
+  32000: system.mats00: bank 0 way 1: write array 2 row 1 = 0x6f7c915d08bebb07
+  34000: system.mats00: bank 0 way 1: write array 2 row 2 = 0xc97bf168002e13d2
+  36000: system.mats00: bank 0 way 1: write array 2 row 3 = 0x685bcf51876c186d
+  38000: system.mats00: bank 0 way 1: write array 2 row 4 = 0x10e715198ce1dc
+  40000: system.mats00: bank 0 way 1: write array 2 row 5 = 0xd27e45cc01579c16
+  42000: system.mats00: bank 0 way 1: write array 2 row 6 = 0x4f71bf904d1f41fd
+  44000: system.mats00: bank 0 way 1: write array 2 row 7 = 0x9e8332948c9605b3
+  46000: system.mats00: bank 0 way 1: write array 2 row 8 = 0xdd21b2d76543ad6c
+  48000: system.mats00: bank 0 way 1: write array 2 row 9 = 0xbed2a249972907eb
+  50000: system.mats00: bank 0 way 1: write array 3 row 0 = 0xacecdfc2c3a53e22
+  52000: system.mats00: bank 0 way 1: write array 3 row 1 = 0x138df7eec7bf30d3
+  54000: system.mats00: bank 0 way 1: write array 3 row 2 = 0x35d8b364ad05b2e6
+  56000: system.mats00: bank 0 way 1: write array 3 row 3 = 0x7647764c6574fd05
+  58000: system.mats00: bank 0 way 1: write array 3 row 4 = 0xd06b0312c78d803b
+  60000: system.mats00: bank 0 way 1: write array 3 row 5 = 0x9f1f07060acc72dc
+  62000: system.mats00: bank 0 way 1: write array 3 row 6 = 0x67f47aa9dee2d551
+  64000: system.mats00: bank 0 way 1: write array 3 row 7 = 0x3da2cf29e9c04a79
+  66000: system.mats00: bank 0 way 1: write array 3 row 8 = 0xb7c85eae469d474f
+  68000: system.mats00: bank 0 way 1: write array 3 row 9 = 0x29bc165836da8a65
+  70000: system.mats05: bank 1 way 2: write array 0 row 0 = 0xcb6bda596509b4f4
+src/mem/cache/pic/arb_test_client.cc:66: info: system.filler: 35 ops done, 0 reads checked
+1351000: system.scheduler: Got request for addr 0x10028000
+1352000: system.scheduler: Got request for addr 0x10028008
+1352000: system.scheduler: Decoding request addr=0x10028000 value=0x4800
+1352000: system.scheduler: SET_SRC to 0x4800
+1353000: system.scheduler: Got request for addr 0x10028018
+1353000: system.scheduler: Decoding request addr=0x10028008 value=0x4
+1353000: system.scheduler: SET_DST to 0x4
+1354000: system.scheduler: Decoding request addr=0x10028018 value=0x5000008010340901
+1355000: system.scheduler: raw datapayload: 0x5000008010340901
+1355000: system.scheduler: SET_PARAM CAL
+1356000: system.scheduler: Enqueue the Task to queue1357000: system.scheduler: Send cmd state request1359000: system.setup_router: system.setup_router: EXE -> matID 4 (bank 0 way 1)
+1359000: system.mats00: bank 0 way 1: EXE set-up nBuf=1 nCal=3 accWidth=16 R_base_bit=0 R_block_row=9 L_block_row=1 L_precision=0 L_vec_fetch_addr=0x4800 signed_L=0 signed_R_last_exist=0
+1359000: system.scheduler: Send cal request to cache bank
+1360000: system.scheduler: Got downstream response for addr 0
+1360000: system.scheduler: CB COMPLETION RESPONSE port=6
+1361000: system.mats00: bank 0 way 1: request L row 18432
+1363000: system.mats05: bank 1 way 2: read array 0 row 0 = 0xcb6bda596509b4f4
+1366000: system.mats00: bank 0 way 1: vecBuf <- 0xcb6bda596509b4f4
+src/learning_gem5/PIC/mat/mat.cc:303: info: system.mats00: bank 0 way 1 finished, 1 L rows loaded, vecBuf=0xcb6bda596509b4f4, array checksum=0x6ecaf97ff28139fb, 0 array accesses dropped while busy
+Exiting @ tick 1381000 because Mat finished
+3351000: system.mats00: bank 0 way 1: read array 0 row 0 = 0x89007900850076
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2000 = 0x89007900850076
+3354000: system.mats00: bank 0 way 1: read array 0 row 1 = 0x6e0089006f006e
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2001 = 0x6e0089006f006e
+3357000: system.mats00: bank 0 way 1: read array 0 row 2 = 0x6e008900740084
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2002 = 0x6e008900740084
+3360000: system.mats00: bank 0 way 1: read array 0 row 3 = 0xdead000000002003
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2003 = 0xdead000000002003
+3363000: system.mats00: bank 0 way 1: read array 1 row 0 = 0xcbb8422467f7180c
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2200 = 0xcbb8422467f7180c
+3366000: system.mats00: bank 0 way 1: read array 1 row 1 = 0x547adcd80f6e3801
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2201 = 0x547adcd80f6e3801
+3369000: system.mats00: bank 0 way 1: read array 1 row 2 = 0x6062888091347c8a
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2202 = 0x6062888091347c8a
+3372000: system.mats00: bank 0 way 1: read array 1 row 3 = 0xe2715d4d958ab4a0
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2203 = 0xe2715d4d958ab4a0
+3375000: system.mats00: bank 0 way 1: read array 1 row 4 = 0x951903dcd9956cb1
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2204 = 0x951903dcd9956cb1
+3378000: system.mats00: bank 0 way 1: read array 1 row 5 = 0x66cf5ab4529820bb
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2205 = 0x66cf5ab4529820bb
+3381000: system.mats00: bank 0 way 1: read array 1 row 6 = 0x3f0bf457d38f9857
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2206 = 0x3f0bf457d38f9857
+3384000: system.mats00: bank 0 way 1: read array 1 row 7 = 0xccd8aab1e7486cd0
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2207 = 0xccd8aab1e7486cd0
+3387000: system.mats00: bank 0 way 1: read array 1 row 8 = 0x73ec129705805df0
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2208 = 0x73ec129705805df0
+3390000: system.mats00: bank 0 way 1: read array 1 row 9 = 0x8a012f71ad52c6c0
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2209 = 0x8a012f71ad52c6c0
+3393000: system.mats00: bank 0 way 1: read array 2 row 0 = 0x3097a639c70cad23
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2400 = 0x3097a639c70cad23
+3396000: system.mats00: bank 0 way 1: read array 2 row 1 = 0x6f7c915d08bebb07
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2401 = 0x6f7c915d08bebb07
+3399000: system.mats00: bank 0 way 1: read array 2 row 2 = 0xc97bf168002e13d2
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2402 = 0xc97bf168002e13d2
+3402000: system.mats00: bank 0 way 1: read array 2 row 3 = 0x685bcf51876c186d
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2403 = 0x685bcf51876c186d
+3405000: system.mats00: bank 0 way 1: read array 2 row 4 = 0x10e715198ce1dc
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2404 = 0x10e715198ce1dc
+3408000: system.mats00: bank 0 way 1: read array 2 row 5 = 0xd27e45cc01579c16
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2405 = 0xd27e45cc01579c16
+3411000: system.mats00: bank 0 way 1: read array 2 row 6 = 0x4f71bf904d1f41fd
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2406 = 0x4f71bf904d1f41fd
+3414000: system.mats00: bank 0 way 1: read array 2 row 7 = 0x9e8332948c9605b3
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2407 = 0x9e8332948c9605b3
+3417000: system.mats00: bank 0 way 1: read array 2 row 8 = 0xdd21b2d76543ad6c
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2408 = 0xdd21b2d76543ad6c
+3420000: system.mats00: bank 0 way 1: read array 2 row 9 = 0xbed2a249972907eb
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2409 = 0xbed2a249972907eb
+3423000: system.mats00: bank 0 way 1: read array 3 row 0 = 0xacecdfc2c3a53e22
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2600 = 0xacecdfc2c3a53e22
+3426000: system.mats00: bank 0 way 1: read array 3 row 1 = 0x138df7eec7bf30d3
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2601 = 0x138df7eec7bf30d3
+3429000: system.mats00: bank 0 way 1: read array 3 row 2 = 0x35d8b364ad05b2e6
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2602 = 0x35d8b364ad05b2e6
+3432000: system.mats00: bank 0 way 1: read array 3 row 3 = 0x7647764c6574fd05
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2603 = 0x7647764c6574fd05
+3435000: system.mats00: bank 0 way 1: read array 3 row 4 = 0xd06b0312c78d803b
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2604 = 0xd06b0312c78d803b
+3438000: system.mats00: bank 0 way 1: read array 3 row 5 = 0x9f1f07060acc72dc
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2605 = 0x9f1f07060acc72dc
+3441000: system.mats00: bank 0 way 1: read array 3 row 6 = 0x67f47aa9dee2d551
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2606 = 0x67f47aa9dee2d551
+3444000: system.mats00: bank 0 way 1: read array 3 row 7 = 0x3da2cf29e9c04a79
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2607 = 0x3da2cf29e9c04a79
+3447000: system.mats00: bank 0 way 1: read array 3 row 8 = 0xb7c85eae469d474f
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2608 = 0xb7c85eae469d474f
+3450000: system.mats00: bank 0 way 1: read array 3 row 9 = 0x29bc165836da8a65
+src/mem/cache/pic/arb_test_client.cc:110: info: system.reader: read 0x2609 = 0x29bc165836da8a65
+src/mem/cache/pic/arb_test_client.cc:66: info: system.reader: 34 ops done, 34 reads checked
+Exiting @ tick 3452000 because ArbTestClient done

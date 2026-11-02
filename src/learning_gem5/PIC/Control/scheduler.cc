@@ -206,6 +206,10 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
             DPRINTF(Scheduler, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::CB:
+            // MatSetUpRouter answers once the target Mat has its set-up.
+            // RTL CMD_resolver_new fire_EXE (L571) goes back to idle the
+            // next cycle too; the Mat's finish is tracked separately.
+            isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
             DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
@@ -479,15 +483,20 @@ Scheduler::processPrepareTaskEvent()
             break;
         }
         case pic::ModuleID::CAL: {
-            uint32_t R_Valid_nRols = static_cast<uint32_t>((dataPayload >> 30) &0x3FF);
-            uint8_t nBufPerMat = static_cast<uint8_t>((dataPayload >> 28) &0x3);
-            uint8_t nCalPerMat = static_cast<uint8_t>((dataPayload >> 26) &0x3);
-            uint8_t Base_R_Bit = static_cast<uint8_t>((dataPayload >> 23) &0x7);
-            uint8_t L_Precision = static_cast<uint8_t>((dataPayload >> 20) &0x7);
-            uint8_t L_Block_Row = static_cast<uint8_t>((dataPayload >> 12) &0xFF);
-            bool SignL = static_cast<bool>((dataPayload >> 11) &0x1);
-            bool SignR_bitLast = static_cast<bool>((dataPayload >> 10) &0x1);
-            bool accWidth = static_cast<bool>((dataPayload >> 9) &0x1);
+            // Scala: CMD_resolver_new.enq_EXE (L1014) -- EXE's "others",
+            // first field in the lowest bits (ISA.c EXE()). gem5's
+            // SET_PARAM puts "others" at bit 8 (packParam). needL is not
+            // used by the RTL either.
+            const pic::ExeParams exe = pic::unpackExeParams(dataPayload >> 8);
+            uint32_t R_Valid_nRols = exe.validRRows;
+            uint8_t nBufPerMat = exe.buffersPerMat;
+            uint8_t nCalPerMat = exe.calculationsPerMat;
+            uint8_t Base_R_Bit = exe.firstRBit;
+            uint8_t L_Precision = exe.leftPrecisionMinusOne;
+            uint8_t L_Block_Row = exe.leftBlockRows;
+            bool SignL = exe.signedLeft;
+            bool SignR_bitLast = exe.signedRightLastBit;
+            bool accWidth = exe.accumulator32Bit;
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm

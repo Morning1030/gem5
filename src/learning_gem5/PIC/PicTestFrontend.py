@@ -28,7 +28,8 @@ class PicTestFrontend(ClockedObject):
 
     trace = Param.String(
         "p2s",
-        "Frontend trace: p2s, acc, or load (commands from load_cmds)",
+        "Frontend trace: p2s, acc, load (commands from load_cmds), or cal "
+        "(commands from cal_cmds)",
     )
 
     load_cmds = VectorParam.String(
@@ -36,6 +37,17 @@ class PicTestFrontend(ClockedObject):
         "trace 'load': one LOAD per entry, "
         "'<src> <dst> <row> <bytePerRow> <offset>' (src = DRAM vaddr, "
         "dst = array address in 64-bit words); command IDs count from 1",
+    )
+
+    # Same fields, same order as RTL ISA.c EXE().
+    cal_cmds = VectorParam.String(
+        [],
+        "trace 'cal': one EXE per entry, '<baseLAddr> <targetMatID> "
+        "<R_Valid_nRols> <nBufPerMat> <nCalPerMat> <Base_R_Bit> "
+        "<L_Precision> <L_Block_Row> <SignL> <SignR_bitLast> <accWidth> "
+        "<needL>' (baseLAddr = array address of the first L word, "
+        "targetMatID = way * 4 + bank, accWidth 1 = 32-bit); command IDs "
+        "count from 1",
     )
 
     acc_bit_width_code = Param.Unsigned(

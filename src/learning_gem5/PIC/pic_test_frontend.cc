@@ -20,6 +20,7 @@ PicTestFrontend::PicTestFrontend(const PicTestFrontendParams &params)
       exitOnFinish(params.exit_on_finish),
       trace(params.trace),
       loadCmds(params.load_cmds),
+      calCmds(params.cal_cmds),
       accBitWidthCode(static_cast<uint8_t>(params.acc_bit_width_code)),
       sendEvent([this] { processSendEvent(); }, name() + ".send_event")
 {
@@ -130,6 +131,36 @@ PicTestFrontend::buildProtocolSmokeTrace()
             append(PicFunctionBuilder::load(
                 std::stoull(src, nullptr, 0), std::stoull(dst, nullptr, 0),
                 size, commandId++));
+        }
+        return;
+    }
+
+    if (trace == "cal") {
+        // Scala: ISA.c EXE() -- one EXE (SET_SRC = baseLAddr, SET_DST =
+        // targetMatID, SET_PARAM CAL) per entry, fields in EXE()'s order.
+        uint8_t commandId = 1;
+        for (const std::string &line : calCmds) {
+            std::istringstream in(line);
+            std::vector<uint64_t> f;
+            std::string word;
+            while (in >> word)
+                f.push_back(std::stoull(word, nullptr, 0));
+            panic_if(f.size() != 12, "%s bad cal command '%s' (12 fields)",
+                     name(), line);
+            // ISA_defines.scala ISA_EXE: field widths.
+            panic_if(f[1] > mask(6) || f[2] > mask(10) || f[3] > mask(2) ||
+                     f[4] > mask(2) || f[5] > mask(3) || f[6] > mask(3) ||
+                     f[7] > mask(8) || f[8] > 1 || f[9] > 1 || f[10] > 1 ||
+                     f[11] > 1,
+                     "%s cal '%s' does not fit EXE's fields", name(), line);
+
+            ExeParams exe{
+                static_cast<uint16_t>(f[2]), static_cast<uint8_t>(f[3]),
+                static_cast<uint8_t>(f[4]), static_cast<uint8_t>(f[5]),
+                static_cast<uint8_t>(f[6]), static_cast<uint8_t>(f[7]),
+                f[8] != 0, f[9] != 0, f[10] != 0, f[11] != 0};
+            append(PicFunctionBuilder::exe(
+                f[0], static_cast<uint8_t>(f[1]), commandId++, exe));
         }
         return;
     }

@@ -128,6 +128,7 @@ class Mat : public ClockedObject
     unsigned cycles = 0;
     const unsigned maxCycles;
     const Cycles startCycles;
+    const bool waitForSetup;
     const bool pic;
     const unsigned bankIndex;
     const unsigned way;
@@ -151,6 +152,12 @@ class Mat : public ClockedObject
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
     void startup() override;
+
+    unsigned bank() const { return bankIndex; }
+    unsigned wayIndex() const { return way; }
+
+    /** One EXE's set-up (wait_for_setup Mats), from MatSetUpRouter. */
+    void startCal(const mat_fsm::SetUpIO &cmd);
 };
 
 } // namespace gem5

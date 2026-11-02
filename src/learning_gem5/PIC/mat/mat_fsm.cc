@@ -64,13 +64,41 @@ MatFSM::tickBackground(const SetUpIO &setUpIo)
         datapath_.latchMArrayRow(mArrayReadAddrWirePrev_);
     }
 
+    // ---- RegNext: M-array write ------------------------------------------
+    // Scala: Controller, io.write_M_Array_En := RegNext(write_M_array_En_wire)
+    // ("need delay ref to wave form"), and when(RegNext(...))
+    // write_M_Array_RowAdr_reg + 1. The write lands the cycle AFTER cal /
+    // post_process asked for it, and Mat.scala writes
+    // dataOut_to_M_array = Cat(wBuf.reverse) as wBuf is at the start of
+    // this cycle -- i.e. including the accumulate of the cycle the request
+    // was made in, but not this cycle's (below). pre_check's reset of the
+    // address, later in this step, overrides the + 1.
+    if (writeMArrayEnWirePrev_) {
+        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
+        writeMArrayRowAdrReg_ += 1;
+    }
+
+    // ---- combinational flags ---------------------------------------------
+    // Scala: Controller, is_wBuf_ptr_end / is_last_L_block_row. Wires of
+    // this cycle's register values, so they are taken before the
+    // accumulate below moves wbuf_ptr_reg (that move takes effect at the
+    // end of the cycle).
+    // CONFIRMED (Controller.scala:152): `wbuf_ptr_reg===(segNum_in_per_word-1)`
+    // -- a fixed hardware-width constant (WBufNumSlots-1), NOT nCal-1.
+    isWBufPtrEnd_ = (wbufPtrReg_ == WBufNumSlots - 1);
+
+    // CONFIRMED (Controller.scala:151):
+    // `val is_last_L_block_row=(_L_vec_ptr_cur===_L_block_row)` -- exact
+    // equality, not >=.
+    isLastLBlockRow_ = (lVecPtrCur_ == lBlockRow_);
+
     // ---- RegNext: wBuf accumulate pipeline -----------------------------
     writeWBuf_ = writeWBufWirePrev_;
     if (writeWBuf_) {
         // Gather MatMac's control-plane inputs from this FSM's own
-        // registers (section 12) -- readCArrayEn_ still holds the LAST
-        // cal() cycle's per-lane gate, matching the R data that cal()
-        // read on that same cycle (writeWBufWire_'s RegNext delay).
+        // registers (section 12). Scala: PolyArray, mac_dataOut :=
+        // Mux(isPICMode_Mac(mode), mac.io.dataOut, 0.U) -- a lane's MAC
+        // output is gated by its array mode.
         MacControl ctrl;
         ctrl.lBitSliceId = static_cast<unsigned>(lBitSliceIdPtr_);
         ctrl.bitIdR = bitIdR_;
@@ -78,7 +106,9 @@ MatFSM::tickBackground(const SetUpIO &setUpIo)
         ctrl.signedL = signedL_;
         ctrl.signedRLastExist = signedRLastExist_;
         ctrl.lPrecisionReg = static_cast<unsigned>(lPrecisionReg_);
-        ctrl.macEnable = readCArrayEn_;
+        for (unsigned i = 0; i < NumArrays; ++i) {
+            ctrl.macEnable[i] = (arrayModeReg_[i] == ArrayMode::Mac);
+        }
 
         const int macResult = MatMac::sumOfMac(datapath_, ctrl);
         datapath_.accumulate(wbufPtrReg_, accWidthReg_, isFirstSlice_, mArrayDoutValid_, macResult);
@@ -91,16 +121,6 @@ MatFSM::tickBackground(const SetUpIO &setUpIo)
         // overflow like any hardware adder.
         wbufPtrReg_ = (wbufPtrReg_ + bufPtrInc) % WBufNumSlots;
     }
-
-    // ---- combinational wires, recomputed fresh every cycle -------------
-    // CONFIRMED (Controller.scala:152): `wbuf_ptr_reg===(segNum_in_per_word-1)`
-    // -- a fixed hardware-width constant (WBufNumSlots-1), NOT nCal-1.
-    isWBufPtrEnd_ = (wbufPtrReg_ == WBufNumSlots - 1);
-
-    // CONFIRMED (Controller.scala:151):
-    // `val is_last_L_block_row=(_L_vec_ptr_cur===_L_block_row)` -- exact
-    // equality, not >=.
-    isLastLBlockRow_ = (lVecPtrCur_ == lBlockRow_);
 
     (void)setUpIo;  // not consumed directly by tickBackground itself
 }
@@ -328,21 +348,16 @@ MatFSM::cal(const SetUpIO & /*setUpIo*/)
     }
     datapath_.readCArray(oldAddr, readCArrayEn_);
 
-    // CONFIRMED (point 2 above): gated on oldAddr != 0 too.
+    // CONFIRMED (point 2 above): gated on oldAddr != 0 too. The write
+    // itself lands next cycle (tickBackground()); the read of the next
+    // M row is issued this cycle.
     if (isWBufPtrEnd_ && oldAddr != 0) {
         writeMArrayEnWire_ = true;
-        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
-        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
-        if (isFirstSlice_) {
-            readMArrayEnWire_ = false;
-        } else {
+        if (!isFirstSlice_) {
             mArrayReadAddrWire_ = readMArrayRowAdrReg_;
             readMArrayEnWire_ = true;
             readMArrayRowAdrReg_ += 1;
         }
-    } else {
-        writeMArrayEnWire_ = false;
-        readMArrayEnWire_ = false;
     }
 
     if (oldAddr == cArrayEndPtr_) {
@@ -374,19 +389,18 @@ MatFSM::postProcess(const SetUpIO & /*setUpIo*/)
     //      accWidth-dependent (Controller.scala:340,
     //      `Mux(accWidth_reg===ACC_32BIT,1.U,0.U)`), mirroring
     //      mainIdle()'s own reset.
+    // In branches (1) and (2) the write itself lands next cycle, in
+    // pre_check (tickBackground()), with the accumulate of this cycle --
+    // the job's last result -- already in wBuf.
     if (isWBufPtrEnd_) {
         // branch (1): writeMArrayEnWire_ only. wbufPtrReg_ deliberately
         // left untouched.
         writeMArrayEnWire_ = true;
-        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
-        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
 
     } else if (isLastLBlockRow_) {
         // branch (2): buffer not full, but no more rows remain in this
         // bit-slice's sweep -- flush the partial contents.
         writeMArrayEnWire_ = true;
-        datapath_.commitWBufToMArray(writeMArrayRowAdrReg_);
-        writeMArrayRowAdrReg_ += 1;  // ASSUMPTION -- see REGISTER_TABLE.md
         wbufPtrReg_ = (accWidthReg_ == AccWidth32Bit) ? 1 : 0;
         skipReadMArray_ = false;
 
@@ -395,7 +409,6 @@ MatFSM::postProcess(const SetUpIO & /*setUpIo*/)
         // carry the partial accumulation forward to the next row without
         // flushing. wbufPtrReg_ NOT reset (only "reset" is spec'd for
         // the other two branches, so absence here means "carries over").
-        writeMArrayEnWire_ = false;
         skipReadMArray_ = true;
     }
 
@@ -495,6 +508,17 @@ MatFSM::step(const SetUpIO &setUpIo)
     // handler overwrites them.
     tickBackground(setUpIo);
 
+    // Scala: Controller, write_wBuf_wire / read_M_array_En_wire /
+    // write_M_array_En_wire = WireInit(false.B), io.read_C_ArrayEn init
+    // false -- every wire starts the cycle at its default; only the
+    // current state's handler drives it. Without this, write_wBuf stays
+    // asserted after cal and wBuf keeps accumulating in pre_check and
+    // main_wait_L.
+    writeWBufWire_ = false;
+    readMArrayEnWire_ = false;
+    writeMArrayEnWire_ = false;
+    readCArrayEn_.fill(false);
+
     const MainState next = dispatchCurrentState(setUpIo);
 
     // Snapshot this cycle's freshly-computed wires so the NEXT step()'s
@@ -502,6 +526,7 @@ MatFSM::step(const SetUpIO &setUpIo)
     readMArrayEnWirePrev_ = readMArrayEnWire_;
     mArrayReadAddrWirePrev_ = mArrayReadAddrWire_;
     writeWBufWirePrev_ = writeWBufWire_;
+    writeMArrayEnWirePrev_ = writeMArrayEnWire_;
 
     state_ = next;
     return state_;

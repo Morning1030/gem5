@@ -23,12 +23,13 @@ Mat::Mat(const MatParams &params) :
     arrayLatency(params.array_latency),
     maxCycles(params.max_cycles),
     startCycles(params.start_cycles),
+    waitForSetup(params.wait_for_setup),
     pic(params.pic),
     bankIndex(params.bank_index),
     way(params.way),
     tags(params.tags)
 {
-    setUp.exec = true;
+    setUp.exec = !waitForSetup;
     setUp.nBuf = params.n_buf;
     setUp.nCal = params.n_cal;
     setUp.accWidth = params.acc_width;
@@ -59,9 +60,38 @@ Mat::getPort(const std::string &if_name, PortID idx)
 void
 Mat::startup()
 {
-    // A normal cache Mat has no controller, so it never runs a job.
-    if (pic)
+    // A normal cache Mat has no controller, so it never runs a job. A
+    // wait_for_setup Mat starts in startCal().
+    if (pic && !waitForSetup)
         schedule(tickEvent, clockEdge(startCycles));
+}
+
+// Scala: Bank.scala L63-76 -- set_up_io.exec reaches only the Mat whose
+// index matches set_up_addr; Controller.scala main_idle then takes the
+// fields and starts cal(). Called by MatSetUpRouter.
+void
+Mat::startCal(const mat_fsm::SetUpIO &cmd)
+{
+    panic_if(!pic, "%s: EXE sent to a normal cache Mat", name());
+    panic_if(!waitForSetup, "%s: EXE sent to a Mat that runs its own "
+             "cal() (wait_for_setup is False)", name());
+    // RTL: Controller only looks at exec in main_idle, so an EXE sent to a
+    // busy Mat is lost. Panic instead, so a test that does that fails.
+    panic_if(fsm.state() != mat_fsm::MainState::MainIdle ||
+             tickEvent.scheduled(),
+             "%s: EXE sent while the Mat is busy", name());
+
+    setUp = cmd;
+    setUp.exec = true;
+    DPRINTF(MatBank, "bank %u way %u: EXE set-up nBuf=%u nCal=%u "
+            "accWidth=%u R_base_bit=%u R_block_row=%u L_block_row=%u "
+            "L_precision=%u L_vec_fetch_addr=%#llx signed_L=%d "
+            "signed_R_last_exist=%d\n", bankIndex, way, setUp.nBuf,
+            setUp.nCal, setUp.accWidth, setUp.R_base_bit, setUp.R_block_row,
+            setUp.L_block_row, setUp.L_precision,
+            (unsigned long long)setUp.L_vec_fetch_addr, setUp.signed_L,
+            setUp.signed_R_last_exist);
+    schedule(tickEvent, nextCycle());
 }
 
 // request_vec.fire: the request was granted (accepted).
