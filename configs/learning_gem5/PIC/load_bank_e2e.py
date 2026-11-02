@@ -18,20 +18,32 @@
 # Mat's bank and way are its own parameters, so that check does not depend
 # on the arbiter's address decode.
 #
-# Run (both steps write into the output directory):
-#   build/RISCV/gem5.opt --debug-flags=MatBank,PICLoadCtl,PICDMA,PICReadPost,Scheduler \
+# Build (only after changing C++; scons must not pick up conda's python):
+#   export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)
+#   scons build/RISCV/gem5.opt -j$(sysctl -n hw.ncpu)
+#
+# Run (one run does all five LOADs, A..E; both steps write into the output
+# directory):
+#   build/RISCV/gem5.opt \
+#       --debug-flags=MatBank,PICLoadCtl,PICDMA,PICReadPost,Scheduler,PicMmioTransport \
 #       --debug-file=trace.txt --outdir=m5out/load_bank_e2e \
 #       configs/learning_gem5/PIC/load_bank_e2e.py
 #   python3 configs/learning_gem5/PIC/check_load_bank.py m5out/load_bank_e2e
 #
-# Files:
-#   load_test_input.txt    -- the LOADs, the DRAM pattern, every expected word
-#   load_test_expected.csv -- the expected words, one per line
+# Expected: the first step ends with "PASS: 148 reads matched @ tick
+# 300444000" (139 words + 9 guards). The second prints each LOAD's latency
+# (currently 105, 308, 197, 228, 169 cycles for A..E) and ends with
+# "PASS: every word landed in the right bank/Mat/array/wordline ...".
+#
+# Files in m5out/load_bank_e2e (LOAD 0..4 there are cases A..E):
+#   load_test_input.txt    -- each LOAD's settings, the DRAM bytes of every
+#                             row, every expected word
+#   load_test_expected.csv -- the expected words (golden), one per line
 #   load_test_result.txt   -- readback result (written only if all matched)
 #   load_test_location.txt -- check_load_bank.py's result, with each
 #                             LOAD's latency
 #   trace.txt              -- debug trace, including every Mat write
-# simerr.txt has every read back ("... OK").
+#   simerr.txt             -- every read back ("... OK")
 
 import os
 import sys
