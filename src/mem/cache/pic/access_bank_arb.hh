@@ -26,8 +26,9 @@
  *   3 autoLoadVec
  * bankFetch_module / accumulator / autoLoadVec additionally wire
  * .dataFromBank := accessArb.io.dataReadFromBank and .dataReadValid :=
- * accessArb.io.dataReadValid(ID) in the RTL -- not modeled here yet (no
- * reading client is implemented). The three P2S clients' io.accessArray has
+ * accessArb.io.dataReadValid(ID) in the RTL. Here the read data goes back
+ * on the reading client's own port (autoload_side, acc_side), picked by the
+ * client ID carried with the Mat access. The three P2S clients' io.accessArray has
  * NO dataFromBank/dataReadValid fields at all -- they always send
  * optype=WRITE (P2S_L_ctl.scala:236, P2S_R_ctl.scala:407,
  * P2S_R_T_ctl.scala:149) and are structurally incapable of receiving read
@@ -95,9 +96,10 @@
  * Port index doubles as (BankArbClient - kClientP2S_L), i.e. index 0/1/2
  * map to kClientP2S_L/kClientP2S_R/kClientP2S_R_T. Client 0
  * (load_post_process) is ReadPostProcess on load_post_side, same WRITE
- * protocol. Client 3 (autoLoadVec) is autoload_side. Clients 1-2
- * (bankFetch_module/accumulator) have no gem5 SimObject yet --
- * postRequest()/tick() still accept them by id for whenever that changes.
+ * protocol. Client 3 (autoLoadVec) is autoload_side. Client 2
+ * (accumulator) is acc_side: 8-byte READ/WRITE, address = pkt->getAddr()
+ * in the 17-bit array layout. Client 1 (bankFetch_module) has no gem5
+ * SimObject yet -- postRequest()/tick() still accept it by id.
  *
  * Request: a P2S engine sends a MemCmd::WriteReq packet carrying a
  * P2SWritePayload (pic_dpm_types.hh) on its cb_port. handleRequest()
@@ -139,6 +141,7 @@
 #define __MEM_CACHE_PIC_ACCESS_BANK_ARB_HH__
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -312,6 +315,36 @@ class AccessBankArb : public ClockedObject
         void recvRespRetry() override;
     };
 
+    /**
+     * Port for the Accumulator (kClientAccumulator): 8-byte READs and
+     * WRITEs. A WRITE is acked at grant, like P2S. A READ is answered when
+     * its Mat response comes back. Several READs can be waiting for the
+     * Mat at once, so responses are queued and sent in order.
+     */
+    class AccPort : public ResponsePort
+    {
+      private:
+        AccessBankArb *owner;
+        bool needRetry;
+        std::deque<PacketPtr> respQueue;
+
+      public:
+        AccPort(const std::string &name, AccessBankArb *owner) :
+            ResponsePort(name), owner(owner), needRetry(false)
+        { }
+
+        void sendPacket(PacketPtr pkt);
+        AddrRangeList getAddrRanges() const override;
+        void trySendRetry();
+
+      protected:
+        Tick recvAtomic(PacketPtr pkt) override
+        { panic("recvAtomic unimpl."); }
+        void recvFunctional(PacketPtr pkt) override { }
+        bool recvTimingReq(PacketPtr pkt) override;
+        void recvRespRetry() override;
+    };
+
   public:
     /**
      * Assert io.accessArray(clientId).valid with @p req.
@@ -370,8 +403,8 @@ class AccessBankArb : public ClockedObject
      */
     void setArrayAddrToBank(std::function<unsigned(uint32_t)> fn);
 
-    // dataReadFromBank()/dataReadValid() intentionally not present -- see
-    // the file header comment: no reading client is implemented yet.
+    // dataReadFromBank()/dataReadValid() are not separate calls: read data
+    // goes back on the reading client's port (handleMatResponse()).
 
   private:
     enum class ArbState { Access, Block };
@@ -416,6 +449,12 @@ class AccessBankArb : public ClockedObject
      *  READ instead of WRITE. */
     bool handleAutoLoadRequest(PacketPtr pkt);
 
+    /** Handle one READ or WRITE from the Accumulator. Posts it under
+     *  kClientAccumulator; held in pendingReqPkt until granted. Returns
+     *  false (caller should needRetry) if a request is already waiting for
+     *  its grant. */
+    bool handleAccRequest(PacketPtr pkt);
+
     /** One arbiter clock edge: calls tick(), and if it granted a client,
      *  turns that client's held request packet into a response and sends
      *  it out the matching port, then frees that client's slot via
@@ -430,6 +469,8 @@ class AccessBankArb : public ClockedObject
     AutoLoadPort autoLoadPort;
     /** Client 0 (kClientLoadPostProcess): ReadPostProcess bank writes. */
     P2SPort loadPostPort;
+    /** Client 2 (kClientAccumulator). */
+    AccPort accPort;
 
     /** clientId -> the request packet held until that client is granted;
      *  see handleRequest()/handleAutoLoadRequest(). */
@@ -471,6 +512,15 @@ class AccessBankArb : public ClockedObject
 
     /** The one AutoLoadL read in flight, until its response is sent. */
     PacketPtr autoLoadPkt = nullptr;
+
+    /** Send the Mat's read data back to the Accumulator for the oldest
+     *  granted ACC read. */
+    void finishAccRead(const uint8_t *data);
+
+    /** ACC reads already granted, still waiting for their Mat response,
+     *  oldest first. RTL Accumulator.scala proc_read sends the next read
+     *  right after a grant without waiting for dataReadValid. */
+    std::deque<PacketPtr> accReadFifo;
 };
 
 } // namespace gem5

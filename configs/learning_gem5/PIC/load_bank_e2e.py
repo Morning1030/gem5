@@ -1,7 +1,8 @@
 # LOAD into the cache banks, end to end:
 #
-#   LoadTestClient (stands in for the Scheduler's ld_port)
-#     -> Load_ctl -> DMA_read_page_split (+ TLBReqScheduler) -> DRAM
+#   PicTestFrontend (SET_SRC/DST/SIZE/PARAM per LOAD) -> PicMmioTransport
+#     -> Scheduler (decode, ld_port) -> Load_ctl
+#     -> DMA_read_page_split (+ TLBReqScheduler) -> DRAM
 #     -> ReadPostProcess -> AccessBankArb (client 0) -> real Mats
 #
 # Five LOADs exercise one-shot merging, strided rows, an unaligned DRAM
@@ -11,24 +12,38 @@
 # wrong value panics. Words next to each LOAD's range that nothing writes
 # must read 0.
 #
-# Where each word landed is checked separately by check_load_bank.py,
-# from the Mats' own write log (debug flag MatBank: "bank B way W: write
-# array A row R = V"). A Mat's bank and way are its own parameters, so
-# that check does not depend on the arbiter's address decode.
+# check_load_bank.py then checks, from trace.txt, that every LOAD finished
+# before the read back started, and where each word landed, from the Mats'
+# own log (debug flag MatBank: "bank B way W: write array A row R = V"). A
+# Mat's bank and way are its own parameters, so that check does not depend
+# on the arbiter's address decode.
 #
-# Run (both steps write into the output directory):
-#   build/RISCV/gem5.opt --debug-flags=MatBank,PICLoadCtl,PICDMA,PICReadPost \
+# Build (only after changing C++; scons must not pick up conda's python):
+#   export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)
+#   scons build/RISCV/gem5.opt -j$(sysctl -n hw.ncpu)
+#
+# Run (one run does all five LOADs, A..E; both steps write into the output
+# directory):
+#   build/RISCV/gem5.opt \
+#       --debug-flags=MatBank,PICLoadCtl,PICDMA,PICReadPost,Scheduler,PicMmioTransport \
 #       --debug-file=trace.txt --outdir=m5out/load_bank_e2e \
 #       configs/learning_gem5/PIC/load_bank_e2e.py
 #   python3 configs/learning_gem5/PIC/check_load_bank.py m5out/load_bank_e2e
 #
-# Files:
-#   load_test_input.txt    -- the LOADs, the DRAM pattern, every expected word
-#   load_test_expected.csv -- the expected words, one per line
+# Expected: the first step ends with "PASS: 148 reads matched @ tick
+# 300444000" (139 words + 9 guards). The second prints each LOAD's latency
+# (currently 105, 308, 197, 228, 169 cycles for A..E) and ends with
+# "PASS: every word landed in the right bank/Mat/array/wordline ...".
+#
+# Files in m5out/load_bank_e2e (LOAD 0..4 there are cases A..E):
+#   load_test_input.txt    -- each LOAD's settings, the DRAM bytes of every
+#                             row, every expected word
+#   load_test_expected.csv -- the expected words (golden), one per line
 #   load_test_result.txt   -- readback result (written only if all matched)
-#   load_test_location.txt -- check_load_bank.py's result
+#   load_test_location.txt -- check_load_bank.py's result, with each
+#                             LOAD's latency
 #   trace.txt              -- debug trace, including every Mat write
-# simerr.txt has each LOAD's latency and every read back ("... OK").
+#   simerr.txt             -- every read back ("... OK")
 
 import os
 import sys
@@ -58,9 +73,10 @@ def split_addr(a):
 
 
 def dram_byte(a):
-    """DRAM test pattern: one byte per address, every byte different from
-    its neighbours, so a shifted or dropped byte shows up."""
-    return ((a * 0x9E) ^ (a >> 7) ^ 0x5A) & 0xFF
+    """DRAM test pattern: a hash of the whole address (every bit counts),
+    so a shifted or dropped byte, or a LOAD that reads from the wrong
+    region, gives different data."""
+    return ((a * 0x9E3779B97F4A7C15) % (1 << 64)) >> 56
 
 
 # (name, src vaddr, dst array address, row, bytePerRow, offset)
@@ -125,25 +141,6 @@ system.memory = SimpleMemory(range=system.mem_ranges[0], latency='10ns')
 system.memory.port = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
-# test case front-end
-system.pic_transport = PicMmioTransport(
-    system=system,
-    request_gap=1,
-    protocol_retry_delay=50,
-)
-
-system.test_frontend = PicTestFrontend(
-    transport=system.pic_transport,
-    start_delay=1,
-    inter_command_gap=1,
-    exit_on_finish=False,
-    trace="load"
-)
-
-# scheduler
-system.scheduler = Scheduler(system=system)
-system.cmd_state_helper = CmdStateHelper(system=system)
-
 # Load path, one SimObject per RTL module.
 system.load_ctl = Load_ctl()
 system.dma = DMA_read_page_split(chunk_bytes=64, block_bytes=64,
@@ -151,9 +148,6 @@ system.dma = DMA_read_page_split(chunk_bytes=64, block_bytes=64,
 system.tlb_sched = TLBReqScheduler()
 system.read_post = ReadPostProcess()
 
-system.pic_transport.mmio_port = system.scheduler.inst_port
-system.scheduler.csh_port = system.cmd_state_helper.inst_port
-system.load_ctl.cmd_side = system.scheduler.ld_port
 system.load_ctl.dma_side = system.dma.req_side
 system.load_ctl.post_side = system.read_post.req_side
 system.dma.data_side = system.read_post.data_side
@@ -174,14 +168,27 @@ system.idle_p2s = [ArbTestClient(kind='p2s', ops=[]) for _ in range(3)]
 for i, c in enumerate(system.idle_p2s):
     c.port = system.bank_arb.p2s_side[i]
 
-# system.loader = LoadTestClient(
-#     loads=[f"{src:#x} {dst:#x} {row} {bpr} {off}"
-#            for _, src, dst, row, bpr, off in CASES],
-#     exit_when_done=True,
-# )
-# system.loader.port = system.load_ctl.cmd_side
+# Command path: the frontend writes each LOAD's SET registers like a CPU
+# would; the Scheduler decodes them and sends the LOAD out ld_port.
+system.pic_transport = PicMmioTransport(request_gap=1,
+                                        protocol_retry_delay=50)
+system.test_frontend = PicTestFrontend(
+    transport=system.pic_transport,
+    trace="load",
+    load_cmds=[f"{src:#x} {dst:#x} {row} {bpr} {off}"
+               for _, src, dst, row, bpr, off in CASES],
+    # The frontend is done once every SET is sent, not when the LOADs
+    # are; the read back below is what ends the run.
+    exit_on_finish=False,
+)
+system.scheduler = Scheduler()
+system.cmd_state_helper = CmdStateHelper()
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
+system.scheduler.ld_port = system.load_ctl.cmd_side
 
-# Read back through the arbiter, by array address.
+# Read back through the arbiter, by array address. READ_START is far past
+# the last LOAD; check_load_bank.py confirms that from trace.txt.
 system.arb_reader = ArbTestClient(
     kind='autoload',
     ops=[f"R {a:#x} {v:#x}" for _, a, v in expected] +
@@ -197,7 +204,7 @@ system.arb_reader.port = system.bank_arb.autoload_side
 outdir = m5.options.outdir
 with open(os.path.join(outdir, 'load_test_input.txt'), 'w') as f:
     f.write("DRAM pattern: byte at address a = "
-            "((a * 0x9E) ^ (a >> 7) ^ 0x5A) & 0xFF\n")
+            "((a * 0x9E3779B97F4A7C15) mod 2^64) >> 56\n")
     f.write("Array address = [matID(4) | bank(2) | array(2) | wordline(9)]"
             ", one 64-bit word each\n\n")
     for ci, (name, src, dst, row, bpr, off) in enumerate(CASES):
@@ -242,20 +249,12 @@ for _, src, dst, row, bpr, off in CASES:
 print(f"{len(CASES)} LOADs, {len(expected)} words, {len(guards)} guards")
 
 ev = m5.simulate()
-assert ev.getCause() == "LoadTestClient done", ev.getCause()
-loads_done = m5.curTick()
-read_start = READ_START * 1000   # 1GHz: 1000 ticks per cycle
-assert loads_done < read_start, (
-    f"LOADs took until tick {loads_done}; raise READ_START")
-print(f"All LOADs done @ tick {loads_done}")
-
-ev = m5.simulate()
 assert ev.getCause() == "ArbTestClient done", ev.getCause()
 
 total_reads = len(expected) + len(guards)
 with open(os.path.join(outdir, 'load_test_result.txt'), 'w') as f:
-    f.write(f"PASS: {len(CASES)} LOADs, all LOADs done @ tick "
-            f"{loads_done}\n")
+    f.write(f"PASS: {len(CASES)} LOADs sent through PicTestFrontend -> "
+            f"Scheduler\n")
     f.write(f"{len(expected)} words + {len(guards)} guards read back "
             f"through the arbiter: {total_reads} reads, all matched\n")
 print(f"PASS: {total_reads} reads matched @ tick {m5.curTick()}")

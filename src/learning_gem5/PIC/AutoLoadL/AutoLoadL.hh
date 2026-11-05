@@ -15,7 +15,7 @@ namespace gem5
 
 struct AutoLoadLPayload
 {
-    uint64_t source;  // request: L row index in the cache bank
+    uint64_t source;  // request: 17-bit array address of the L word
     uint64_t data;    // response: the 64-bit L row
 };
 

@@ -24,6 +24,14 @@ class Mat(ClockedObject):
     pic = Param.Bool(True, "PIC-capable Mat; False = storage only")
 
     start_cycles = Param.Cycles(1, "Cycles before the first step")
+
+    # True: the cal() set-up comes from the Scheduler's EXE (through
+    # MatSetUpRouter, RTL BanksShell/Bank set_up_io), and the set-up
+    # parameters below and start_cycles are not used. False: the Mat runs
+    # the cal() given by its parameters at start_cycles.
+    wait_for_setup = Param.Bool(
+        False, "Start cal() only when an EXE set-up arrives"
+    )
     max_cycles = Param.Unsigned(100000, "Panic if not finished by then")
 
     # Optional: reports this Mat's non-idle span into tags.setMatBusy()
@@ -58,4 +66,6 @@ class Mat(ClockedObject):
     l_precision = Param.Unsigned(0, "L_precision")
     signed_l = Param.Bool(False, "signed_L")
     signed_r_last_exist = Param.Bool(False, "signed_R_last_exist")
-    l_vec_fetch_addr = Param.UInt64(0, "L row index this Mat starts at")
+    l_vec_fetch_addr = Param.UInt64(
+        0, "17-bit array address of this Mat's first L word"
+    )

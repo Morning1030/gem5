@@ -971,17 +971,23 @@ void test_full_pipeline_cal_step_computes_real_mac_into_wbuf()
     CHECK(fsm.datapath().wBuf()[0] == 4);
 }
 
+// Scala: Controller, io.write_M_Array_En := RegNext(write_M_array_En_wire)
+// -- post_process only raises the wire; the M word is written the next
+// cycle (pre_check).
 void test_post_process_commits_wbuf_to_marray()
 {
     MatFSM fsm;
     fsm.setStateForTest(MainState::PostProcess);
-    fsm.setIsWBufPtrEndForTest(true);
+    fsm.setWbufPtrRegForTest(WBufNumSlots - 1);   // is_wBuf_ptr_end
     std::array<int16_t, WBufNumSlots> wBuf = {0x1111, 0x2222, 0x3333, 0x4444};
     fsm.datapath().setWBufForTest(wBuf);
     SetUpIO io;
 
-    fsm.runStateHandlerOnlyForTest(io);
+    fsm.step(io);   // post_process: write_M_array_En_wire
+    CHECK(fsm.writeMArrayEnWire() == true);
+    CHECK(fsm.datapath().mArrayWord(0) == 0);
 
+    fsm.step(io);   // pre_check: io.write_M_Array_En, the word lands
     CHECK(fsm.datapath().mArrayWord(0) == 0x4444333322221111ULL);
 }
 

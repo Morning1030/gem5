@@ -7,6 +7,7 @@
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/PICBankArb.hh"
+#include "mem/packet_access.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -41,12 +42,14 @@ constexpr uint32_t kWithinMatMask =
 class ArbMatSenderState : public Packet::SenderState
 {
   public:
-    ArbMatSenderState(unsigned _clientId, bool _isRead)
-        : clientId(_clientId), isRead(_isRead)
+    ArbMatSenderState(unsigned _clientId, bool _isRead, uint32_t _addr)
+        : clientId(_clientId), isRead(_isRead), addr(_addr)
     {}
 
     const unsigned clientId;
     const bool isRead;
+    /** Full 17-bit array address of the access. */
+    const uint32_t addr;
 };
 } // namespace
 
@@ -64,6 +67,7 @@ AccessBankArb::AccessBankArb(const Params &p)
       bankReadyVec(p.num_banks, true),
       autoLoadPort(p.name + ".autoload_side", this),
       loadPostPort(p.name + ".load_post_side", kClientLoadPostProcess, this),
+      accPort(p.name + ".acc_side", this),
       tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent"),
       requestorId(p.system->getRequestorId(this)),
       matsPerBank(p.mats_per_bank),
@@ -127,6 +131,9 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
     }
     if (if_name == "load_post_side") {
         return loadPostPort;
+    }
+    if (if_name == "acc_side") {
+        return accPort;
     }
     if (if_name == "mat_side" &&
         static_cast<size_t>(idx) < matPorts.size()) {
@@ -273,6 +280,68 @@ AccessBankArb::AutoLoadPort::recvRespRetry()
 }
 
 // ---------------------------------------------------------------------------
+// AccPort
+// ---------------------------------------------------------------------------
+
+void
+AccessBankArb::AccPort::sendPacket(PacketPtr pkt)
+{
+    DPRINTF(PICBankArb, "AccessBankArb: sending resp %s to Accumulator\n",
+            pkt->print());
+    // Keep responses in order: queue behind any the Accumulator refused.
+    if (!respQueue.empty() || !sendTimingResp(pkt)) {
+        DPRINTF(PICBankArb, "AccessBankArb: Accumulator resp queued\n");
+        respQueue.push_back(pkt);
+    }
+}
+
+AddrRangeList
+AccessBankArb::AccPort::getAddrRanges() const
+{
+    AddrRangeList ranges;
+    ranges.push_back(AddrRange(0, MaxAddr));
+    return ranges;
+}
+
+void
+AccessBankArb::AccPort::trySendRetry()
+{
+    if (needRetry && respQueue.empty()) {
+        needRetry = false;
+        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to "
+                "Accumulator\n");
+        sendRetryReq();
+    }
+}
+
+bool
+AccessBankArb::AccPort::recvTimingReq(PacketPtr pkt)
+{
+    DPRINTF(PICBankArb, "AccessBankArb: got req %s from Accumulator\n",
+            pkt->print());
+
+    if (!respQueue.empty() || needRetry) {
+        needRetry = true;
+        return false;
+    }
+    if (!owner->handleAccRequest(pkt)) {
+        needRetry = true;
+        return false;
+    }
+    return true;
+}
+
+void
+AccessBankArb::AccPort::recvRespRetry()
+{
+    assert(!respQueue.empty());
+    while (!respQueue.empty() && sendTimingResp(respQueue.front())) {
+        respQueue.pop_front();
+    }
+    trySendRetry();
+}
+
+// ---------------------------------------------------------------------------
 // Request/response handling
 // ---------------------------------------------------------------------------
 
@@ -344,6 +413,42 @@ AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
     return true;
 }
 
+bool
+AccessBankArb::handleAccRequest(PacketPtr pkt)
+{
+    panic_if(pkt->getSize() != sizeof(uint64_t),
+             "AccessBankArb: Accumulator sent a %u-byte request, "
+             "expected %zu", pkt->getSize(), sizeof(uint64_t));
+
+    ReqPackage req;
+    req.addr = static_cast<uint32_t>(pkt->getAddr());
+    if (pkt->isRead()) {
+        req.optype = AccessArrayType::READ;
+    } else {
+        panic_if(!pkt->isWrite(), "AccessBankArb: Accumulator sent %s",
+                 pkt->print());
+        req.optype = AccessArrayType::WRITE;
+        req.dataWrittenToBank = pkt->getLE<uint64_t>();
+    }
+
+    // One not-yet-granted request at a time, like every other client.
+    if (!postRequest(kClientAccumulator, req)) {
+        return false;
+    }
+
+    panic_if(pendingReqPkt.count(kClientAccumulator) != 0,
+             "AccessBankArb: Accumulator already has a pending packet");
+    pendingReqPkt.emplace(kClientAccumulator, pkt);
+
+    DPRINTF(PICBankArb, "AccessBankArb: Accumulator posted %s addr=%#x\n",
+            pkt->isRead() ? "read" : "write", req.addr);
+
+    if (!tickEvent.scheduled()) {
+        schedule(tickEvent, clockEdge(Cycles(1)));
+    }
+    return true;
+}
+
 void
 AccessBankArb::processTickEvent()
 {
@@ -369,6 +474,27 @@ AccessBankArb::processTickEvent()
                 const uint64_t zero = 0;
                 finishAutoLoad(reinterpret_cast<const uint8_t *>(&zero));
             }
+        } else if (grant->clientId == kClientAccumulator) {
+            if (pkt->isRead()) {
+                // Answered when the Mat responds (in grant order); the next
+                // ACC request may come in right away.
+                DPRINTF(PICBankArb, "AccessBankArb: Accumulator read "
+                        "fired (bank %s), waiting for Mat\n",
+                        grant->committedThisCycle ? "ready" : "busy");
+                accReadFifo.push_back(pkt);
+                if (matPorts.empty()) {
+                    const uint64_t zero = 0;
+                    finishAccRead(reinterpret_cast<const uint8_t *>(&zero));
+                }
+            } else {
+                DPRINTF(PICBankArb, "AccessBankArb: Accumulator write "
+                        "fired (bank %s), acking it\n",
+                        grant->committedThisCycle ? "ready" : "busy");
+                pkt->makeResponse();
+                accPort.sendPacket(pkt);
+            }
+            // Its one pending-request slot just freed up.
+            accPort.trySendRetry();
         } else {
             DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s), "
                     "acking it\n", grant->clientId,
@@ -388,7 +514,9 @@ AccessBankArb::processTickEvent()
     // a bank.
     const bool anyPending = std::any_of(reqValid.begin(), reqValid.end(),
                                          [](bool v) { return v; });
-    if (anyPending || isBlocked()) {
+    // A client answering a retry right away (the Accumulator) may already
+    // have scheduled the next tick from inside this one.
+    if ((anyPending || isBlocked()) && !tickEvent.scheduled()) {
         schedule(tickEvent, clockEdge(Cycles(1)));
     }
 }
@@ -522,7 +650,7 @@ AccessBankArb::sendToMat(unsigned clientId, const ReqPackage &req,
         pkt->setData(
             reinterpret_cast<const uint8_t *>(&req.dataWrittenToBank));
     }
-    pkt->pushSenderState(new ArbMatSenderState(clientId, isRead));
+    pkt->pushSenderState(new ArbMatSenderState(clientId, isRead, req.addr));
 
     DPRINTF(PICBankArb, "AccessBankArb: client %u -> Mat[%u] %s\n",
             clientId, idx, pkt->print());
@@ -540,14 +668,38 @@ AccessBankArb::handleMatResponse(PacketPtr pkt)
 {
     auto *ss = safe_cast<ArbMatSenderState *>(pkt->popSenderState());
     if (ss->isRead) {
-        panic_if(!autoLoadPkt, "AccessBankArb: read response with no "
-                 "AutoLoadL request in flight");
-        finishAutoLoad(pkt->getConstPtr<uint8_t>());
+        // Send the read data back to the client that asked for it.
+        if (ss->clientId == kClientAutoLoadVec) {
+            panic_if(!autoLoadPkt, "AccessBankArb: read response with no "
+                     "AutoLoadL request in flight");
+            finishAutoLoad(pkt->getConstPtr<uint8_t>());
+        } else if (ss->clientId == kClientAccumulator) {
+            panic_if(accReadFifo.empty(), "AccessBankArb: read response "
+                     "with no Accumulator read in flight");
+            panic_if(accReadFifo.front()->getAddr() != ss->addr,
+                     "AccessBankArb: Accumulator read response for addr "
+                     "%#x, but the oldest ACC read is addr %#x", ss->addr,
+                     accReadFifo.front()->getAddr());
+            finishAccRead(pkt->getConstPtr<uint8_t>());
+        } else {
+            panic("AccessBankArb: read response for client %u, which has "
+                  "no read port", ss->clientId);
+        }
     }
     // A write was already acked to its client at grant.
     delete ss;
     delete pkt;
     return true;
+}
+
+void
+AccessBankArb::finishAccRead(const uint8_t *data)
+{
+    PacketPtr pkt = accReadFifo.front();
+    accReadFifo.pop_front();
+    pkt->setData(data);
+    pkt->makeResponse();
+    accPort.sendPacket(pkt);
 }
 
 void

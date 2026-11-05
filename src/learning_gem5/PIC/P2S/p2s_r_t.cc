@@ -1,5 +1,6 @@
 #include "learning_gem5/PIC/P2S/p2s.hh"
 #include "learning_gem5/PIC/Control/scheduler.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 #include <cstring>
@@ -17,6 +18,8 @@ P2S_R_T::P2S_R_T(const P2S_R_TParams &params) :
     requestorId(params.system->getRequestorId(this, "P2S_R_T")),
     pendingReqPkt(nullptr),
     p2sDone(true),
+    exitOnDone(params.exit_on_done),
+    exitDelay(params.exit_delay),
     relative_offset_buf(7),
     arrayID_offset(8),
     bufArray(64),
@@ -60,6 +63,10 @@ P2S_R_T::CPUSidePort::sendPacket(PacketPtr pkt)
         owner->pendingReqPkt = nullptr;
         blockedPacket = nullptr;
         DPRINTF(P2S_R_T, "P2S COMPLETE: send back to scheduler\n");
+        if (owner->exitOnDone) {
+            exitSimLoop(owner->name() + " done", 0,
+                        curTick() + owner->cyclesToTicks(owner->exitDelay));
+        }
     }
     else blockedPacket = pkt;
 }
@@ -178,7 +185,8 @@ P2S_R_T::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     }
     else if (picPortID == PICPortID::CB) {
         delete pkt;
-        if (p2sDone) {
+        // done only after the last queued write is acked
+        if (p2sDone && bitSliceQueue.empty()) {
             pendingReqPkt->makeResponse();
             instPort.sendPacket(pendingReqPkt);
         }
@@ -190,6 +198,10 @@ P2S_R_T::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     }
 }
 
+// Scala: P2S_R_T_ctl, state req_dma -- one Load_req per row
+// (byte_per_row = nCols, row = 1, offset DontCare); after it is sent,
+// dramAddr += next_row_offset_bytes. Load_ctl only reads the packet's
+// address and size, so nothing else rides on the packet.
 void
 P2S_R_T::processDMAReadEvent() {
     // read one row in R Tile
@@ -210,14 +222,6 @@ P2S_R_T::processDMAReadEvent() {
     // pkt->dataDynamic(reinterpret_cast<uint8_t*>(dmaRTPayload));
     // DMARTPayload dmaRTPayload{nCols, dramAddr};
     // pkt->setData(reinterpret_cast<uint8_t*>(&dmaRTPayload));
-    DMADescriptor desc {
-        dramAddr,
-        0,
-        nCols,
-        0,
-        0
-    };
-    pkt->pushSenderState(new DMASenderState(desc));
     DMAPort.sendPacket(pkt);
     DPRINTF(P2S_R_T, "Send DMA read request to %llx\n", dramAddr);
     dramAddr += next_row_offset_bytes;
@@ -231,11 +235,11 @@ P2S_R_T::processBitSliceEvent() {
     // determine the address
     uint64_t curArrayID = base_arrayID_to_store + arrayID_offset[bit_ptr];
     // inform("curArrayID = %llu", curArrayID);
-    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS * 8 + row_store_ptr * 8;
+    uint64_t arrayAddrEnq = curArrayID * WORDLINENUMS + row_store_ptr;
  
     RequestPtr request = std::make_shared<Request>(
         arrayAddrEnq,
-        sizeof(uint64_t),            // bitSlice
+        sizeof(P2SWritePayload),     // store address + bitSlice
         0,                           // TBD
         requestorId
     );
@@ -244,8 +248,8 @@ P2S_R_T::processBitSliceEvent() {
     bitSlicePkt->allocate();
     // P2SWritePayload *p2sWritePayload = new P2SWritePayload{arrayAddrEnq, bitSlice};
     // bitSlicePkt.dataDynamic(reinterpret_cast<uint8_t*>(p2sWritePayload));
-    // P2SWritePayload p2sWritePayload{arrayAddrEnq, bitSlice};
-    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&bitSlice));
+    P2SWritePayload p2sWritePayload{arrayAddrEnq, bitSlice};
+    bitSlicePkt->setData(reinterpret_cast<uint8_t*>(&p2sWritePayload));
 
     // enqueue into write queue
     bitSliceQueue.push_back(bitSlicePkt);

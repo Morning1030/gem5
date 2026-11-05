@@ -164,7 +164,7 @@ Scheduler::handleRequest(PacketPtr pkt)
     //     schedule(decodeEvent, clockEdge(Cycles(1)));
     // }
     if (!instQueue.empty() && currState == TaskState::IDLE &&
-        !decodeEvent.scheduled()) { 
+        !decodeEvent.scheduled() && !prepareTaskEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
     return true;
@@ -176,10 +176,19 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
     DPRINTF(Scheduler, "Got downstream response for addr %#llx\n",
             static_cast<unsigned long long>(pkt->getAddr()));
 
+    // Set below only when this response ends the running task.
+    isEnqCmd = false;
+
     switch (picPortID) {
         case PICPortID::CC:
             panic_if(!pkt->isResponse(),"Scheduler expected CC completion response");
             DPRINTF(Scheduler, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            break;
+        case PICPortID::LD:
+            // Load_ctl answers when the whole LOAD is in the banks (RTL busy_load falling).
+            isEnqCmd = true;
+            panic_if(!pkt->isResponse(),"Scheduler expected LD completion response");
+            DPRINTF(Scheduler, "LD COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SL:
             isEnqCmd = true;
@@ -197,6 +206,10 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
             DPRINTF(Scheduler, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::CB:
+            // MatSetUpRouter answers once the target Mat has its set-up.
+            // RTL CMD_resolver_new fire_EXE (L571) goes back to idle the
+            // next cycle too; the Mat's finish is tracked separately.
+            isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
             DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
@@ -223,6 +236,12 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
     if (isEnqCmd) {
         delete pkt;
         currState = TaskState::IDLE;
+        // Decoding and dispatch stop while a task runs; pick them back up.
+        if (!instQueue.empty() && !decodeEvent.scheduled() &&
+            !prepareTaskEvent.scheduled())
+            schedule(decodeEvent, clockEdge(Cycles(1)));
+        if (!nextTask.empty() && !triggerEvent.scheduled())
+            schedule(triggerEvent, clockEdge(Cycles(1)));
     }
 
     return true;
@@ -282,7 +301,7 @@ Scheduler::processDecodeEvent()
         case static_cast<uint64_t>(pic::SetRegister::Size): {
             row = static_cast<uint16_t>(dataPayload & 0x7FF);                      // 11 bit LSB
             byte_per_row = static_cast<uint16_t>((dataPayload >> 11) & 0x7FF);     // 11 bit
-            offset = static_cast<uint16_t>((dataPayload >> 22)& 0x3FFF);            // 15 bit
+            offset = static_cast<uint16_t>((dataPayload >> 22)& 0x7FFF);            // 15 bit
             DPRINTF(Scheduler, "SET_SIZE to (%u, %u, %u)\n", row, byte_per_row, offset);
             delete pkt;
             break;
@@ -299,8 +318,12 @@ Scheduler::processDecodeEvent()
 
     }
 
-    // waiting for instructions, self looping at each cycle
-    if (currState == TaskState::IDLE && !instQueue.empty()) {
+    // waiting for instructions, self looping at each cycle. After a
+    // SET_PARAM, wait for processPrepareTaskEvent: the next SETs belong to
+    // the next command and must not overwrite src/dst/size before this
+    // task has taken them (RTL CMD_resolver latches them at SET_PARAM).
+    if (currState == TaskState::IDLE && !instQueue.empty() &&
+        !prepareTaskEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));    // temporarily set to 1
     }
 
@@ -313,6 +336,13 @@ Scheduler::processPrepareTaskEvent()
 {
     uint64_t dataPayload = paramPkt->getLE<uint64_t>();
     delete paramPkt;                                               // maybe like this?
+
+    // This task takes src/dst/size below, in this event; the next
+    // command's SETs can be decoded from the next cycle on.
+    if (currState == TaskState::IDLE && !instQueue.empty() &&
+        !decodeEvent.scheduled()) {
+        schedule(decodeEvent, clockEdge(Cycles(1)));
+    }
 
     // Task nextEnqTask;
     pic::ModuleID moduleID = static_cast<pic::ModuleID>((dataPayload >> 60)& 0xF);                      // moduleID is bit 60 ~ bit 63
@@ -337,7 +367,9 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::LOAD;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            nextEnqTask.clientID = QryTabClient::LOAD;
+            // CmdStateHelper.scala: LD_P = 5. Must be set: CmdStateHelper
+            // indexes its per-client queues with it.
+            nextEnqTask.clientID = QryTabClient::LD_P;
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
             break;
@@ -359,7 +391,8 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.moduleID = pic::ModuleID::STORE;
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
-            nextEnqTask.clientID = QryTabClient::STORE;
+            // CmdStateHelper.scala: ST_P = 7.
+            nextEnqTask.clientID = QryTabClient::ST_P;
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
             break;
@@ -379,7 +412,9 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_L_Payload p2s_L_Payload{src, dst, byte_per_row, row, precision};
+            // Scala: CMD_resolver_new.enq_P2SL -- next_row_offset_elem is
+            // SET_SIZE offset (rowOffset), _L_block_row is row.
+            P2S_L_Payload p2s_L_Payload{src, dst, offset, row, precision};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_L_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_L;
@@ -404,7 +439,11 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
+            // Scala: CMD_resolver_new.enq_P2SR -- next_row_offset_bytes is
+            // SET_SIZE offset (rowOffset), nRows is row, nCols is
+            // bytePerRow (matR_Col). Fields in P2S_R_Payload order.
+            P2S_R_Payload p2s_R_Payload{src, dst, offset, row, byte_per_row,
+                                        precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R;
@@ -429,7 +468,10 @@ Scheduler::processPrepareTaskEvent()
             PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
             pkt->allocate();
 
-            P2S_R_Payload p2s_R_T_Payload{src, dst, byte_per_row, row, offset, precision, bufNum};
+            // Scala: CMD_resolver_new.enq_P2SR (if_T routes it to
+            // P2S_R_T) -- same fields as P2S_R above.
+            P2S_R_Payload p2s_R_T_Payload{src, dst, offset, row, byte_per_row,
+                                          precision, bufNum};
             pkt->setData(reinterpret_cast<uint8_t*>(&p2s_R_T_Payload));
 
             nextEnqTask.moduleID = pic::ModuleID::P2S_R_T;
@@ -441,15 +483,20 @@ Scheduler::processPrepareTaskEvent()
             break;
         }
         case pic::ModuleID::CAL: {
-            uint32_t R_Valid_nRols = static_cast<uint32_t>((dataPayload >> 30) &0x3FF);
-            uint8_t nBufPerMat = static_cast<uint8_t>((dataPayload >> 28) &0x3);
-            uint8_t nCalPerMat = static_cast<uint8_t>((dataPayload >> 26) &0x3);
-            uint8_t Base_R_Bit = static_cast<uint8_t>((dataPayload >> 23) &0x7);
-            uint8_t L_Precision = static_cast<uint8_t>((dataPayload >> 20) &0x7);
-            uint8_t L_Block_Row = static_cast<uint8_t>((dataPayload >> 12) &0xFF);
-            bool SignL = static_cast<bool>((dataPayload >> 11) &0x1);
-            bool SignR_bitLast = static_cast<bool>((dataPayload >> 10) &0x1);
-            bool accWidth = static_cast<bool>((dataPayload >> 9) &0x1);
+            // Scala: CMD_resolver_new.enq_EXE (L1014) -- EXE's "others",
+            // first field in the lowest bits (ISA.c EXE()). gem5's
+            // SET_PARAM puts "others" at bit 8 (packParam). needL is not
+            // used by the RTL either.
+            const pic::ExeParams exe = pic::unpackExeParams(dataPayload >> 8);
+            uint32_t R_Valid_nRols = exe.validRRows;
+            uint8_t nBufPerMat = exe.buffersPerMat;
+            uint8_t nCalPerMat = exe.calculationsPerMat;
+            uint8_t Base_R_Bit = exe.firstRBit;
+            uint8_t L_Precision = exe.leftPrecisionMinusOne;
+            uint8_t L_Block_Row = exe.leftBlockRows;
+            bool SignL = exe.signedLeft;
+            bool SignR_bitLast = exe.signedRightLastBit;
+            bool accWidth = exe.accumulator32Bit;
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm

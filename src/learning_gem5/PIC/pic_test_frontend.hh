@@ -25,6 +25,8 @@ class PicTestFrontend : public ClockedObject
     const Cycles interCommandGap;
     const bool exitOnFinish;
     const std::string trace;
+    const std::vector<std::string> loadCmds;
+    const std::vector<std::string> calCmds;
     const uint8_t accBitWidthCode;
 
     EventFunctionWrapper sendEvent;
