@@ -85,6 +85,7 @@ Scheduler::CPUSidePort::CPUSidePort(
 bool
 Scheduler::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
+    DPRINTF(Scheduler, "RecvTimingReq");
     return owner->handleRequest(pkt);
 }
 void
@@ -177,31 +178,31 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
             static_cast<unsigned long long>(pkt->getAddr()));
 
     // Set below only when this response ends the running task.
-    isEnqCmd = false;
+    // isEnqCmd = false;
 
     switch (picPortID) {
         case PICPortID::CC:
             panic_if(!pkt->isResponse(),"Scheduler expected CC completion response");
-            DPRINTF(Scheduler, "P2SCC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            DPRINTF(Scheduler, "CC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::LD:
             // Load_ctl answers when the whole LOAD is in the banks (RTL busy_load falling).
-            isEnqCmd = true;
+            // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected LD completion response");
             DPRINTF(Scheduler, "LD COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SL:
-            isEnqCmd = true;
+            // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SL completion response");
             DPRINTF(Scheduler, "P2SL COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SR:
-            isEnqCmd = true;
+            // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SR completion response");
             DPRINTF(Scheduler, "P2SR COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SRT:
-            isEnqCmd = true;
+            // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected P2SRT completion response");
             DPRINTF(Scheduler, "P2SRT COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
@@ -209,22 +210,22 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
             // MatSetUpRouter answers once the target Mat has its set-up.
             // RTL CMD_resolver_new fire_EXE (L571) goes back to idle the
             // next cycle too; the Mat's finish is tracked separately.
-            isEnqCmd = true;
+            // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
             DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::ACC:
-            isEnqCmd = true;
-            panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
-            DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            // isEnqCmd = true;
+            panic_if(!pkt->isResponse(),"Scheduler expected AC completion response");
+            DPRINTF(Scheduler, "ACC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::SC:
             // TODO: fill the resp from switchController to the registers
-            panic_if(!pkt->isResponse(),"Scheduler expected CB completion response");
-            DPRINTF(Scheduler, "CB COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            panic_if(!pkt->isResponse(),"Scheduler expected SC completion response");
+            DPRINTF(Scheduler, "SC COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::CSH:
-            isQueryCmd = true;
+            // isQueryCmd = true;
             // TODO: depends on what kind of query it is
             panic_if(!pkt->isResponse(),"Scheduler expected CSH completion response");
             DPRINTF(Scheduler, "CSH COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
@@ -232,17 +233,15 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
         default:
             DPRINTF(Scheduler, "receive response but not from any known port.\n");
     }
-    // only enq cmd has something to do with currState and resp
-    if (isEnqCmd) {
-        delete pkt;
-        currState = TaskState::IDLE;
-        // Decoding and dispatch stop while a task runs; pick them back up.
-        if (!instQueue.empty() && !decodeEvent.scheduled() &&
-            !prepareTaskEvent.scheduled())
-            schedule(decodeEvent, clockEdge(Cycles(1)));
-        if (!nextTask.empty() && !triggerEvent.scheduled())
-            schedule(triggerEvent, clockEdge(Cycles(1)));
-    }
+
+    delete pkt;
+    currState = TaskState::IDLE;
+    // Decoding and dispatch stop while a task runs; pick them back up.
+    if (!instQueue.empty() && !decodeEvent.scheduled() &&
+        !prepareTaskEvent.scheduled())
+        schedule(decodeEvent, clockEdge(Cycles(1)));
+    if (!nextTask.empty() && !triggerEvent.scheduled())
+        schedule(triggerEvent, clockEdge(Cycles(1)));
 
     return true;
 }
@@ -369,7 +368,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.cmdID = cmdID;
             // CmdStateHelper.scala: LD_P = 5. Must be set: CmdStateHelper
             // indexes its per-client queues with it.
-            nextEnqTask.clientID = QryTabClient::LD_P;
+            nextEnqTask.clientID = QryTabClient::LOAD;
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
             break;
@@ -392,7 +391,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
             // CmdStateHelper.scala: ST_P = 7.
-            nextEnqTask.clientID = QryTabClient::ST_P;
+            nextEnqTask.clientID = QryTabClient::STORE;
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
             break;
@@ -547,9 +546,10 @@ Scheduler::processPrepareTaskEvent()
         }
         case pic::ModuleID::SWITCH: {
             // decode datapayload and set wayID and switch type
+            // isImmCmd = true;
             // wayID = static_cast<uint32_t>(dataPayload & 0xFFFFFFFF);
-            bool op = dataPayload & 0x1;   // switch type, 0 = ALLOC, 1 = FREE
-            uint8_t nLevels = (dataPayload >> 1) & 0xF;
+            bool op = static_cast<uint8_t>((dataPayload >> 8) & 0x1);   // switch type, 0 = FREE, 1 = ALLOC
+            uint8_t nLevels = static_cast<uint8_t>((dataPayload >> 9) & 0xF);
 
             RequestPtr request = std::make_shared<Request>(
                 0,    // the target MMIO address of dpm
@@ -566,9 +566,11 @@ Scheduler::processPrepareTaskEvent()
 
             nextEnqTask.moduleID = pic::ModuleID::SWITCH;
             nextEnqTask.pkt = pkt;
-
-            nextImmTask.push_back(nextEnqTask);
-            DPRINTF(Scheduler, "SET_PARAM SWITCH\n");
+            nextEnqTask.cmdID = cmdID;
+            nextEnqTask.clientID = QryTabClient::SWITCH;
+            // push to nextImmTaskImmediatly
+            // nextImmTask.push_back(nextImmEnqTask);
+            DPRINTF(Scheduler, "SET_PARAM SWITCH, op = %d, nLevels = %d\n", op, nLevels);
             break;
         }
         case pic::ModuleID::QUERY: {
@@ -602,6 +604,9 @@ Scheduler::processPrepareTaskEvent()
     if (nextEnqTask.pkt != nullptr && !enqueEvent.scheduled()) {
         schedule(enqueEvent, clockEdge(Cycles(1)));
     }
+    // if (isImmCmd && !triggerEvent.scheduled()) {
+    //     schedule(triggerEvent, clockEdge(Cycles(1)));
+    // }
 }
 void
 Scheduler::processEnqueEvent() {
@@ -649,47 +654,41 @@ Scheduler::processTriggerEvent()
     }
     // IDLE right now
     else {
-        // check if there's immtask
-        if (!nextImmTask.empty()) {
-            currState = TaskState::SWITCHING;
-            schedule(switchEvent, clockEdge(Cycles(1)));
-        }
-
-        else {
-            if (!nextTask.empty()) {
-                Task t = nextTask.front();
-                switch(t.moduleID) {
-                    case pic::ModuleID::LOAD:
-                        currState = TaskState::LOADING;
-                        schedule(loadEvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::STORE:
-                        currState = TaskState::STORING;
-                        schedule(storeEvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::P2S_L:
-                        currState = TaskState::P2SING;
-                        schedule(p2sLEvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::P2S_R:
-                        currState = TaskState::P2SING;
-                        schedule(p2sREvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::P2S_R_T:
-                        currState = TaskState::P2SING;
-                        schedule(p2sRTEvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::CAL:
-                        currState = TaskState::CALING;
-                        schedule(calEvent, clockEdge(Cycles(1)));
-                        break;
-                    case pic::ModuleID::ACC:
-                        currState = TaskState::ACCING;
-                        schedule(accEvent, clockEdge(Cycles(1)));
-                        break;
-                }
+        if (!nextTask.empty()) {
+            Task t = nextTask.front();
+            switch(t.moduleID) {
+                case pic::ModuleID::LOAD:
+                    currState = TaskState::LOADING;
+                    schedule(loadEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::STORE:
+                    currState = TaskState::STORING;
+                    schedule(storeEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::P2S_L:
+                    currState = TaskState::P2SING;
+                    schedule(p2sLEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::P2S_R:
+                    currState = TaskState::P2SING;
+                    schedule(p2sREvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::P2S_R_T:
+                    currState = TaskState::P2SING;
+                    schedule(p2sRTEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::CAL:
+                    currState = TaskState::CALING;
+                    schedule(calEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::ACC:
+                    currState = TaskState::ACCING;
+                    schedule(accEvent, clockEdge(Cycles(1)));
+                    break;
+                case pic::ModuleID::SWITCH:
+                    currState = TaskState::SWITCHING;
+                    schedule(switchEvent, clockEdge(Cycles(1)));
             }
-
         }
     }
 }
@@ -790,7 +789,7 @@ Scheduler::processSwitchEvent() {
     bool success = switchControllerPort.sendTimingReq(nextTask.front().pkt);
     if (success) {
         DPRINTF(Scheduler, "Send Switch request to switchCtrl\n");
-        nextImmTask.pop_front();
+        nextTask.pop_front();
     }
     else {
         // need to store and retry

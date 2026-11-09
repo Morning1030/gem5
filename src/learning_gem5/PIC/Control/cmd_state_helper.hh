@@ -24,6 +24,7 @@ namespace gem5
         P2S_L,
         P2S_R,
         P2S_R_T,
+        SWITCH,
         total_client
     };
 

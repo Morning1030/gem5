@@ -211,7 +211,7 @@ unpackExeParams(uint64_t others)
 
 constexpr uint64_t packSwitchParams(bool allocate, uint8_t levels)
 {
-    return (static_cast<uint64_t>(levels & mask(5)) << 1) |
+    return (static_cast<uint64_t>(levels & mask(4)) << 1) |
            static_cast<uint64_t>(allocate);
 }
 

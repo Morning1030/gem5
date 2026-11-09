@@ -172,7 +172,8 @@ class Scheduler : public ClockedObject
 
     PacketPtr paramPkt;
     Task nextEnqTask;
-    bool isImmeCmd, isEnqCmd, isQueryCmd;
+    // Task nextImmEnqTask;
+    // bool isImmCmd, isEnqCmd, isQueryCmd;
 
     size_t maxInstQueueSize = 1000; // temporarily set to 1000
 

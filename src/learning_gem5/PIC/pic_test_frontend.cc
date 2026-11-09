@@ -63,6 +63,44 @@ PicTestFrontend::append(
 void
 PicTestFrontend::buildProtocolSmokeTrace()
 {
+    // if (trace == "load") {
+    //     // One LOAD (SET_SRC, SET_DST, SET_SIZE, SET_PARAM) per entry.
+    //     uint8_t commandId = 1;
+    //     for (const std::string &line : loadCmds) {
+    //         std::istringstream in(line);
+    //         std::string src, dst, row, bpr, off;
+    //         in >> src >> dst >> row >> bpr >> off;
+    //         panic_if(off.empty(), "%s bad load command '%s'", name(), line);
+
+    //         SizeFields size{
+    //             static_cast<uint16_t>(std::stoul(row, nullptr, 0)),
+    //             static_cast<uint16_t>(std::stoul(bpr, nullptr, 0)),
+    //             static_cast<uint16_t>(std::stoul(off, nullptr, 0))};
+    //         panic_if(!validSize(size),
+    //                  "%s load '%s' does not fit SET_SIZE (row and "
+    //                  "bytePerRow 11 bits, offset 15 bits)", name(), line);
+
+    //         append(PicFunctionBuilder::load(
+    //             std::stoull(src, nullptr, 0), std::stoull(dst, nullptr, 0),
+    //             size, commandId++));
+    //     }
+    //     return;
+    // }
+    
+    // if (trace == "store") {
+    //     append(
+    //         PicFunctionBuilder::store(
+    //             0x00003000,
+    //             0x00004000,
+    //             512,
+    //             64,
+    //             128,
+    //             1
+    //         ));
+
+    //     return;
+    // }
+
     if (trace == "p2s") {
 
         // SET_SIZE follows CMD_resolver_new.scala: row = rows, bytePerRow =
@@ -110,31 +148,6 @@ PicTestFrontend::buildProtocolSmokeTrace()
         return;
     }
 
-
-    if (trace == "load") {
-        // One LOAD (SET_SRC, SET_DST, SET_SIZE, SET_PARAM) per entry.
-        uint8_t commandId = 1;
-        for (const std::string &line : loadCmds) {
-            std::istringstream in(line);
-            std::string src, dst, row, bpr, off;
-            in >> src >> dst >> row >> bpr >> off;
-            panic_if(off.empty(), "%s bad load command '%s'", name(), line);
-
-            SizeFields size{
-                static_cast<uint16_t>(std::stoul(row, nullptr, 0)),
-                static_cast<uint16_t>(std::stoul(bpr, nullptr, 0)),
-                static_cast<uint16_t>(std::stoul(off, nullptr, 0))};
-            panic_if(!validSize(size),
-                     "%s load '%s' does not fit SET_SIZE (row and "
-                     "bytePerRow 11 bits, offset 15 bits)", name(), line);
-
-            append(PicFunctionBuilder::load(
-                std::stoull(src, nullptr, 0), std::stoull(dst, nullptr, 0),
-                size, commandId++));
-        }
-        return;
-    }
-
     if (trace == "cal") {
         // Scala: ISA.c EXE() -- one EXE (SET_SRC = baseLAddr, SET_DST =
         // targetMatID, SET_PARAM CAL) per entry, fields in EXE()'s order.
@@ -166,20 +179,6 @@ PicTestFrontend::buildProtocolSmokeTrace()
     }
 
     if (trace == "acc") {
-
-        /*
-         * ACC command:
-         *
-         * src          = 0x3000
-         * dst          = 0x4000
-         * command ID   = 4
-         * source count = 2
-         * row count    = 64
-         *
-         * accBitWidthCode:
-         *   0 -> four independent 16-bit lanes
-         *   1 -> two independent 32-bit lanes
-         */
         inform(
             "%s building ACC frontend trace width=%s",
             name(),
@@ -196,20 +195,16 @@ PicTestFrontend::buildProtocolSmokeTrace()
 
         return;
     }
-    if (trace == "load") {
+    
+    if (trace == "switch") {
         append(
-            PicFunctionBuilder::load(
-                0x00003000,
-                0x00004000,
-                512,
-                64,
-                128,
-                1
+            PicFunctionBuilder::switchMode(
+                1,  // alloc
+                7,  // nLevels
+                1 // commandID
             ));
-
         return;
     }
-
 
     panic(
         "%s unknown PicTestFrontend trace '%s'",

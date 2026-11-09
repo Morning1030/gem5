@@ -123,10 +123,10 @@ class PicFunctionBuilder
         return out;
     }
 
-    static std::vector<PicSetRequest> switchMode(bool allocate, uint8_t levels)
+    static std::vector<PicSetRequest> switchMode(bool allocate, uint8_t levels, uint8_t commandId)
     {
         std::vector<PicSetRequest> out;
-        launch(out, ModuleID::SWITCH, 0, packSwitchParams(allocate, levels));
+        launch(out, ModuleID::SWITCH, commandId, packSwitchParams(allocate, levels));
         return out;
     }
 

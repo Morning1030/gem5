@@ -1,4 +1,6 @@
 Import('*')
+# so that you can include pic_cache.py in e2e tests
+PySource('pic','pic_cache.py')
 
 # Scheduler
 SimObject('Control/Scheduler.py', sim_objects=['Scheduler'])
