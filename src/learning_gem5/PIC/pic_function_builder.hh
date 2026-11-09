@@ -44,6 +44,14 @@ class PicFunctionBuilder
     }
 
     static std::vector<PicSetRequest>
+    load(uint64_t dramSource, uint64_t onChipDestination, SizeFields size,
+         uint8_t commandId)
+    {
+        return load(dramSource, onChipDestination, size.row,
+                    size.bytesPerRow, size.rowOffset, commandId);
+    }
+
+    static std::vector<PicSetRequest>
     p2sl(uint64_t dramSource, uint64_t onChipDestination, uint16_t rows,
          uint16_t byte_per_row, uint16_t offset, uint8_t commandId, uint8_t bitWidthMinusOne)
     {

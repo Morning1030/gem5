@@ -369,7 +369,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.cmdID = cmdID;
             // CmdStateHelper.scala: LD_P = 5. Must be set: CmdStateHelper
             // indexes its per-client queues with it.
-            nextEnqTask.clientID = QryTabClient::LD_P;
+            nextEnqTask.clientID = QryTabClient::LOAD;
 
             DPRINTF(Scheduler, "SET_PARAM LOAD\n");
             break;
@@ -392,7 +392,7 @@ Scheduler::processPrepareTaskEvent()
             nextEnqTask.pkt = pkt;
             nextEnqTask.cmdID = cmdID;
             // CmdStateHelper.scala: ST_P = 7.
-            nextEnqTask.clientID = QryTabClient::ST_P;
+            nextEnqTask.clientID = QryTabClient::STORE;
 
             DPRINTF(Scheduler, "SET_PARAM STORE\n");
             break;
