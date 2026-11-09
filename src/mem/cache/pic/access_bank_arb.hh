@@ -1,6 +1,6 @@
 /**
  * AccessBankArb models the single shared RTL AccessBank_Arb.
- * Clients: 0 LoadPostProcess, 1 BankFetch (not connected yet), 2 ACC,
+ * Clients: 0 LoadPostProcess, 1 BankFetch, 2 ACC,
  * 3 AutoLoadVec, 4 P2S_L, 5 P2S_R, 6 P2S_R_T.
  *
  * Request acceptance is RTL fire: recvTimingReq returns false until the
@@ -203,21 +203,23 @@ class AccessBankArb : public ClockedObject
     };
 
     /**
-     * Port for the Accumulator (kClientAccumulator): 8-byte READs and
-     * WRITEs. A WRITE is acked at grant, like P2S. A READ is answered when
-     * its Mat response comes back. Several READs can be waiting for the
-     * Mat at once, so responses are queued and sent in order.
+     * Raw 8-byte request port for ACC and BankFetch. BankFetch only
+     * reads; ACC reads and writes. Writes are ACKed at fire; read data
+     * returns with the Mat response. Each port queues refused responses.
      */
-    class AccPort : public ResponsePort
+    class BankPort : public ResponsePort
     {
       private:
         AccessBankArb *owner;
+        const unsigned clientId;
         bool needRetry;
         std::deque<PacketPtr> respQueue;
 
       public:
-        AccPort(const std::string &name, AccessBankArb *owner) :
-            ResponsePort(name), owner(owner), needRetry(false)
+        BankPort(const std::string &name, unsigned clientId,
+                 AccessBankArb *owner) :
+            ResponsePort(name), owner(owner), clientId(clientId),
+            needRetry(false)
         { }
 
         void sendPacket(PacketPtr pkt);
@@ -336,9 +338,9 @@ class AccessBankArb : public ClockedObject
      *  returns. A refused read remains owned by AutoLoadL. */
     bool handleAutoLoadRequest(PacketPtr pkt);
 
-    /** Accept the selected ACC read/write. Request fire and read-data
-     *  delivery are separate, so multiple reads may be in flight. */
-    bool handleAccRequest(PacketPtr pkt);
+    /** Accept a selected ACC read/write or BankFetch read. Both use
+     *  full 17-bit word addresses; fire is separate from read data. */
+    bool handleBankRequest(PacketPtr pkt, unsigned clientId);
 
     /** Run the clock edge, then ACK an accepted write or register an
      *  accepted read for its eventual Mat response. Repeat each cycle
@@ -352,8 +354,10 @@ class AccessBankArb : public ClockedObject
     AutoLoadPort autoLoadPort;
     /** Client 0 (kClientLoadPostProcess): ReadPostProcess bank writes. */
     P2SPort loadPostPort;
+    /** Client 1 (kClientBankFetch): BankFetch cache-bank reads. */
+    BankPort bankFetchPort;
     /** Client 2 (kClientAccumulator). */
-    AccPort accPort;
+    BankPort accPort;
 
     /** The one packet accepted by this tick's selected client, held only
      *  until processTickEvent routes its ACK or read-response bookkeeping. */
@@ -398,9 +402,13 @@ class AccessBankArb : public ClockedObject
     /** The one AutoLoadL read in flight, until its response is sent. */
     PacketPtr autoLoadPkt = nullptr;
 
-    /** Send the Mat's read data back to the Accumulator for the oldest
-     *  granted ACC read. */
-    void finishAccRead(const uint8_t *data);
+    /** Send Mat data to the oldest granted read of this client. */
+    void finishBankRead(unsigned clientId, const uint8_t *data);
+    std::deque<PacketPtr> &readFifo(unsigned clientId);
+    BankPort &bankPort(unsigned clientId);
+
+    /** BankFetch reads granted, waiting for Mat data in grant order. */
+    std::deque<PacketPtr> bankFetchReadFifo;
 
     /** ACC reads already granted, still waiting for their Mat response,
      *  oldest first. RTL Accumulator.scala proc_read sends the next read

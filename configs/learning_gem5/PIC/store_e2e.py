@@ -123,7 +123,6 @@ system.pic_transport.mmio_port = system.scheduler.inst_port
 system.scheduler.csh_port = system.cmd_state_helper.inst_port
 system.store_ctl.inst_port = system.scheduler.st_port
 system.store_ctl.bank_fetch_port = system.bank_fetch.inst_port
-system.bank_fetch.cb_port = 
 system.bank_fetch.dma_port = system.dma.req_side
 
 system.dma.tlb_side = system.tlb_sched.cpu_side
@@ -133,6 +132,7 @@ system.dma.mem_side = system.membus.cpu_side_ports
 # their own cal() job here, they are only storage.
 cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
 system.bank_arb = AccessBankArb(num_banks=NUM_BANKS)
+system.bank_fetch.cb_port = system.bank_arb.bank_fetch_side
 for mat in cache.mats:
     system.bank_arb.mat_side = mat.array_side 
 system.read_post.bank_side = system.bank_arb.load_post_side

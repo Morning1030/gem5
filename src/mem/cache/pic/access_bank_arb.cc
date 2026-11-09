@@ -65,7 +65,8 @@ AccessBankArb::AccessBankArb(const Params &p)
       bankReadyVec(p.num_banks, true),
       autoLoadPort(p.name + ".autoload_side", this),
       loadPostPort(p.name + ".load_post_side", kClientLoadPostProcess, this),
-      accPort(p.name + ".acc_side", this),
+      bankFetchPort(p.name + ".bank_fetch_side", kClientBankFetch, this),
+      accPort(p.name + ".acc_side", kClientAccumulator, this),
       // Collect the clients' requests before choosing this cycle's grant.
       tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent", false,
                 Event::Progress_Event_Pri),
@@ -131,6 +132,9 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
     }
     if (if_name == "load_post_side") {
         return loadPostPort;
+    }
+    if (if_name == "bank_fetch_side") {
+        return bankFetchPort;
     }
     if (if_name == "acc_side") {
         return accPort;
@@ -283,23 +287,24 @@ AccessBankArb::AutoLoadPort::recvRespRetry()
 }
 
 // ---------------------------------------------------------------------------
-// AccPort
+// BankPort
 // ---------------------------------------------------------------------------
 
 void
-AccessBankArb::AccPort::sendPacket(PacketPtr pkt)
+AccessBankArb::BankPort::sendPacket(PacketPtr pkt)
 {
-    DPRINTF(PICBankArb, "AccessBankArb: sending resp %s to Accumulator\n",
-            pkt->print());
-    // Keep responses in order: queue behind any the Accumulator refused.
+    DPRINTF(PICBankArb, "AccessBankArb: sending resp %s to client %u\n",
+            pkt->print(), clientId);
+    // Keep responses in order: queue behind any this client refused.
     if (!respQueue.empty() || !sendTimingResp(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: Accumulator resp queued\n");
+        DPRINTF(PICBankArb, "AccessBankArb: client %u resp queued\n",
+                clientId);
         respQueue.push_back(pkt);
     }
 }
 
 AddrRangeList
-AccessBankArb::AccPort::getAddrRanges() const
+AccessBankArb::BankPort::getAddrRanges() const
 {
     AddrRangeList ranges;
     ranges.push_back(AddrRange(0, MaxAddr));
@@ -307,37 +312,37 @@ AccessBankArb::AccPort::getAddrRanges() const
 }
 
 void
-AccessBankArb::AccPort::trySendRetry()
+AccessBankArb::BankPort::trySendRetry()
 {
-    if (canRetry() && owner->canAccept(kClientAccumulator)) {
+    if (canRetry() && owner->canAccept(clientId)) {
         needRetry = false;
-        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to "
-                "Accumulator\n");
+        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to client %u\n",
+                clientId);
         sendRetryReq();
     }
 }
 
 bool
-AccessBankArb::AccPort::recvTimingReq(PacketPtr pkt)
+AccessBankArb::BankPort::recvTimingReq(PacketPtr pkt)
 {
-    DPRINTF(PICBankArb, "AccessBankArb: got req %s from Accumulator\n",
-            pkt->print());
+    DPRINTF(PICBankArb, "AccessBankArb: got req %s from client %u\n",
+            pkt->print(), clientId);
 
     if (!respQueue.empty() || needRetry) {
         needRetry = true;
-        owner->waitForGrant(kClientAccumulator);
+        owner->waitForGrant(clientId);
         return false;
     }
-    if (!owner->handleAccRequest(pkt)) {
+    if (!owner->handleBankRequest(pkt, clientId)) {
         needRetry = true;
-        owner->waitForGrant(kClientAccumulator);
+        owner->waitForGrant(clientId);
         return false;
     }
     return true;
 }
 
 void
-AccessBankArb::AccPort::recvRespRetry()
+AccessBankArb::BankPort::recvRespRetry()
 {
     assert(!respQueue.empty());
     while (!respQueue.empty() && sendTimingResp(respQueue.front())) {
@@ -408,11 +413,13 @@ AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
 }
 
 bool
-AccessBankArb::handleAccRequest(PacketPtr pkt)
+AccessBankArb::handleBankRequest(PacketPtr pkt, unsigned clientId)
 {
+    panic_if(clientId == kClientBankFetch && !pkt->isRead(),
+             "AccessBankArb: BankFetch only supports reads");
     panic_if(pkt->getSize() != sizeof(uint64_t),
-             "AccessBankArb: Accumulator sent a %u-byte request, "
-             "expected %zu", pkt->getSize(), sizeof(uint64_t));
+             "AccessBankArb: client %u sent a %u-byte request, "
+             "expected %zu", clientId, pkt->getSize(), sizeof(uint64_t));
 
     ReqPackage req;
     req.addr = static_cast<uint32_t>(pkt->getAddr());
@@ -426,14 +433,15 @@ AccessBankArb::handleAccRequest(PacketPtr pkt)
     }
 
     // One not-yet-granted request at a time, like every other client.
-    if (!postRequest(kClientAccumulator, req)) {
+    if (!postRequest(clientId, req)) {
         return false;
     }
 
     panic_if(grantedPkt, "AccessBankArb: two packets accepted in one grant");
     grantedPkt = pkt;
 
-    DPRINTF(PICBankArb, "AccessBankArb: Accumulator posted %s addr=%#x\n",
+    DPRINTF(PICBankArb, "AccessBankArb: %s posted %s addr=%#x\n",
+            clientId == kClientBankFetch ? "BankFetch" : "Accumulator",
             pkt->isRead() ? "read" : "write", req.addr);
 
     scheduleTick();
@@ -465,21 +473,23 @@ AccessBankArb::processTickEvent()
                 const uint64_t zero = 0;
                 finishAutoLoad(reinterpret_cast<const uint8_t *>(&zero));
             }
-        } else if (grant->clientId == kClientAccumulator) {
+        } else if (grant->clientId == kClientAccumulator ||
+                   grant->clientId == kClientBankFetch) {
             if (pkt->isRead()) {
-                // Answered when the Mat responds (in grant order); the next
-                // ACC request may come in right away.
-                accReadFifo.push_back(pkt);
+                // These are already fired reads, not pending RR inputs.
+                // Match returning data to this client's grant order.
+                readFifo(grant->clientId).push_back(pkt);
                 if (matPorts.empty()) {
                     const uint64_t zero = 0;
-                    finishAccRead(reinterpret_cast<const uint8_t *>(&zero));
+                    finishBankRead(grant->clientId,
+                                   reinterpret_cast<const uint8_t *>(&zero));
                 }
             } else {
                 pkt->makeResponse();
-                accPort.sendPacket(pkt);
+                bankPort(grant->clientId).sendPacket(pkt);
             }
             // Any next request still needs its own RR grant.
-            accPort.trySendRetry();
+            bankPort(grant->clientId).trySendRetry();
         } else {
 
             P2SPort &port = writePort(grant->clientId);
@@ -563,13 +573,13 @@ AccessBankArb::clientCanRetry(unsigned clientId) const
 {
     if (clientId == kClientAutoLoadVec)
         return !autoLoadPkt && autoLoadPort.canRetry();
-    if (clientId == kClientAccumulator)
-        return accPort.canRetry();
+    if (clientId == kClientAccumulator || clientId == kClientBankFetch)
+        return (clientId == kClientBankFetch ? bankFetchPort : accPort).canRetry();
     if (clientId == kClientLoadPostProcess)
         return loadPostPort.canRetry();
     if (clientId >= kClientP2S_L && clientId <= kClientP2S_R_T)
         return p2sPorts[clientId - kClientP2S_L].canRetry();
-    return false;  // BankFetch has no connected client port yet.
+    return false;
 }
 
 void
@@ -577,8 +587,8 @@ AccessBankArb::retryClient(unsigned clientId)
 {
     if (clientId == kClientAutoLoadVec)
         autoLoadPort.trySendRetry();
-    else if (clientId == kClientAccumulator)
-        accPort.trySendRetry();
+    else if (clientId == kClientAccumulator || clientId == kClientBankFetch)
+        bankPort(clientId).trySendRetry();
     else
         writePort(clientId).trySendRetry();
 }
@@ -732,14 +742,16 @@ AccessBankArb::handleMatResponse(PacketPtr pkt)
             panic_if(!autoLoadPkt, "AccessBankArb: read response with no "
                      "AutoLoadL request in flight");
             finishAutoLoad(pkt->getConstPtr<uint8_t>());
-        } else if (ss->clientId == kClientAccumulator) {
-            panic_if(accReadFifo.empty(), "AccessBankArb: read response "
-                     "with no Accumulator read in flight");
-            panic_if(accReadFifo.front()->getAddr() != ss->addr,
-                     "AccessBankArb: Accumulator read response for addr "
-                     "%#x, but the oldest ACC read is addr %#x", ss->addr,
-                     accReadFifo.front()->getAddr());
-            finishAccRead(pkt->getConstPtr<uint8_t>());
+        } else if (ss->clientId == kClientAccumulator ||
+                   ss->clientId == kClientBankFetch) {
+            auto &fifo = readFifo(ss->clientId);
+            panic_if(fifo.empty(), "AccessBankArb: read response with no "
+                     "client %u read in flight", ss->clientId);
+            panic_if(fifo.front()->getAddr() != ss->addr,
+                     "AccessBankArb: client %u read response addr %#x, "
+                     "oldest read addr %#x", ss->clientId, ss->addr,
+                     fifo.front()->getAddr());
+            finishBankRead(ss->clientId, pkt->getConstPtr<uint8_t>());
         } else {
             panic("AccessBankArb: read response for client %u, which has "
                   "no read port", ss->clientId);
@@ -751,14 +763,31 @@ AccessBankArb::handleMatResponse(PacketPtr pkt)
     return true;
 }
 
-void
-AccessBankArb::finishAccRead(const uint8_t *data)
+AccessBankArb::BankPort &
+AccessBankArb::bankPort(unsigned clientId)
 {
-    PacketPtr pkt = accReadFifo.front();
-    accReadFifo.pop_front();
+    panic_if(clientId != kClientAccumulator && clientId != kClientBankFetch,
+             "AccessBankArb: no raw request port for client %u", clientId);
+    return clientId == kClientBankFetch ? bankFetchPort : accPort;
+}
+
+std::deque<PacketPtr> &
+AccessBankArb::readFifo(unsigned clientId)
+{
+    panic_if(clientId != kClientAccumulator && clientId != kClientBankFetch,
+             "AccessBankArb: no read FIFO for client %u", clientId);
+    return clientId == kClientBankFetch ? bankFetchReadFifo : accReadFifo;
+}
+
+void
+AccessBankArb::finishBankRead(unsigned clientId, const uint8_t *data)
+{
+    auto &fifo = readFifo(clientId);
+    PacketPtr pkt = fifo.front();
+    fifo.pop_front();
     pkt->setData(data);
     pkt->makeResponse();
-    accPort.sendPacket(pkt);
+    bankPort(clientId).sendPacket(pkt);
 }
 
 void

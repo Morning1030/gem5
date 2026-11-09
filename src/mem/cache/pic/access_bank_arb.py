@@ -1,8 +1,8 @@
 # -*- mode:python -*-
 
 # mod: p2s_arbiter
-# AccessBankArb -- SimObject. Single round-robin arbiter shared by the P2S
-# engines (and, eventually, the other SysConfig clients) for access to the
+# AccessBankArb -- SimObject. Single round-robin arbiter shared by all
+# seven SysConfig clients for access to the
 # PIC bank hierarchy's shared physical port. See access_bank_arb.hh for the
 # full design note and the port protocol P2S speaks on p2s_side.
 
@@ -30,6 +30,10 @@ class AccessBankArb(ClockedObject):
     # ReadPostProcess.bank_side sends loaded words here as WRITEs
     # (kClientLoadPostProcess, RTL load_post_process.io.accessBank).
     load_post_side = ResponsePort("Port ReadPostProcess sends WRITEs on")
+
+    # BankFetch.cb_port sends 8-byte READ requests with full 17-bit word
+    # addresses here (kClientBankFetch, client 1).
+    bank_fetch_side = ResponsePort("Port BankFetch sends READ requests on")
 
     # The Accumulator's bank_port sends 8-byte READ/WRITE requests here
     # (kClientAccumulator); the address is the 17-bit array address.
