@@ -30,7 +30,7 @@ class Mat(ClockedObject):
     # parameters below and start_cycles are not used. False: the Mat runs
     # the cal() given by its parameters at start_cycles.
     wait_for_setup = Param.Bool(
-        False, "Start cal() only when an EXE set-up arrives"
+        True, "Start cal() only when an EXE set-up arrives"
     )
     max_cycles = Param.Unsigned(100000, "Panic if not finished by then")
 

@@ -87,19 +87,20 @@ PicTestFrontend::buildProtocolSmokeTrace()
     //     return;
     // }
     
-    // if (trace == "store") {
-    //     append(
-    //         PicFunctionBuilder::store(
-    //             0x00003000,
-    //             0x00004000,
-    //             512,
-    //             64,
-    //             128,
-    //             1
-    //         ));
+    
+    if (trace == "store") {
+        append(
+            PicFunctionBuilder::store(
+                0x00003000,
+                0x00004000,
+                512,
+                64,
+                128,
+                8
+            ));
 
-    //     return;
-    // }
+        return;
+    }
 
     if (trace == "p2s") {
 

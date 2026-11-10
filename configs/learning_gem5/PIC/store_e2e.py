@@ -3,18 +3,11 @@ import sys
 
 import m5
 from m5.objects import *
-
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 '..', '..', '..', 'src', 'learning_gem5', 'PIC'),
-)
 from pic_cache import PICCache
 
 NUM_BANKS = 4
 FIRST_PIC_MAT = 1
 READ_START = 300000   # cycles; readers start after every LOAD is done
-
 
 def array_addr(mat, bank, array, row):
     # [ matID_in_bank(4) | bankID(2) | arrayID_in_mat(2) | wordline(9) ]
@@ -105,14 +98,14 @@ system.test_frontend = PicTestFrontend(
     start_delay=1,
     inter_command_gap=1,
     exit_on_finish=False,
-    trace="load"
+    trace="store"
 )
 
 # scheduler
 system.scheduler = Scheduler(system=system)
 system.cmd_state_helper = CmdStateHelper(system=system)
 
-# Load path, one SimObject per RTL module.
+# Store path, one SimObject per RTL module.
 system.store_ctl = StoreCtrl(system=system)
 system.bank_fetch = BankFetch(system=system)
 system.dma = DMA_write_page_split(system=system)
@@ -234,4 +227,4 @@ print(f"PASS: {total_reads} reads matched @ tick {m5.curTick()}")
 # scons build/ALL/gem5.opt -j$(nproc)
 # build/ALL/gem5.opt \
 #   --debug-flags=Scheduler \
-#   configs/learning_gem5/PIC/load_bank_e2e.py
+#   configs/learning_gem5/PIC/store_e2e.py

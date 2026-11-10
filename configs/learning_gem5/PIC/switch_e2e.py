@@ -81,6 +81,6 @@ print(
 # which python3-config   # 确认指向 /usr/bin/python3-config
 # rm -rf build/ALL/gem5.build
 # scons build/ALL/gem5.opt -j$(nproc)
-# PYTHONPATH=src/learning_gem5/PIC bubild/ALL/gem5.opt \
+# PYTHONPATH=src/learning_gem5/PIC build/ALL/gem5.opt \
 #   --debug-flags=Scheduler \
 #   configs/learning_gem5/PIC/switch_e2e.py
