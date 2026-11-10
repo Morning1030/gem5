@@ -89,6 +89,7 @@ class Accumulator : public ClockedObject
 
     bool handleRequest(PacketPtr pkt);
     bool handleResponse(PacketPtr pkt);
+    void bankRequestAccepted(bool isRead, Addr addr);
 
     void processReadEvent();
     void processWriteEvent();

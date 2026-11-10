@@ -62,8 +62,8 @@ Accumulator::CPUSidePort::sendPacket(PacketPtr pkt)
     if (sendTimingResp(pkt)) {
         owner->pendingReqPkt = nullptr;
         blockedPacket = nullptr;
-        // done goes out when the last write is issued, not when it lands,
-        // so exitDelay must cover the arbiter and the Mat
+        // Done follows the last bank-request fire; a busy bank may still
+        // hold that request, so exitDelay covers the deferred commit.
         if (owner->exitOnDone) {
             exitSimLoop(owner->name() + " done", 0,
                         curTick() + owner->cyclesToTicks(owner->exitDelay));
@@ -101,16 +101,11 @@ Accumulator::MemSidePort::sendPacket(PacketPtr pkt)
         "%s tried to issue a second blocked bank request",
         name());
 
+    const bool isRead = pkt->isRead();
+    const Addr addr = pkt->getAddr();
     if (sendTimingReq(pkt)) {
         blockedPacket = nullptr;
-        if (pkt->isRead()) {
-            if (!owner->readEvent.scheduled())
-                owner->schedule(owner->readEvent, owner->clockEdge(Cycles(1)));
-        }
-        else if (pkt->isWrite()) {
-            if (!owner->writeEvent.scheduled())
-                owner->schedule(owner->writeEvent, owner->clockEdge(Cycles(1)));
-        }
+        owner->bankRequestAccepted(isRead, addr);
     }
     else {
         blockedPacket = pkt;
@@ -214,14 +209,6 @@ Accumulator::processReadEvent()
             static_cast<unsigned long long>(addr));
 
     cacheBankPort.sendPacket(pkt);
-
-    readSourcePtr++;
-
-    if (readSourcePtr < sourceCount) {
-        if (!readEvent.scheduled()) {
-            schedule(readEvent, clockEdge(Cycles(1)));
-        }
-    }
 }
 
 void
@@ -250,6 +237,26 @@ Accumulator::processWriteEvent()
             static_cast<unsigned long long>(accumulatorBuf));
 
     cacheBankPort.sendPacket(pkt);
+}
+
+void
+Accumulator::bankRequestAccepted(bool isRead, Addr addr)
+{
+    if (isRead) {
+        panic_if(state != State::READ || readSourcePtr >= sourceCount,
+                 "%s accepted an unexpected bank read", name());
+        DPRINTF(Accumulator, "ACC READ FIRE row=%u source=%u addr=%#llx\n",
+                rowPtr, readSourcePtr, static_cast<unsigned long long>(addr));
+        ++readSourcePtr;
+        if (readSourcePtr < sourceCount && !readEvent.scheduled())
+            schedule(readEvent, clockEdge(Cycles(1)));
+        return;
+    }
+
+    panic_if(state != State::WRITE_BACK || rowPtr >= totalRows,
+             "%s accepted an unexpected bank write", name());
+    DPRINTF(Accumulator, "ACC WRITE FIRE row=%u addr=%#llx\n", rowPtr,
+            static_cast<unsigned long long>(addr));
     rowPtr++;
 
     if (rowPtr >= totalRows) {
@@ -272,9 +279,11 @@ Accumulator::processWriteEvent()
         accumulatorBuf = 0;
         readSourcePtr = 0;
         readResponses = 0;
-        state = State::READ;
+        state = sourceCount == 0 ? State::WRITE_BACK : State::READ;
 
-        if (!readEvent.scheduled()) {
+        if (sourceCount == 0 && !writeEvent.scheduled()) {
+            schedule(writeEvent, clockEdge(Cycles(1)));
+        } else if (sourceCount != 0 && !readEvent.scheduled()) {
             schedule(readEvent, clockEdge(Cycles(1)));
         }
     }

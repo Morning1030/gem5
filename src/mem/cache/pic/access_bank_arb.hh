@@ -1,140 +1,31 @@
 /**
- * @file
- * AccessBankArb -- functional model of AccessBank_Arb (chipyard reference:
- * bankAccessScheduler.scala), the single round-robin arbiter shared by all
- * clients that route data through a PIC bank's physical port.
+ * AccessBankArb models the single shared RTL AccessBank_Arb.
+ * Clients: 0 LoadPostProcess, 1 BankFetch, 2 ACC,
+ * 3 AutoLoadVec, 4 P2S_L, 5 P2S_R, 6 P2S_R_T.
  *
- * This is the "path selection into the Mat/SRAM" half of the PolymorPIC
- * paper's Arbiter concept: routing DRAM data toward a p2s engine and
- * routing p2s results into the correct Mat. It deliberately knows nothing
- * about ways, sets, or tags -- that's the *other* half of the paper's
- * Arbiter (mode-based CPU/PIC path selection + PAI isolation), which stays
- * in PICLLCTags::accessBlock()/findVictim() since only the tag store has
- * per-way mode state. See the "Bank Access Arbiter" note that used to live
- * in pic_llc_tags.hh for the original design discussion; it has moved here
- * along with the code.
+ * Request acceptance is RTL fire: recvTimingReq returns false until the
+ * client is selected. Only pending valid bits are recorded; refused
+ * packets and their payloads stay with their clients. An Access-state
+ * tick reserves one client and sends its retry. The successful resend
+ * returns true, advances lastGranted, and drives this cycle's bank access.
+ * No per-client payload FIFO exists in the arbiter.
  *
- * ONE AccessBankArb instance is shared cluster-wide -- not one per bank --
- * matching the RTL where all clients arbitrate for a single
- * cache_addr/cache_write/cache_enable/cache_data_to_bank port and the
- * winning request's target bank is decoded from its address afterward.
+ * A fire does not require the bank to be ready. If the target bank is
+ * busy or its Mat refuses the access, the one accepted request is latched
+ * in Block; nobody else fires until that request lands. Mat retries only
+ * mark the held packet ready for a Block-state tick. The completion tick
+ * grants nobody else; normal arbitration resumes the following cycle.
  *
- * Clients (SysConfig.scala:170-177, RRArbiter(new ReqPackage(sysCfg), 7)):
- *   0 load_post_process   4 P2S_L
- *   1 bankFetch_module    5 P2S_R
- *   2 accumulator         6 P2S_R_T
- *   3 autoLoadVec
- * bankFetch_module / accumulator / autoLoadVec additionally wire
- * .dataFromBank := accessArb.io.dataReadFromBank and .dataReadValid :=
- * accessArb.io.dataReadValid(ID) in the RTL. Here the read data goes back
- * on the reading client's own port (autoload_side, acc_side), picked by the
- * client ID carried with the Mat access. The three P2S clients' io.accessArray has
- * NO dataFromBank/dataReadValid fields at all -- they always send
- * optype=WRITE (P2S_L_ctl.scala:236, P2S_R_ctl.scala:407,
- * P2S_R_T_ctl.scala:149) and are structurally incapable of receiving read
- * data, so a response path was not carried over when this was split out of
- * pic_llc_tags.hh; re-add it here (dataReadFromBank()/dataReadValid()) if a
- * reading client is ever implemented.
+ * WRITE ACKs confirm fire, not bank completion. They are sent after the
+ * successful resend has returned to its client, so the client can safely
+ * dequeue before the ACK arrives. READ responses carry Mat data back to
+ * the selected client; they are separate from request acceptance.
  *
- * Per-request fields (bankAccessScheduler.scala:24-28), all P2S ever sets:
- *   addr              : 17-bit array address (bank/Mat/wordline location),
- *                        NOT a cache-line Addr.
- *                          P2S_L   -> pic_write_ptr
- *                          P2S_R   -> arrayAddrEnq
- *                          P2S_R_T -> (curArrayID << 9) + rowPtrStore
- *   optype             : always AccessArrayType.WRITE for P2S.
- *   dataWrittenToBank  : 64-bit bit-plane (extractBits() output).
- * Handshake: standard Decoupled valid/ready.
- *
- * Confirmed 17-bit addr layout (paper's default config; see
- * access_bank_arb.cc), MSB to LSB -- matID_in_bank/bankID/arrayID_in_mat/
- * offset already baked into addr by the caller (currArrayID << 9 |
- * offset), the arbiter only ever pulls the bankID sub-field back out via
- * arrayAddrToBankFn (SysConfig.scala:282-305's get_bankID()):
- *   [ matID_in_bank(4) | bankID(2) | arrayID_in_mat(2) | offset(9) ]
- * Note Bank sits *below* matID_in_bank, not at the very top of the
- * address.
- *
- * Arbiter state machine (bankAccessScheduler.scala):
- *   - Access state: io.out.ready = true. Round-robins to the next pending
- *     client and fires (valid && ready). The winning request's target bank
- *     is decoded (get_bankID(addr)) and checked against mem_ready(bank).
- *       - Bank ready     -> the write commits the SAME cycle; arbiter
- *         stays in Access, free to grant the next client next cycle.
- *       - Bank NOT ready -> arbiter moves to Block: cache_addr /
- *         cache_data_to_bank keep being driven from the latched request
- *         every cycle until mem_ready finally goes true.
- *   - Block state: io.out.ready = false, so EVERY other client (including
- *     the other two P2S variants) is frozen -- not just the one waiting --
- *     until this specific write lands.
- * Crucially, the fire (valid && ready) that grants a client happens up
- * front, before the bank-ready check. So from a P2S module's own point of
- * view, io.accessArray.fire == true means the write is done and it can
- * advance its dequeue pointer immediately, even though the arbiter may
- * still be spinning in Block behind the scenes waiting for the bank.
- * AccessBankArb::tick() mirrors this: Grant is returned at fire time with
- * a committedThisCycle flag callers may ignore for a write-only (P2S-style)
- * client.
- *
- * mod: p2s_arbiter
- * ---------------------------------------------------------------------
- * SimObject conversion -- P2S <-> AccessBankArb port wiring
- * ---------------------------------------------------------------------
- * AccessBankArb is now a ClockedObject with a real gem5 port for each of
- * the three P2S engines (p2s_side, a VectorResponsePort -- modeled on
- * DMA_read_page_split's p2s_side in dma_read_page_split.hh). This replaces an earlier
- * approach where P2S_L/R/R_T held a raw pointer to a shared AccessBankArb
- * and called postRequest()/submitP2SWrite() directly as plain C++ calls
- * (a direct Decoupled-style wire, matching the RTL literally) -- that
- * worked when P2S was one module, but doesn't fit three independent
- * SimObject instances needing to reach one shared arbiter, so the link is
- * now a normal gem5 request/response port pair instead:
- *
- *   p2s_side[0] <-> P2S_L.cb_port      p2s_side[1] <-> P2S_R.cb_port
- *   p2s_side[2] <-> P2S_R_T.cb_port
- *
- * Port index doubles as (BankArbClient - kClientP2S_L), i.e. index 0/1/2
- * map to kClientP2S_L/kClientP2S_R/kClientP2S_R_T. Client 0
- * (load_post_process) is ReadPostProcess on load_post_side, same WRITE
- * protocol. Client 3 (autoLoadVec) is autoload_side. Client 2
- * (accumulator) is acc_side: 8-byte READ/WRITE, address = pkt->getAddr()
- * in the 17-bit array layout. Client 1 (bankFetch_module) has no gem5
- * SimObject yet -- postRequest()/tick() still accept it by id.
- *
- * Request: a P2S engine sends a MemCmd::WriteReq packet carrying a
- * P2SWritePayload (pic_dpm_types.hh) on its cb_port. handleRequest()
- * unpacks it into a ReqPackage and calls submitP2SWrite(); the packet is
- * held in pendingReqPkt until granted. Only one not-yet-granted request
- * per client is allowed at a time (postRequest() returns false on a
- * second one), matching the RTL's single Decoupled register per client --
- * a P2S engine must wait for its response before sending the next write.
- *
- * Response: fires at *grant* (tick() returning a Grant for that client),
- * not at bank-commit -- see the "fire vs. commit" paragraph above. The
- * held packet is turned into a plain WriteResp (makeResponse(), no
- * payload -- P2S needs nothing back but the ack) and sent out that
- * client's p2s_side port.
- *
- * Bank side: mat_side is a VectorRequestPort, one port per Mat. When a
- * grant commits, the access is sent to the target Mat:
- *   - WRITE: WriteReq, size 8, data = bit-plane. The client was already
- *     acked at grant, so the Mat's response is just dropped.
- *   - READ (AutoLoadL): ReadReq, size 8. AutoLoadL gets its response only
- *     when the Mat's response comes back, carrying the Mat's data.
- * The packet address is the address inside the Mat (arrayID_in_mat and
- * offset). Mat port index = (matID_in_bank - first_pic_mat) * num_banks +
- * bankID. If the Mat refuses the packet, that bank counts as not ready, so
- * the arbiter goes to Block like the RTL, and the packet is resent on
- * retry. If mat_side has no connections the arbiter runs in stub mode:
- * nothing is sent anywhere and AutoLoadL reads return zeros.
- * setBankReady()/setArrayAddrToBank() remain hooks for timing/decode.
- *
- * Driving tick(): the SimObject schedules its own tickEvent one cycle
- * out whenever a request arrives or a grant leaves work behind (another
- * client still pending, or still Blocked on a bank) -- see
- * processTickEvent() in access_bank_arb.cc. tick()/postRequest()/
- * submitP2SWrite() themselves are untouched and still public, so the
- * arbiter logic stays unit-testable without constructing a SimObject.
+ * Request fields are {addr:17, optype:1, writeData:64} in RTL. Addr layout:
+ * [mat_in_bank:4 | bank:2 | array_in_mat:2 | wordline:9]. Mat ports are
+ * indexed (mat_in_bank - first_pic_mat) * num_banks + bank and receive
+ * only the 11-bit within-Mat word index. Without Mat ports, stub reads
+ * return zero. setBankReady() supplies normal-cache bank contention.
  */
 
 #ifndef __MEM_CACHE_PIC_ACCESS_BANK_ARB_HH__
@@ -144,7 +35,6 @@
 #include <deque>
 #include <functional>
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 #include "mem/cache/pic/pic_dpm_types.hh"
@@ -207,8 +97,6 @@ static constexpr unsigned kNumBankArbClients = 7;
  * mod: p2s_arbiter -- now the SimObject P2S_L/P2S_R/P2S_R_T connect their
  * cb_port to (p2s_side, a VectorResponsePort); see the "SimObject
  * conversion" section of the file header comment for the port protocol.
- * The arbiter state machine below (postRequest/tick/the Access-Block
- * fields) is unchanged from the plain-C++-class version.
  */
 class AccessBankArb : public ClockedObject
 {
@@ -270,10 +158,10 @@ class AccessBankArb : public ClockedObject
          *  P2S engine, not a bus-visible memory range. */
         AddrRangeList getAddrRanges() const override;
 
-        /** Send a retry to the P2S engine if one is owed and we're free
-         *  to accept a new request now (called once this port's client
-         *  has been granted, freeing its one pending-request slot). */
+        /** Send a retry only when RR has reserved this client's grant
+         *  and the port is able to accept its resend. */
         void trySendRetry();
+        bool canRetry() const { return needRetry && !blockedPacket; }
 
       protected:
         Tick recvAtomic(PacketPtr pkt) override
@@ -285,10 +173,8 @@ class AccessBankArb : public ClockedObject
 
     /**
      * Port for the single cache-wide AutoLoadL (kClientAutoLoadVec). Same
-     * one-outstanding-request/grant-fires-the-response protocol as
-     * P2SPort, but READ instead of WRITE: the response carries a data
-     * word back (see handleAutoLoadRequest()'s doc comment for what's
-     * actually in it today -- no real bank storage exists yet).
+     * one-read-at-a-time protocol: request acceptance is fire, while
+     * the response carries the data returned by the Mat later.
      */
     class AutoLoadPort : public ResponsePort
     {
@@ -306,6 +192,7 @@ class AccessBankArb : public ClockedObject
         void sendPacket(PacketPtr pkt);
         AddrRangeList getAddrRanges() const override;
         void trySendRetry();
+        bool canRetry() const { return needRetry && !blockedPacket; }
 
       protected:
         Tick recvAtomic(PacketPtr pkt) override
@@ -316,26 +203,29 @@ class AccessBankArb : public ClockedObject
     };
 
     /**
-     * Port for the Accumulator (kClientAccumulator): 8-byte READs and
-     * WRITEs. A WRITE is acked at grant, like P2S. A READ is answered when
-     * its Mat response comes back. Several READs can be waiting for the
-     * Mat at once, so responses are queued and sent in order.
+     * Raw 8-byte request port for ACC and BankFetch. BankFetch only
+     * reads; ACC reads and writes. Writes are ACKed at fire; read data
+     * returns with the Mat response. Each port queues refused responses.
      */
-    class AccPort : public ResponsePort
+    class BankPort : public ResponsePort
     {
       private:
         AccessBankArb *owner;
+        const unsigned clientId;
         bool needRetry;
         std::deque<PacketPtr> respQueue;
 
       public:
-        AccPort(const std::string &name, AccessBankArb *owner) :
-            ResponsePort(name), owner(owner), needRetry(false)
+        BankPort(const std::string &name, unsigned clientId,
+                 AccessBankArb *owner) :
+            ResponsePort(name), owner(owner), clientId(clientId),
+            needRetry(false)
         { }
 
         void sendPacket(PacketPtr pkt);
         AddrRangeList getAddrRanges() const override;
         void trySendRetry();
+        bool canRetry() const { return needRetry && respQueue.empty(); }
 
       protected:
         Tick recvAtomic(PacketPtr pkt) override
@@ -347,9 +237,9 @@ class AccessBankArb : public ClockedObject
 
   public:
     /**
-     * Assert io.accessArray(clientId).valid with @p req.
-     * Returns false if that client already has an outstanding,
-     * not-yet-granted request (mirrors holding valid high until fire).
+     * Present io.request(clientId).valid and bits. True is the selected
+     * client's RTL fire. On false only the valid bit is remembered; the
+     * caller retains the payload and retries when the arbiter selects it.
      */
     bool postRequest(unsigned clientId, const ReqPackage &req);
 
@@ -409,13 +299,16 @@ class AccessBankArb : public ClockedObject
   private:
     enum class ArbState { Access, Block };
 
-    void commit(unsigned clientId, const ReqPackage &req, unsigned bankId);
+    /** True only once the target Mat accepts this access. */
+    bool commit(unsigned clientId, const ReqPackage &req, unsigned bankId);
 
-    // ---- Arbiter state machine (unchanged from the plain-class version) ----
+    // ---- Shared arbiter state and input-valid bookkeeping ----
 
     unsigned numClients;
     std::vector<bool> reqValid;
-    std::vector<ReqPackage> reqPkg;
+    std::optional<unsigned> reservedClient;
+    std::optional<unsigned> firedClient;
+    ReqPackage firedReq;
     /** ID of the client granted last time, so round-robin can resume after
      *  it (matches RRArbiter's rotating-priority behavior). */
     unsigned lastGranted;
@@ -428,38 +321,30 @@ class AccessBankArb : public ClockedObject
     std::vector<bool> bankReadyVec;
     std::function<unsigned(uint32_t)> arrayAddrToBankFn;
 
-    // mod: p2s_arbiter
-    // ---- P2S port-facing glue (new; declared after the arbiter state
-    // above so the constructor's member-init list can stay in the same
-    // relative order as before with these appended at the end) ----
+    bool canAccept(unsigned clientId) const;
+    void waitForGrant(unsigned clientId);
+    bool clientCanRetry(unsigned clientId) const;
+    void retryClient(unsigned clientId);
+    void scheduleTick();
 
-    /** Handle one WRITE request from client @p clientId (a P2S engine
-     *  or ReadPostProcess). Unpacks the P2SWritePayload and posts it to
-     *  the arbiter; the packet itself is held in pendingReqPkt until
-     *  granted. Returns
-     *  false if that client already has an outstanding request (mirrors
-     *  postRequest()'s valid-held-high case) -- caller should set
-     *  needRetry and wait for trySendRetry(). */
+    // mod: p2s_arbiter
+    // ---- Client request/response ports ----
+
+    /** Accept the selected WRITE client's resend. False leaves the
+     *  packet with its client; only a pending valid bit is recorded. */
     bool handleRequest(PacketPtr pkt, unsigned clientId);
 
-    /** Handle one L-row READ request from AutoLoadL. Posts it under
-     *  kClientAutoLoadVec; held in pendingReqPkt until granted. Returns
-     *  false (caller should needRetry) if a request is already
-     *  outstanding. See handleRequest()'s doc comment -- same protocol,
-     *  READ instead of WRITE. */
+    /** Accept the selected AutoLoadL read; retain it until Mat data
+     *  returns. A refused read remains owned by AutoLoadL. */
     bool handleAutoLoadRequest(PacketPtr pkt);
 
-    /** Handle one READ or WRITE from the Accumulator. Posts it under
-     *  kClientAccumulator; held in pendingReqPkt until granted. Returns
-     *  false (caller should needRetry) if a request is already waiting for
-     *  its grant. */
-    bool handleAccRequest(PacketPtr pkt);
+    /** Accept a selected ACC read/write or BankFetch read. Both use
+     *  full 17-bit word addresses; fire is separate from read data. */
+    bool handleBankRequest(PacketPtr pkt, unsigned clientId);
 
-    /** One arbiter clock edge: calls tick(), and if it granted a client,
-     *  turns that client's held request packet into a response and sends
-     *  it out the matching port, then frees that client's slot via
-     *  trySendRetry(). Reschedules itself one cycle out while any client
-     *  is pending or the arbiter is still Blocked. */
+    /** Run the clock edge, then ACK an accepted write or register an
+     *  accepted read for its eventual Mat response. Repeat each cycle
+     *  while a client is waiting or the arbiter is in Block. */
     void processTickEvent();
 
     /** The WRITE port of client @p clientId. */
@@ -469,27 +354,30 @@ class AccessBankArb : public ClockedObject
     AutoLoadPort autoLoadPort;
     /** Client 0 (kClientLoadPostProcess): ReadPostProcess bank writes. */
     P2SPort loadPostPort;
+    /** Client 1 (kClientBankFetch): BankFetch cache-bank reads. */
+    BankPort bankFetchPort;
     /** Client 2 (kClientAccumulator). */
-    AccPort accPort;
+    BankPort accPort;
 
-    /** clientId -> the request packet held until that client is granted;
-     *  see handleRequest()/handleAutoLoadRequest(). */
-    std::unordered_map<unsigned, PacketPtr> pendingReqPkt;
+    /** The one packet accepted by this tick's selected client, held only
+     *  until processTickEvent routes its ACK or read-response bookkeeping. */
+    PacketPtr grantedPkt = nullptr;
 
     EventFunctionWrapper tickEvent;
+    std::optional<Tick> lastTick;
 
     // ---- Mat side ----
 
     /** Mat array index for @p addr, which targets bank @p bankId. */
     unsigned matIndex(uint32_t addr, unsigned bankId) const;
 
-    /** Send a committed access to its Mat; hold it if the Mat refuses. */
-    void sendToMat(unsigned clientId, const ReqPackage &req, unsigned bankId);
+    /** Send an access to its Mat. False means the refused packet is held. */
+    bool sendToMat(unsigned clientId, const ReqPackage &req, unsigned bankId);
 
     /** Mat answered an access. */
     bool handleMatResponse(PacketPtr pkt);
 
-    /** Mat port @p idx can accept again; resend the held packet. */
+    /** Mark the held packet eligible for resend by the Block-state tick. */
     void matRetry(int idx);
 
     /** Send the read data back to AutoLoadL and free its slot. */
@@ -501,21 +389,26 @@ class AccessBankArb : public ClockedObject
     const unsigned firstPicMat;
     const unsigned bankBits;
 
-    /** Packet a Mat refused, one slot per bank (a bank with a held packet
-     *  is not ready, so at most one is ever held). */
+    /** Packet a Mat refused. Global Block prevents any other access from
+     *  being granted while it is held, so only one slot can be occupied. */
     struct HeldMatReq
     {
         PacketPtr pkt = nullptr;
         unsigned matIdx = 0;
+        bool retryReady = false;
     };
     std::vector<HeldMatReq> heldMat;
 
     /** The one AutoLoadL read in flight, until its response is sent. */
     PacketPtr autoLoadPkt = nullptr;
 
-    /** Send the Mat's read data back to the Accumulator for the oldest
-     *  granted ACC read. */
-    void finishAccRead(const uint8_t *data);
+    /** Send Mat data to the oldest granted read of this client. */
+    void finishBankRead(unsigned clientId, const uint8_t *data);
+    std::deque<PacketPtr> &readFifo(unsigned clientId);
+    BankPort &bankPort(unsigned clientId);
+
+    /** BankFetch reads granted, waiting for Mat data in grant order. */
+    std::deque<PacketPtr> bankFetchReadFifo;
 
     /** ACC reads already granted, still waiting for their Mat response,
      *  oldest first. RTL Accumulator.scala proc_read sends the next read
