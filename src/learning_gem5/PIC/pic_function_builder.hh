@@ -120,14 +120,12 @@ class PicFunctionBuilder
     }
 
     static std::vector<PicSetRequest>
-    store(uint64_t onChipSource, uint64_t dramDestination, uint16_t row
-    uint16_t bytesPerRow, uint16_t rowOffset,
-          uint8_t commandId)
+    store(uint64_t onChipSource, uint64_t dramDestination, uint16_t row, uint16_t bytesPerRow, uint16_t rowOffset, uint8_t commandId)
     {
         std::vector<PicSetRequest> out;
         add(out, SetRegister::Src, onChipSource, "STORE SET_SRC");
         add(out, SetRegister::Dst, dramDestination, "STORE SET_DST");
-        add(out, SetRegister::Size, packSize{row, bytePerRow, rowOffset}, "STORE SET_SIZE");
+        add(out, SetRegister::Size, packSize({row, bytesPerRow, rowOffset}), "STORE SET_SIZE");
         launch(out, ModuleID::STORE, commandId, 0);
         return out;
     }

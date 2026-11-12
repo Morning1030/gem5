@@ -87,18 +87,25 @@ PicTestFrontend::buildProtocolSmokeTrace()
     //     return;
     // }
     
-    
     if (trace == "store") {
+
+        append(
+            PicFunctionBuilder::acc(
+                0x00025000,
+                0x00028000,
+                4,
+                2,
+                64,
+                accBitWidthCode));
         append(
             PicFunctionBuilder::store(
-                0x00003000,
-                0x00004000,
-                512,
+                0x25000,
+                0x80001F00,
+                8,
+                16,
                 64,
-                128,
                 8
             ));
-
         return;
     }
 

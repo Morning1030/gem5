@@ -85,7 +85,6 @@ Scheduler::CPUSidePort::CPUSidePort(
 bool
 Scheduler::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
-    DPRINTF(Scheduler, "RecvTimingReq");
     return owner->handleRequest(pkt);
 }
 void
@@ -190,6 +189,10 @@ Scheduler::handleResponse(PICPortID picPortID, PacketPtr pkt)
             // isEnqCmd = true;
             panic_if(!pkt->isResponse(),"Scheduler expected LD completion response");
             DPRINTF(Scheduler, "LD COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
+            break;
+        case PICPortID::ST:
+            panic_if(!pkt->isResponse(),"Scheduler expected LD completion response");
+            DPRINTF(Scheduler, "ST COMPLETION RESPONSE port=%u\n",static_cast<unsigned>(picPortID));
             break;
         case PICPortID::P2SL:
             // isEnqCmd = true;

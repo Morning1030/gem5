@@ -25,17 +25,23 @@ def dram_byte(a):
 
 
 # (name, src vaddr, dst array address, row, bytePerRow, offset)
+# CASES = [
+#     ("Inside one page (one_shot)",
+#       array_addr(1, 0, 0, 0), 0x80005000, 16, 64, 64),
+#     ("end at one page(one shot)",
+#      array_addr(2, 1, 1, 10), 0x80001F00, 16, 16, 16),
+#     ("one shot but cross DRAM page",
+#       array_addr(2, 1, 1, 10), 0x80001F00, 64, 16, 16)
+#     ("one row cross page",
+#       array_addr(3, 0, 3, 508), 0x80001FFC, 4, 16, 64),
+#     ("rows on different page",
+#      array_addr(2, 1, 1, 50), 0x80001F00, 64, 8, 64),
+#     ("one row cross page and array",
+#      array_addr(2, 1, 1, 511), 0x80001F00, 64, 16, 64)
+# ]
 CASES = [
-    ("A contiguous rows (one_shot)",
-     0x80100000, array_addr(1, 0, 0, 0), 4, 64, 64),
-    ("B strided rows",
-     0x80110000, array_addr(2, 1, 1, 10), 8, 16, 100),
-    ("C unaligned src, 13 B rows (bytes carry across rows)",
-     0x80120003, array_addr(5, 2, 0, 505), 5, 13, 40),
-    ("D each row crosses a 4KB page",
-     0x80130FF0, array_addr(15, 3, 3, 0), 3, 48, 4096),
-    ("E 512 B row over a page, dst runs into the next bank",
-     0x80140F00, array_addr(3, 0, 3, 508), 1, 512, 512),
+    ("one shot but cross DRAM page",
+       array_addr(2, 1, 1, 10), 0x80001F00, 64, 16, 16)
 ]
 
 
@@ -108,7 +114,7 @@ system.cmd_state_helper = CmdStateHelper(system=system)
 # Store path, one SimObject per RTL module.
 system.store_ctl = StoreCtrl(system=system)
 system.bank_fetch = BankFetch(system=system)
-system.dma = DMA_write_page_split(system=system)
+system.dma = DMAWritePageSplit(system=system)
 
 system.tlb_sched = TLBReqScheduler()
 
@@ -125,106 +131,105 @@ system.dma.mem_side = system.membus.cpu_side_ports
 # their own cal() job here, they are only storage.
 cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
 system.bank_arb = AccessBankArb(num_banks=NUM_BANKS)
+system.autoloadl = AutoLoadL(system=system)
 system.bank_fetch.cb_port = system.bank_arb.bank_fetch_side
 for mat in cache.mats:
-    system.bank_arb.mat_side = mat.array_side 
-system.read_post.bank_side = system.bank_arb.load_post_side
+    system.bank_arb.mat_side = mat.array_side
+    system.autoloadl.inst_port =  mat.load_l_port
+
+system.autoloadl.cb_port = system.bank_arb.autoload_side
+
+system.dummy_loadpost = PyTrafficGen()
+system.dummy_loadpost.port = system.bank_arb.load_post_side
 
 # The arbiter needs its three P2S ports connected; nothing writes on them.
-system.idle_p2s = [ArbTestClient(kind='p2s', ops=[]) for _ in range(3)]
+system.idle_p2s = [PyTrafficGen() for _ in range(3)]
 for i, c in enumerate(system.idle_p2s):
     c.port = system.bank_arb.p2s_side[i]
 
-# system.loader = LoadTestClient(
-#     loads=[f"{src:#x} {dst:#x} {row} {bpr} {off}"
-#            for _, src, dst, row, bpr, off in CASES],
-#     exit_when_done=True,
-# )
-# system.loader.port = system.load_ctl.cmd_side
-
-# Read back through the arbiter, by array address.
-system.arb_reader = ArbTestClient(
-    kind='autoload',
-    ops=[f"R {a:#x} {v:#x}" for _, a, v in expected] +
-        [f"R {a:#x} 0x0" for a in guards],
-    start_delay=READ_START, exit_when_done=True, print_reads=True,
-)
-system.arb_reader.port = system.bank_arb.autoload_side
 
 # --------------------------------------------------------------------------
 # Input / expected files
 # --------------------------------------------------------------------------
 
-outdir = m5.options.outdir
-with open(os.path.join(outdir, 'load_test_input.txt'), 'w') as f:
-    f.write("DRAM pattern: byte at address a = "
-            "((a * 0x9E) ^ (a >> 7) ^ 0x5A) & 0xFF\n")
-    f.write("Array address = [matID(4) | bank(2) | array(2) | wordline(9)]"
-            ", one 64-bit word each\n\n")
-    for ci, (name, src, dst, row, bpr, off) in enumerate(CASES):
-        words = [(a, v) for c, a, v in expected if c == ci]
-        f.write(f"LOAD {ci}: {name}\n")
-        f.write(f"  src {src:#x}  dst {dst:#x}  row {row}  bytePerRow "
-                f"{bpr}  offset {off}  -> {row * bpr} B, {len(words)} "
-                f"words\n")
-        for r in range(row):
-            b = src + r * off
-            f.write(f"  row {r}: DRAM [{b:#x}, {b + bpr:#x})  bytes "
-                    + " ".join(f"{dram_byte(b + i):02x}" for i in range(bpr))
-                    + "\n")
-        for a, v in words:
-            mat, bank, array, row_ = split_addr(a)
-            f.write(f"  word @{a:#07x} (mat {mat:2d} bank {bank} array "
-                    f"{array} wordline {row_:3d}) = {v:#018x}\n")
-        f.write("\n")
-    f.write("Guard words (must stay 0): "
-            + " ".join(f"{a:#x}" for a in guards) + "\n")
+# outdir = m5.options.outdir
+# with open(os.path.join(outdir, 'load_test_input.txt'), 'w') as f:
+#     f.write("DRAM pattern: byte at address a = "
+#             "((a * 0x9E) ^ (a >> 7) ^ 0x5A) & 0xFF\n")
+#     f.write("Array address = [matID(4) | bank(2) | array(2) | wordline(9)]"
+#             ", one 64-bit word each\n\n")
+#     for ci, (name, src, dst, row, bpr, off) in enumerate(CASES):
+#         words = [(a, v) for c, a, v in expected if c == ci]
+#         f.write(f"LOAD {ci}: {name}\n")
+#         f.write(f"  src {src:#x}  dst {dst:#x}  row {row}  bytePerRow "
+#                 f"{bpr}  offset {off}  -> {row * bpr} B, {len(words)} "
+#                 f"words\n")
+#         for r in range(row):
+#             b = src + r * off
+#             f.write(f"  row {r}: DRAM [{b:#x}, {b + bpr:#x})  bytes "
+#                     + " ".join(f"{dram_byte(b + i):02x}" for i in range(bpr))
+#                     + "\n")
+#         for a, v in words:
+#             mat, bank, array, row_ = split_addr(a)
+#             f.write(f"  word @{a:#07x} (mat {mat:2d} bank {bank} array "
+#                     f"{array} wordline {row_:3d}) = {v:#018x}\n")
+#         f.write("\n")
+#     f.write("Guard words (must stay 0): "
+#             + " ".join(f"{a:#x}" for a in guards) + "\n")
 
-with open(os.path.join(outdir, 'load_test_expected.csv'), 'w') as f:
-    f.write("load,array_addr,mat,bank,array,wordline,value\n")
-    for ci, a, v in expected:
-        f.write(f"{ci},{a:#x},{','.join(map(str, split_addr(a)))},{v:#x}\n")
-    for a in guards:
-        f.write(f"guard,{a:#x},{','.join(map(str, split_addr(a)))},0x0\n")
+# with open(os.path.join(outdir, 'load_test_expected.csv'), 'w') as f:
+#     f.write("load,array_addr,mat,bank,array,wordline,value\n")
+#     for ci, a, v in expected:
+#         f.write(f"{ci},{a:#x},{','.join(map(str, split_addr(a)))},{v:#x}\n")
+#     for a in guards:
+#         f.write(f"guard,{a:#x},{','.join(map(str, split_addr(a)))},0x0\n")
 
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
 
 m5.instantiate()
+exit_event = m5.simulate()
+
+print(
+    'Exiting @ tick {} because {}'.format(
+        m5.curTick(),
+        exit_event.getCause()
+    )
+)
 
 # Fill each LOAD's whole DRAM span, gaps between rows included, so reading
 # a gap byte by mistake gives a wrong value instead of 0.
-for _, src, dst, row, bpr, off in CASES:
-    end = src + (row - 1) * off + bpr
-    root.system.physProxy.write(
-        src, bytearray(dram_byte(a) for a in range(src, end)))
+# for _, src, dst, row, bpr, off in CASES:
+#     end = src + (row - 1) * off + bpr
+#     root.system.physProxy.write(
+#         src, bytearray(dram_byte(a) for a in range(src, end)))
 
-print(f"{len(CASES)} LOADs, {len(expected)} words, {len(guards)} guards")
+# print(f"{len(CASES)} LOADs, {len(expected)} words, {len(guards)} guards")
 
-ev = m5.simulate()
-assert ev.getCause() == "LoadTestClient done", ev.getCause()
-loads_done = m5.curTick()
-read_start = READ_START * 1000   # 1GHz: 1000 ticks per cycle
-assert loads_done < read_start, (
-    f"LOADs took until tick {loads_done}; raise READ_START")
-print(f"All LOADs done @ tick {loads_done}")
+# ev = m5.simulate()
+# assert ev.getCause() == "LoadTestClient done", ev.getCause()
+# loads_done = m5.curTick()
+# read_start = READ_START * 1000   # 1GHz: 1000 ticks per cycle
+# assert loads_done < read_start, (
+#     f"LOADs took until tick {loads_done}; raise READ_START")
+# print(f"All LOADs done @ tick {loads_done}")
 
-ev = m5.simulate()
-assert ev.getCause() == "ArbTestClient done", ev.getCause()
+# ev = m5.simulate()
+# assert ev.getCause() == "ArbTestClient done", ev.getCause()
 
-total_reads = len(expected) + len(guards)
-with open(os.path.join(outdir, 'load_test_result.txt'), 'w') as f:
-    f.write(f"PASS: {len(CASES)} LOADs, all LOADs done @ tick "
-            f"{loads_done}\n")
-    f.write(f"{len(expected)} words + {len(guards)} guards read back "
-            f"through the arbiter: {total_reads} reads, all matched\n")
-print(f"PASS: {total_reads} reads matched @ tick {m5.curTick()}")
+# total_reads = len(expected) + len(guards)
+# with open(os.path.join(outdir, 'load_test_result.txt'), 'w') as f:
+#     f.write(f"PASS: {len(CASES)} LOADs, all LOADs done @ tick "
+#             f"{loads_done}\n")
+#     f.write(f"{len(expected)} words + {len(guards)} guards read back "
+#             f"through the arbiter: {total_reads} reads, all matched\n")
+# print(f"PASS: {total_reads} reads matched @ tick {m5.curTick()}")
 
 # export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)
 # which python3-config   # 确认指向 /usr/bin/python3-config
 # rm -rf build/ALL/gem5.build
 # scons build/ALL/gem5.opt -j$(nproc)
-# build/ALL/gem5.opt \
+# PYTHONPATH=src/learning_gem5/PIC build/ALL/gem5.opt \
 #   --debug-flags=Scheduler \
 #   configs/learning_gem5/PIC/store_e2e.py

@@ -45,6 +45,7 @@ class BankFetch : public ClockedObject {
         MemSidePort dmaWritePort;
         RequestorID requestorId;
         PacketPtr pendingReqPkt;
+        bool bankFetchDone;
 
         // bankFetch request variables
         uint64_t src;
@@ -72,6 +73,9 @@ class BankFetch : public ClockedObject {
         EventFunctionWrapper pageFetchEvent;
         EventFunctionWrapper atomicBankFetchEvent;
         EventFunctionWrapper alignEvent;
+
+        bool alignBlocked;
+        uint8_t DmaReqCnt, DmaRecvCnt;
 
     protected:
     public:

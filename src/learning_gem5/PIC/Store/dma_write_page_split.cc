@@ -25,6 +25,7 @@ DMAWritePageSplit::DMAWritePageSplit(const DMAWritePageSplitParams &params) :
     dramPort(params.name + ".mem_side", this, PICPortID::DRAM),
     requestorId(params.system->getRequestorId(this)),
     pendingReqPkt(nullptr),
+    needRetry(false),
     cacheBankData(pageSize + bitlineNum / 8),
     tlbQueryEvent([this]{this->processTlbQueryEvent();}, "tlbQueryEvent"),
     issueWriteEvent([this]{this->processIssueWriteEvent();}, "issueWriteEvent")
@@ -76,12 +77,14 @@ DMAWritePageSplit::CPUSidePort::sendPacket(PacketPtr pkt)
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
 
     if (sendTimingResp(pkt)) {
+        DPRINTF(DMAWrite, "DMA write COMPLETE: send back to bank fetch\n");
         owner->pendingReqPkt = nullptr;
         blockedPacket = nullptr;
-
-        DPRINTF(DMAWrite, "DMA write COMPLETE: send back to bank fetch\n");
     }
-    else blockedPacket = pkt;
+    else {
+        DPRINTF(DMAWrite, "DMA response is blocked!\n");
+        blockedPacket = pkt;
+    }
 }
 
 DMAWritePageSplit::MemSidePort::MemSidePort(
@@ -132,7 +135,10 @@ DMAWritePageSplit::MemSidePort::recvReqRetry()
 bool
 DMAWritePageSplit::handleRequest(PacketPtr pkt)
 {
-    if (pendingReqPkt != nullptr) return false;
+    if (pendingReqPkt != nullptr) {
+        needRetry = true;
+        return false;
+    }
     pendingReqPkt = pkt;
     // clear the vector for later fill in
     std::fill(cacheBankData.begin(), cacheBankData.end(), 0);
@@ -141,7 +147,7 @@ DMAWritePageSplit::handleRequest(PacketPtr pkt)
     validNBytes = pkt->getSize();
     std::memcpy(cacheBankData.data(), pkt->getConstPtr<uint8_t>(), validNBytes);
 
-    DPRINTF(DMAWrite, "row write %#x nByte %u%s\n", vaddrPtr, validNBytes);
+    DPRINTF(DMAWrite, "Got req write %#x nByte %u\n", vaddrPtr, validNBytes);
 
     if (!tlbQueryEvent.scheduled()) {
         schedule(tlbQueryEvent, clockEdge(Cycles(1)));
@@ -167,8 +173,7 @@ DMAWritePageSplit::handleResponse(PICPortID picPortID, PacketPtr pkt)
     }
     else if (picPortID == PICPortID::DRAM) {
         // move on to the next one
-        pendingReqPkt->makeResponse();
-        instPort.sendPacket(pendingReqPkt);
+        DPRINTF(DMAWrite, "Got response from memory %llx!\n", pkt->getAddr());
     }
     delete pkt;
     return true;
@@ -202,6 +207,16 @@ DMAWritePageSplit::processIssueWriteEvent()
 
     DPRINTF(DMAWrite, "write paddrPtr %#x size %u \n", paddrPtr, validNBytes);
     dramPort.sendPacket(pkt);
+    if (pendingReqPkt == nullptr) {
+        DPRINTF(DMAWrite, "pendingReqPkt is null\n");
+    }
+    pendingReqPkt->makeResponse();
+    instPort.sendPacket(pendingReqPkt);
+
+    if (needRetry) {
+        needRetry = false;
+        instPort.sendRetryReq();
+    }
 }
 
 

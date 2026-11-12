@@ -20,10 +20,12 @@ BankFetch::BankFetch(const BankFetchParams &params) :
     dmaWritePort(params.name + ".dma_port", this, PICPortID::DMA),
     requestorId(params.system->getRequestorId(this, "BankFetch")),
     pendingReqPkt(nullptr),
+    bankFetchDone(true),
     cacheBankData(pageSize + bitlineNum / 8),
     pageFetchEvent([this]{this->processPageFetchEvent();}, "pageFetchEvent"),
     atomicBankFetchEvent([this]{this->processAtomicBankFetchEvent();}, "atomicBankFetchEvent"),
-    alignEvent([this]{this->processAlignEvent();}, "alignEvent")
+    alignEvent([this]{this->processAlignEvent();}, "alignEvent"),
+    alignBlocked(false)
 {}
 Port&
 BankFetch::getPort(const std::string &if_name, PortID idx)
@@ -57,7 +59,7 @@ BankFetch::CPUSidePort::sendPacket(PacketPtr pkt)
         owner->pendingReqPkt = nullptr;
         blockedPacket = nullptr;
 
-        DPRINTF(BankFetch, "Store COMPLETE: send back to scheduler\n");
+        DPRINTF(BankFetch, "Store COMPLETE: send back to StoreCtrl\n");
     }
     else blockedPacket = pkt;
 }
@@ -92,36 +94,60 @@ BankFetch::MemSidePort::sendPacket(PacketPtr pkt)
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
     if (sendTimingReq(pkt)) {
         // to dma
-        if (pkt->isWrite()) {
+        if (picPortID == PICPortID::DMA) {
             // if (owner->cacheBankPort.needRetry == true) {
             //     owner->cacheBankPort.sendRetryReq();
             // }
             // DPRINTF(BankFetch, "Successfully send request to DMA\n");
+            if (owner->alignBlocked && !owner->alignEvent.scheduled()) {
+                DPRINTF(BankFetch, "Wake up align event\n");
+                owner->schedule(owner->alignEvent, owner->clockEdge(Cycles(1)));
+                owner->alignBlocked = false;
+            }
+
         }
         // to cache bank
         else if(pkt->isRead()) {
             // DPRINTF(BankFetch, "Successfully send request to bank fetch\n");
         }
+        else {
+            DPRINTF(BankFetch, "Cannot recognize port\n");
+        }
     }
     else {
+        DPRINTF(BankFetch, "dmaWritePort is rejected\n");
         blockedPacket = pkt;
     }
+    // if (owner->pendingReqPkt == nullptr) DPRINTF(BankFetch, "pendingReqPkt is nullptr after dma send packet.\n");
 }
 void
 BankFetch::MemSidePort::recvReqRetry()
 {
-    panic_if(blockedPacket == nullptr, "There's no blockedPacket to send");
-
-    PacketPtr pkt = blockedPacket;
-    blockedPacket = nullptr;
-    sendPacket(pkt);
-    // might fail again, wait for another req retry
+    if (picPortID == PICPortID::CB) {
+        if (!owner->atomicBankFetchEvent.scheduled()) {
+            owner->schedule(owner->atomicBankFetchEvent, owner->clockEdge(Cycles(1)));
+        }
+    }
+    else if (picPortID == PICPortID::DMA) {
+        panic_if(blockedPacket == nullptr, "There's no blockedPacket to send");
+        DPRINTF(BankFetch, "Retry DMA request\n");
+        PacketPtr pkt = blockedPacket;
+        blockedPacket = nullptr;
+        if (owner->pendingReqPkt == nullptr) DPRINTF(BankFetch, "After recvReqRetry pending req is nullptr\n");
+        sendPacket(pkt);
+        // might fail again, wait for another req retry
+    }
+    else {
+        DPRINTF(BankFetch, "Cannot recognize memsideport portID\n");
+    }
 }
 bool
 BankFetch::handleRequest(PacketPtr pkt)
 {
     if (pendingReqPkt != nullptr) return false;
     pendingReqPkt = pkt;
+    bankFetchDone = false;
+    if (pendingReqPkt == nullptr) DPRINTF(BankFetch, "Recv nullptr request pkt");
 
     BankFetchSenderState* b = pkt->findNextSenderState<BankFetchSenderState>();
     panic_if(b == nullptr, "missing BankFetchSenderState");
@@ -143,6 +169,10 @@ BankFetch::handleRequest(PacketPtr pkt)
     endRow = (nextBankAddr + validNBytes - 1) >> __builtin_ctz(bitlineNum / 8);
     bankRowPtr = startRow;
     rowsReceived = 0;
+    DmaReqCnt = ((final_v_addr - 1) >> __builtin_ctz(pageSize)) - (dst >> __builtin_ctz(pageSize)) + 1;
+    DmaRecvCnt = 0;
+
+    DPRINTF(BankFetch, "startRow = %d, endRow = %d\n", startRow, endRow);
         
     // isLastPage= next_page_begin_addr>=final_v_addr
     if (!pageFetchEvent.scheduled()) {
@@ -154,18 +184,38 @@ BankFetch::handleRequest(PacketPtr pkt)
 bool
 BankFetch::handleResponse(PICPortID picPortID, PacketPtr pkt)
 {
-    panic_if(pkt->getSize() != bitlineNum / 8, "Receive more than one workline data!\n");
+    if (picPortID == PICPortID::DMA) {
+        
+        // means this page DMA write to DRAM is sent
+        DmaRecvCnt++;
+        DPRINTF(BankFetch, "DmaReqCnt:%d DmaRecvCnt:%d\n", DmaReqCnt, DmaRecvCnt);
+        if (bankFetchDone && DmaRecvCnt == DmaReqCnt) {
+            // if (pendingReqPkt == nullptr) DPRINTF(BankFetch, "pendingReqPkt is nullptr\n");
+            pendingReqPkt->makeResponse();
+            instPort.sendPacket(pendingReqPkt);
+            // if (pendingReqPkt == nullptr) DPRINTF(BankFetch, "pendingReqPkt is nullptr after cpu sendPacket\n");
+        }
+    }
+    else if (picPortID == PICPortID::CB) {
+        panic_if(pkt->getSize() != bitlineNum / 8, "Receive more than one workline data!\n");
 
-    std::memcpy(cacheBankData.data() + rowsReceived * (bitlineNum / 8),
-        pkt->getConstPtr<uint8_t>(),
-        pkt->getSize()
-    );
-    
-    rowsReceived++;
+        std::memcpy(cacheBankData.data() + rowsReceived * (bitlineNum / 8),
+            pkt->getConstPtr<uint8_t>(),
+            pkt->getSize()
+        );
+        
+        rowsReceived++;
 
-    if (rowsReceived == (endRow - startRow + 1)) {
-        // mask out some cacheBankData
-        schedule(alignEvent, clockEdge(Cycles(1)));
+        if (rowsReceived == (endRow - startRow + 1)) {
+            // mask out some cacheBankData
+            if (dmaWritePort.blockedPacket == nullptr && !alignEvent.scheduled()) 
+                schedule(alignEvent, clockEdge(Cycles(1)));
+
+            else {
+                DPRINTF(BankFetch, "alignEvent is blocked\n");
+                alignBlocked = true;
+            }
+        }
     }
     delete pkt;
     return true;
@@ -183,7 +233,10 @@ BankFetch::processPageFetchEvent()
     PacketPtr pkt = new Packet(request, MemCmd::ReadReq);
     pkt->allocate();
 
-    bankFetchAtomicQueue.push_back(pkt);    
+    bankFetchAtomicQueue.push_back(pkt);
+    if (pendingReqPkt == nullptr) {
+        // DPRINTF(BankFetch, "pendingReqPkt is nullptr in pageFetchEvent\n");
+    }
     if (!atomicBankFetchEvent.scheduled()) {
         schedule(atomicBankFetchEvent, clockEdge(Cycles(1)));
     }
@@ -199,13 +252,20 @@ BankFetch::processAtomicBankFetchEvent()
         PacketPtr pkt = bankFetchAtomicQueue.front();
         bool success = cacheBankPort.sendTimingReq(pkt);
         if (success) {
+            uint64_t req = pkt->getAddr();
+            uint16_t mat, bank, array, row;
+            row = (req & 0b111111111);
+            array = (req >> 9) & 0b11;
+            bank = (req >> 11) & 0b11;
+            mat = (req >> 13) & 0b1111;
+            DPRINTF(BankFetch, "Read Request for %d/%d/%d/%d\n", mat, bank, array, row);   
             bankFetchAtomicQueue.pop_front();
             schedule(atomicBankFetchEvent, clockEdge(Cycles(1)));
         }
         else {
             // bankfetch is stalled, need to wait for cache bank notify to retry
             // do nothing and wait until notification
-            DPRINTF(BankFetch, "Cache bank busy, stalling bankFetchEvent.\n");
+            // DPRINTF(BankFetch, "Cache bank busy, stalling bankFetchEvent.\n");
         }
     }
 }
@@ -224,8 +284,9 @@ BankFetch::processAlignEvent()
     PacketPtr pkt = new Packet(request, MemCmd::WriteReq);
     pkt->allocate();
     pkt->setData((cacheBankData.data() + offset));
-
+    
     dmaWritePort.sendPacket(pkt);
+    
     v_addr_ptr = next_page_begin_addr;
     nextBankAddr += validNBytes;
     // not only one page
@@ -239,13 +300,15 @@ BankFetch::processAlignEvent()
         endRow = (nextBankAddr + validNBytes - 1) >> __builtin_ctz(bitlineNum / 8);
         bankRowPtr = startRow;
         rowsReceived = 0;
-        
+            
         if (!pageFetchEvent.scheduled())
             schedule(pageFetchEvent, clockEdge(Cycles(1)));
     }
     else {
-        pendingReqPkt->makeResponse();
-        instPort.sendPacket(pendingReqPkt);
+        bankFetchDone = true;
+        // pendingReqPkt->makeResponse();
+        // instPort.sendPacket(pendingReqPkt);
     }
+    // else DPRINTF(BankFetch, "DMAWrite is stalled, wait for Request Retry\n");
 }
 }
