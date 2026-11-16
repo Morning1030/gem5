@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Check a cal_mat_e2e.py log (--debug-flags=MatBank, stdout and stderr in
-# one file) against the golden model in cal_test_data.py.
+# Check a cal_frontend_e2e.py log (--debug-flags=MatBank,Scheduler, stdout
+# and stderr in one file) against the golden model in cal_test_data.py.
 #
 #   python3 check_cal_mat.py <case> <log>
 #

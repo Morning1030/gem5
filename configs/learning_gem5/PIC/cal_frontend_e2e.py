@@ -1,5 +1,4 @@
-# Same cal() job and checks as cal_mat_e2e.py, except the Mat is started
-# the way the RTL starts it: by an EXE command through the frontend.
+# CAL data and result checks, started by a Scheduler EXE command.
 #
 #   PicTestFrontend (EXE: SET_SRC, SET_DST, SET_PARAM) -> PicMmioTransport
 #     -> Scheduler (decode, cb_port) -> MatSetUpRouter -> the Mat under test
@@ -8,7 +7,7 @@
 # the job only computes the right M if every EXE field makes it through the
 # frontend, the Scheduler's decode and the router. Data in (C, L, junk M)
 # and read back still go through ArbTestClients on AccessBankArb, and the L
-# fetch through the real AutoLoadL, exactly as in cal_mat_e2e.py.
+# fetch goes through the real AutoLoadL.
 #
 # Run from the gem5 root (pick a case from cal_test_data.CASES: u16,
 # u16_multi, s32, big; default u16):

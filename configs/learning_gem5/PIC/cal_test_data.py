@@ -1,4 +1,4 @@
-# Test data and golden model for cal_mat_e2e.py (one Mat runs one cal()
+# Test data and golden model for cal_frontend_e2e.py (one Mat runs one cal()
 # job), shared with check_cal_mat.py so the two can't drift apart.
 #
 # What a cal() job computes (RTL Controller.scala, Mat.scala, MAC.scala):
