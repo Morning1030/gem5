@@ -23,16 +23,8 @@ class Mat(ClockedObject):
     # memory; the arbiter never connects to it (RTL asserts on that).
     pic = Param.Bool(True, "PIC-capable Mat; False = storage only")
 
-    start_cycles = Param.Cycles(1, "Cycles before the first step")
-
-    # True: the cal() set-up comes from the Scheduler's EXE (through
-    # MatSetUpRouter, RTL BanksShell/Bank set_up_io), and the set-up
-    # parameters below and start_cycles are not used. False: the Mat runs
-    # the cal() given by its parameters at start_cycles.
-    wait_for_setup = Param.Bool(
-        True, "Start cal() only when an EXE set-up arrives"
-    )
-    max_cycles = Param.Unsigned(100000, "Panic if not finished by then")
+    # CAL starts only on a Scheduler EXE delivered by MatSetUpRouter.
+    max_cycles = Param.Unsigned(100000, "Maximum active cycles per CAL command")
 
     # Optional: reports this Mat's non-idle span into tags.setMatBusy()
     # so PICLLCTags can deny CPU access while its job runs. Leave NULL to
@@ -43,29 +35,7 @@ class Mat(ClockedObject):
     # one fetch across the whole cache at a time, matches the RTL).
     load_l_port = RequestPort("Request port to AutoLoadL inst_port")
 
-    # Real C-/M-array read/write traffic to CacheController's cache
-    # banks. Same {addr, optype, data} shape as AutoLoadL's own request
-    # (RTL: the PolyArray SRAM port is a plain 64-bit read/write port --
-    # bit-slicing is a P2S-side concept, never seen past the SRAM port).
-    # Declared, and the response path exists, but nothing in mat_fsm/
-    # mat_datapath drives it yet -- see mat.cc's file comment.
-    cache_port = RequestPort("Request port to CacheController")
-
     # 8-byte reads/writes from AccessBankArb.mat_side into this Mat's
     # four sub-arrays. Packet address = arrayID_in_mat << 9 | wordline.
     array_side = ResponsePort("Array reads/writes from AccessBankArb")
     array_latency = Param.Cycles(1, "Cycles from array access to response")
-
-    # cal() command setup for this one Mat.
-    n_buf = Param.Unsigned(1, "nBuf")
-    n_cal = Param.Unsigned(3, "nCal")
-    acc_width = Param.Unsigned(16, "accWidth in bits (16 or 32)")
-    r_base_bit = Param.Unsigned(0, "R_base_bit")
-    r_block_row = Param.Unsigned(1, "R_block_row")
-    l_block_row = Param.Unsigned(1, "L_block_row")
-    l_precision = Param.Unsigned(0, "L_precision")
-    signed_l = Param.Bool(False, "signed_L")
-    signed_r_last_exist = Param.Bool(False, "signed_R_last_exist")
-    l_vec_fetch_addr = Param.UInt64(
-        0, "17-bit array address of this Mat's first L word"
-    )

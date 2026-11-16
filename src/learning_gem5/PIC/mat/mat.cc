@@ -17,30 +17,15 @@ Mat::Mat(const MatParams &params) :
     requestorId(params.system->getRequestorId(this, "Mat")),
     tickEvent([this] { processTick(); }, name()),
     loadPort(params.name + ".load_l_port", this),
-    cachePort(params.name + ".cache_port", this),
     arrayPort(params.name + ".array_side", this),
     arrayRespEvent([this] { processArrayResp(); }, name() + ".arrayResp"),
     arrayLatency(params.array_latency),
     maxCycles(params.max_cycles),
-    startCycles(params.start_cycles),
-    waitForSetup(params.wait_for_setup),
     pic(params.pic),
     bankIndex(params.bank_index),
     way(params.way),
     tags(params.tags)
 {
-    setUp.exec = !waitForSetup;
-    setUp.nBuf = params.n_buf;
-    setUp.nCal = params.n_cal;
-    setUp.accWidth = params.acc_width;
-    setUp.R_base_bit = params.r_base_bit;
-    setUp.R_block_row = params.r_block_row;
-    setUp.L_block_row = params.l_block_row;
-    setUp.L_precision = params.l_precision;
-    setUp.L_vec_fetch_addr = params.l_vec_fetch_addr;
-    setUp.signed_L = params.signed_l;
-    setUp.signed_R_last_exist = params.signed_r_last_exist;
-
     fsm.setRequestVecFire([this] { return requestVec(); });
     fsm.setResponseVecFire([this] { return responseVec(); });
 }
@@ -50,20 +35,9 @@ Mat::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "load_l_port")
         return loadPort;
-    if (if_name == "cache_port")
-        return cachePort;
     if (if_name == "array_side")
         return arrayPort;
     return ClockedObject::getPort(if_name, idx);
-}
-
-void
-Mat::startup()
-{
-    // A normal cache Mat has no controller, so it never runs a job. A
-    // wait_for_setup Mat starts in startCal().
-    if (pic && !waitForSetup)
-        schedule(tickEvent, clockEdge(startCycles));
 }
 
 // Scala: Bank.scala L63-76 -- set_up_io.exec reaches only the Mat whose
@@ -73,8 +47,6 @@ void
 Mat::startCal(const mat_fsm::SetUpIO &cmd)
 {
     panic_if(!pic, "%s: EXE sent to a normal cache Mat", name());
-    panic_if(!waitForSetup, "%s: EXE sent to a Mat that runs its own "
-             "cal() (wait_for_setup is False)", name());
     // RTL: Controller only looks at exec in main_idle, so an EXE sent to a
     // busy Mat is lost. Panic instead, so a test that does that fails.
     panic_if(fsm.state() != mat_fsm::MainState::MainIdle ||
@@ -83,6 +55,8 @@ Mat::startCal(const mat_fsm::SetUpIO &cmd)
 
     setUp = cmd;
     setUp.exec = true;
+    cycles = 0;
+    loads = 0;
     DPRINTF(MatBank, "bank %u way %u: EXE set-up nBuf=%u nCal=%u "
             "accWidth=%u R_base_bit=%u R_block_row=%u L_block_row=%u "
             "L_precision=%u L_vec_fetch_addr=%#llx signed_L=%d "
@@ -257,19 +231,6 @@ Mat::handleArrayRespRetry()
     processArrayResp();
 }
 
-// Not yet exercised -- see mat.hh's class doc comment.
-bool
-Mat::handleCacheResp(PacketPtr pkt)
-{
-    delete pkt;
-    return true;
-}
-
-void
-Mat::handleCacheRetry()
-{
-}
-
 void
 Mat::processTick()
 {
@@ -292,7 +253,6 @@ Mat::processTick()
     }
 
     if (!setUp.exec && isIdleNow) {
-        done = true;
         uint64_t mSum = 0;
         for (unsigned r = 0; r < mat_fsm::MArrayWordlineNums; ++r)
             mSum += fsm.datapath().mArrayWord(r) * (r + 1);

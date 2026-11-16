@@ -211,7 +211,7 @@ class Case:
         out.update(self.l_words())
         return out
 
-    def mat_params(self):
+    def cal_params(self): #change from mat_params to cal_params, because it wont goes into mat anymore
         return dict(n_buf=self.n_buf, n_cal=self.n_cal,
                     acc_width=self.acc_width, r_base_bit=self.r_base_bit,
                     r_block_row=self.r_block_row,

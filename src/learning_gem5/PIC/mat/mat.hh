@@ -15,19 +15,6 @@
 namespace gem5
 {
 
-/** {addr, optype, data} -- same shape as AutoLoadLPayload's read, plus a
- *  write side. RTL: the PolyArray SRAM port is a plain 64-bit
- *  addr/write_enable/dataIn/dataOut port (PolyArray.scala:27-29) --
- *  bit-slicing is a P2S-side concept, never seen once data reaches this
- *  port, so this carries no bit-slice metadata either. */
-enum class MatCacheOp : uint8_t { READ, WRITE };
-struct MatCacheReqPayload
-{
-    uint64_t addr;
-    MatCacheOp optype;
-    uint64_t data;  // valid on WRITE; the read result on a READ response
-};
-
 /**
  * One PIC Mat, one SimObject -- replaces the earlier MatBank (which
  * batched a whole bank's Mats behind one shared tick event). Each Mat
@@ -41,13 +28,7 @@ struct MatCacheReqPayload
  * client, one fetch in flight across the whole cache at a time -- see
  * AutoLoadL.hh).
  *
- * cache_port carries MatCacheReqPayload to CacheController, but nothing
- * in mat_fsm/mat_datapath drives it yet: MatFSM's cal()/tickBackground()
- * are still built synchronous/timing-free (the original design mandate),
- * and reading/writing through a real port means tolerating a real
- * round-trip response latency mid-command -- that needs a real design
- * pass on its own, not a port declaration. handleCacheResp() exists so
- * the response path is wired end to end once that lands.
+ * MatSetUpRouter delivers Scheduler CAL commands through startCal().
  */
 class Mat : public ClockedObject
 {
@@ -64,21 +45,6 @@ class Mat : public ClockedObject
 
       public:
         LoadPort(const std::string &name, Mat *owner)
-            : RequestPort(name, owner), owner(owner) {}
-    };
-
-    class CachePort : public RequestPort
-    {
-      private:
-        Mat *owner;
-
-      protected:
-        bool recvTimingResp(PacketPtr pkt) override
-        { return owner->handleCacheResp(pkt); }
-        void recvReqRetry() override { owner->handleCacheRetry(); }
-
-      public:
-        CachePort(const std::string &name, Mat *owner)
             : RequestPort(name, owner), owner(owner) {}
     };
 
@@ -108,7 +74,6 @@ class Mat : public ClockedObject
     EventFunctionWrapper tickEvent;
 
     LoadPort loadPort;
-    CachePort cachePort;
     ArrayPort arrayPort;
     EventFunctionWrapper arrayRespEvent;
     const Cycles arrayLatency;
@@ -121,14 +86,11 @@ class Mat : public ClockedObject
     PacketPtr blockedReq = nullptr;  // request_vec.valid, not granted
     bool reqFired = false;   // granted after a retry
     bool respArrived = false;
-    bool done = false;
     unsigned loads = 0;
     unsigned droppedArrayAccesses = 0;
 
     unsigned cycles = 0;
     const unsigned maxCycles;
-    const Cycles startCycles;
-    const bool waitForSetup;
     const bool pic;
     const unsigned bankIndex;
     const unsigned way;
@@ -138,9 +100,6 @@ class Mat : public ClockedObject
     bool responseVec();
     bool handleLoadResp(PacketPtr pkt);
     void handleLoadRetry();
-    // Not yet called by anything -- see the class doc comment.
-    bool handleCacheResp(PacketPtr pkt);
-    void handleCacheRetry();
     bool handleArrayReq(PacketPtr pkt);
     void handleArrayRespRetry();
     void processArrayResp();
@@ -151,12 +110,11 @@ class Mat : public ClockedObject
 
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
-    void startup() override;
 
     unsigned bank() const { return bankIndex; }
     unsigned wayIndex() const { return way; }
 
-    /** One EXE's set-up (wait_for_setup Mats), from MatSetUpRouter. */
+    /** One Scheduler EXE's set-up, delivered by MatSetUpRouter. */
     void startCal(const mat_fsm::SetUpIO &cmd);
 };
 

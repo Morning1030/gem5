@@ -66,9 +66,7 @@ NUM_SETS = _CACHE_BYTES // (_BLOCK_SIZE * NUM_WAYS)  # 1024
 
 
 class PICCache:
-    #" **mat_cal_params " will expand -> nBuf, nCal, accWidth, etc. It will change in each cal()
-    def __init__(self, system, pic_way_mask=0, with_ctrl=False,
-                 **mat_cal_params):
+    def __init__(self, system, pic_way_mask=0, with_ctrl=False):
         self.pic_way_mask = pic_way_mask
         self.ctrl = None
 
@@ -134,7 +132,6 @@ class PICCache:
                     bank_index=b,
                     way=w,
                     tags=self.tags,
-                    **mat_cal_params,
                 )
                 self.mats.append(mat)
         system.mats = self.mats
