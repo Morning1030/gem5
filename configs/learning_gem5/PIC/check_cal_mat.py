@@ -28,7 +28,9 @@ def main():
     expected = case.m_expected()
     guards = case.guards()
     golden = case.golden()
-    per, bits = case.per_word(), case.acc_width
+    #per, bits = case.per_word(), case.acc_width
+    #did not use per
+    bits = case.acc_width
     mask = (1 << bits) - 1
 
     fails = []
@@ -85,6 +87,10 @@ def main():
     check(dropped == 0, f"no array access dropped while the Mat was busy "
           f"({dropped})")
 
+    # add check if EXE send to the right mat
+    mat_id = ctd.MAT[0] * ctd.NUM_BANKS + ctd.MAT[1]
+    routed = f'EXE -> matID {mat_id} (bank {ctd.MAT[1]} way {ctd.MAT[0]})'
+    check(routed in text, "Scheduler EXE routed to the target Mat")
     finished = 'finished' in text and 'because Mat finished' in text
     check(finished, "the Mat finished its job")
     exits = re.findall(r'Exiting @ tick \d+ because (.*)', text)
