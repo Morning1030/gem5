@@ -51,6 +51,8 @@ class FlushController {
     void processDeqEvent();
     void processSendEvent();
     void processDoneEvent();
+    /** RTL 在 doneEdge (T) 看到 flushDone：T+1 回到 flush_idle */
+    void finishFlush(Tick doneEdge);
 
   public:
     explicit FlushController(SwitchController *owner);

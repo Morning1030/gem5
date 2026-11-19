@@ -121,7 +121,7 @@ class SwitchController : public ClockedObject
 
     // FlushController 通知：queue 騰出位置 / flush 全部做完
     void flushDequeued();
-    void flushAllDone();
+    void flushAllDone(Tick respAt);
 
     void sendWayQuery();
     void respondSwitch();

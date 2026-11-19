@@ -17,7 +17,8 @@ namespace gem5
 //  只在狀態會變的那拍被叫醒：
 //    deqEvent   queue 有東西、而且 flush idle
 //    sendEvent  deq 的下一拍
-//    doneEvent  FlushDone response 回來的那拍
+//    doneEvent  FlushDone response 剛好在 edge 上回來時，本拍處理
+//               （QueuedResponsePort 晚 1 tick 到的情況直接 finishFlush）
 // =================================================================
 
 FlushController::FlushController(SwitchController *owner)
@@ -95,21 +96,40 @@ FlushController::handleFlushResponse(PacketPtr pkt)
     DPRINTF(SwitchCtrl, "FlushCtl: FlushDone set=%u tag=%#x\n",
             currentEntry.setID, currentEntry.tag);
     delete pkt;
-    // 這拍（不在 edge 上就是下一個 edge）回到 idle
-    owner->schedule(doneEvent, owner->clockEdge());
+
+    // RTL: switchFlushOK 是組合邏輯（FlushReqRouter is_switchCtlReq →
+    // Scheduler.scala:426），SourceX 回應的那拍 T 就是 wait_flushDone 看到
+    // flushDone 的那拍，T+1 回到 flush_idle。
+    if (owner->clockEdge() == curTick()) {
+        // 剛好在 edge 上收到：排在本拍 switch event 之後處理
+        owner->schedule(doneEvent, curTick());
+    } else {
+        // CacheController 走 QueuedResponsePort，一律晚 1 tick 送到
+        // （mem/packet_queue.cc: when = max(when, curTick() + 1)）。
+        // 邏輯上是前一個 edge T 收到的；T 的 event 都跑完了，直接處理，
+        // 不要再往上取整到下一個 edge（那樣會多算一拍）。
+        finishFlush(owner->clockEdge() - owner->clockPeriod());
+    }
     return true;
 }
 
 void
 FlushController::processDoneEvent()               // RTL wait_flushDone → flush_idle
 {
+    finishFlush(curTick());
+}
+
+void
+FlushController::finishFlush(Tick doneEdge)       // doneEdge = RTL 看到 flushDone 的那拍 T
+{
     flushState = State::Idle;
+    const Tick idleCycle = doneEdge + owner->clockPeriod();   // T+1：flush_idle
     if (!flushQueue.empty()) {
-        // 下一拍 flush_idle deq（包含這拍剛 enqueue 的）
+        // T+1 flush_idle deq（visibleAt 比 T+1 晚的，processDeqEvent 會再延後）
         if (!deqEvent.scheduled())
-            owner->schedule(deqEvent, owner->clockEdge(Cycles(1)));
+            owner->schedule(deqEvent, idleCycle);
     } else {
-        owner->flushAllDone();                    // resp_op_res 下一拍看得到
+        owner->flushAllDone(idleCycle);           // resp_op_res 在 T+1 看得到
     }
 }
 

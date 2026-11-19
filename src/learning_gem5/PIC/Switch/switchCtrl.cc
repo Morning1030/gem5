@@ -440,11 +440,11 @@ SwitchController::flushDequeued()
 }
 
 void
-SwitchController::flushAllDone()
+SwitchController::flushAllDone(Tick respAt)
 {
     // flush 這拍回到 idle，下一拍的 resp_op_res 才看得到
     if (switchState == State::RespOpRes && !respEvent.scheduled())
-        schedule(respEvent, clockEdge(Cycles(1)));
+        schedule(respEvent, respAt);
 }
 
 void
