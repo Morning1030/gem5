@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(otool -L build/RISCV/gem5.opt)",
+      "Bash(grep -v \"^--$\")",
+      "Bash(build/RISCV/gem5.opt --outdir=m5out/queue_test/cal_acc_u16_final configs/learning_gem5/PIC/cal_acc_e2e.py u16)",
+      "Bash(awk '$1+0 >= 2400000 && $1+0 <= 2420000' m5out/queue_test/cal_acc_u16.log)",
+      "Bash(bash /private/tmp/claude-501/-Users-christine729-Desktop-gem5/ccdfc80d-7355-463d-afbc-a10135fc9e42/scratchpad/run_all.sh)",
+      "Bash(PYTHONPATH=src/learning_gem5/PIC build/RISCV/gem5.opt --debug-flags=Scheduler --outdir=m5out/pre_push/acc_store_dbg configs/learning_gem5/PIC/acc_store_e2e.py)"
+    ]
+  }
+}

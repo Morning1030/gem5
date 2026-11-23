@@ -56,13 +56,14 @@ class DMAWritePageSplit : public ClockedObject
     MemSidePort dramPort;
     RequestorID requestorId;
     PacketPtr pendingReqPkt;
-    EventFunctionWrapper tlbQueryEvent;
-    EventFunctionWrapper issueWriteEvent;
-
+    bool needRetry;
     Addr vaddrPtr;
     Addr paddrPtr;
     uint32_t validNBytes;
     std::vector<uint8_t> cacheBankData;
+
+    EventFunctionWrapper tlbQueryEvent;
+    EventFunctionWrapper issueWriteEvent;
 
   public:
     DMAWritePageSplit(const DMAWritePageSplitParams &params);

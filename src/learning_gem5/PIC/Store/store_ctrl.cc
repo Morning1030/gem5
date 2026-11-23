@@ -108,7 +108,7 @@ StoreCtrl::handleRequest(PacketPtr pkt)
     pendingReqPkt = pkt;
 
     const LSPayload* lsPayload= pkt->getConstPtr<LSPayload>();
-    src = (lsPayload->src * 8);  // row index shift 3 bits
+    src = lsPayload->src;  // row index shift 3 bits(?)
     dst = lsPayload->dst;
     row = lsPayload->row;                   
     byte_per_row = lsPayload->byte_per_row;
@@ -120,9 +120,11 @@ StoreCtrl::handleRequest(PacketPtr pkt)
     if (one_shot) {
         fetchSize = row * byte_per_row;
         row = 1U;
+        DPRINTF(StoreCtrl, "one shot\n");
     }
     else {
         fetchSize = byte_per_row;
+        DPRINTF(StoreCtrl, "not one shot\n");
     }
     
     if (!bankFetchEvent.scheduled()) {
@@ -166,7 +168,11 @@ StoreCtrl::processBankFetchEvent()
     pkt->pushSenderState(new BankFetchSenderState(bankFetchReq));
     bankFetchPort.sendPacket(pkt);
     
-    DPRINTF(StoreCtrl, "Send bankFetch Request to %llx, requesting %u bytes\n", src, fetchSize);
-    
+    uint16_t mat, bank, array, row;
+    row = ((src >> 3) & 0b111111111);
+    array = (src >> 12) & 0b11;
+    bank = (src >> 14) & 0b11;
+    mat = (src >> 16) & 0b1111;
+    DPRINTF(StoreCtrl, "Send bankFetch Request to %d/%d/%d/%d, requesting %u bytes\n", mat, bank, array, row, fetchSize);
 }
 }

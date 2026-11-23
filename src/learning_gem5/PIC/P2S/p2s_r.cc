@@ -230,11 +230,15 @@ P2S_R::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     }
     else if (picPortID == PICPortID::CB) {
         delete pkt;
-        // Done only after the last queued write is acked. The RTL P2S_R
+        panic_if(writesInFlight == 0, "%s: cache-bank ACK with no write "
+                 "outstanding", name());
+        --writesInFlight;
+        // Done only after every write is acked (AccessBankArb queues
+        // writes, so an ACK can belong to an earlier write). The RTL P2S_R
         // busy does not include its sliceDataQueue: it drops to 0 once the
         // last slice is enqueued, with up to 8 writes not yet through the
         // arbiter.
-        if (p2sDone && bitSliceQueue.empty()) {
+        if (p2sDone && bitSliceQueue.empty() && writesInFlight == 0) {
             pendingReqPkt->makeResponse();
             instPort.sendPacket(pendingReqPkt);
         }
@@ -374,6 +378,7 @@ P2S_R::processWriteEvent() {
         bool success = cacheBankPort.sendTimingReq(pkt);
         if (success) {
             bitSliceQueue.pop_front();
+            ++writesInFlight;
             schedule(writeEvent, clockEdge(Cycles(1)));
         }
         else {

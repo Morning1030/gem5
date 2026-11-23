@@ -1,11 +1,11 @@
 # AccessBankArb Block state. MatSink turns away the first request on every
 # Mat port and sends a retry 20 cycles later, so the arbiter has to hold
-# the packet, mark that bank not ready, freeze other clients that need it,
-# and resend on retry. Data written through this must still read back
+# the packet at the head of its queue, keep every request behind it
+# waiting, and resend on retry. Data written through this must still read back
 # correctly (MatSink keeps the data per Mat port).
 #
-# Run with --debug-flags=PICBankArb to see the refusals, the "bank busy"
-# grants and the retries.
+# Run with --debug-flags=PICBankArb to see the queued requests, the
+# refusals and the retries.
 
 import m5
 from m5.objects import *
@@ -37,7 +37,7 @@ def R(a, d):
 
 
 # writer0 and writer1 hit the same bank (0), different Mats. writer2 hits
-# bank 1, so it should only be held up while the arbiter is in Block.
+# bank 1, so it is only held up while it waits behind a refused head.
 writes0 = [(addr(1, 0, 0, 0), 0xA0A0A0A0A0A0A0A0),
            (addr(1, 0, 0, 1), 0xA1A1A1A1A1A1A1A1)]
 writes1 = [(addr(2, 0, 0, 0), 0xB0B0B0B0B0B0B0B0),

@@ -1,10 +1,9 @@
 # -*- mode:python -*-
 
-# mod: p2s_arbiter
-# AccessBankArb -- SimObject. Single round-robin arbiter shared by all
-# seven SysConfig clients for access to the
-# PIC bank hierarchy's shared physical port. See access_bank_arb.hh for the
-# full design note and the port protocol P2S speaks on p2s_side.
+# AccessBankArb -- SimObject. The one path from all seven SysConfig clients
+# into the PIC cache-bank Mats (RTL AccessBank_Arb). gem5 only: instead of
+# the RTL round-robin arbiter, every request is accepted on arrival into one
+# FIFO and the head goes to its Mat, one per cycle. See access_bank_arb.hh.
 
 from m5.objects.ClockedObject import ClockedObject
 from m5.params import *
