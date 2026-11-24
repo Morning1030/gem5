@@ -253,7 +253,8 @@ void
 Scheduler::processDecodeEvent()
 {
     // check at the entrance
-    if (currState != TaskState::IDLE) return;    // || instQueue.empty() ??
+    // if (currState != TaskState::IDLE) return;    // || instQueue.empty() ??
+    if (instQueue.empty()) return;
 
     PacketPtr pkt = instQueue.front();
     instQueue.pop_front();
@@ -280,9 +281,9 @@ Scheduler::processDecodeEvent()
 
     const uint64_t dataPayload = pkt->getLE<uint64_t>();
 
-    DPRINTF(Scheduler, "Decoding request addr=%#llx value=%#llx\n",
-            static_cast<unsigned long long>(pktAddr),
-            static_cast<unsigned long long>(dataPayload));
+    // DPRINTF(Scheduler, "Decoding request addr=%#llx value=%#llx\n",
+    //         static_cast<unsigned long long>(pktAddr),
+    //         static_cast<unsigned long long>(dataPayload));
 
     switch (MMIOOffset) {
         // SET_SRC
@@ -324,7 +325,7 @@ Scheduler::processDecodeEvent()
     // SET_PARAM, wait for processPrepareTaskEvent: the next SETs belong to
     // the next command and must not overwrite src/dst/size before this
     // task has taken them (RTL CMD_resolver latches them at SET_PARAM).
-    if (currState == TaskState::IDLE && !instQueue.empty() &&
+    if (!instQueue.empty() &&
         !prepareTaskEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));    // temporarily set to 1
     }
@@ -341,8 +342,7 @@ Scheduler::processPrepareTaskEvent()
 
     // This task takes src/dst/size below, in this event; the next
     // command's SETs can be decoded from the next cycle on.
-    if (currState == TaskState::IDLE && !instQueue.empty() &&
-        !decodeEvent.scheduled()) {
+    if (!instQueue.empty() && !decodeEvent.scheduled()) {
         schedule(decodeEvent, clockEdge(Cycles(1)));
     }
 
@@ -604,12 +604,17 @@ Scheduler::processPrepareTaskEvent()
     }
     // for most case, proceed to enqueue state
     // TODO find a way to checkt whether nextEnqTask is valid
-    if (nextEnqTask.pkt != nullptr && !enqueEvent.scheduled()) {
-        schedule(enqueEvent, clockEdge(Cycles(1)));
-    }
+    // if (nextEnqTask.pkt != nullptr && !enqueEvent.scheduled()) {
+    //     schedule(enqueEvent, clockEdge(Cycles(1)));
+    // }
     // if (isImmCmd && !triggerEvent.scheduled()) {
     //     schedule(triggerEvent, clockEdge(Cycles(1)));
     // }
+    if (nextEnqTask.pkt != nullptr) {
+            nextTask.push_back(nextEnqTask);
+            DPRINTF(Scheduler, "Enqueue the Task to queue\n");
+            schedule(setCmdEvent, clockEdge(Cycles(1)));
+    }
 }
 void
 Scheduler::processEnqueEvent() {

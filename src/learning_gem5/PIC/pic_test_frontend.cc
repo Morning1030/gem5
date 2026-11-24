@@ -63,29 +63,44 @@ PicTestFrontend::append(
 void
 PicTestFrontend::buildProtocolSmokeTrace()
 {
-    // if (trace == "load") {
-    //     // One LOAD (SET_SRC, SET_DST, SET_SIZE, SET_PARAM) per entry.
-    //     uint8_t commandId = 1;
-    //     for (const std::string &line : loadCmds) {
-    //         std::istringstream in(line);
-    //         std::string src, dst, row, bpr, off;
-    //         in >> src >> dst >> row >> bpr >> off;
-    //         panic_if(off.empty(), "%s bad load command '%s'", name(), line);
+    if (trace == "load") {
 
-    //         SizeFields size{
-    //             static_cast<uint16_t>(std::stoul(row, nullptr, 0)),
-    //             static_cast<uint16_t>(std::stoul(bpr, nullptr, 0)),
-    //             static_cast<uint16_t>(std::stoul(off, nullptr, 0))};
-    //         panic_if(!validSize(size),
-    //                  "%s load '%s' does not fit SET_SIZE (row and "
-    //                  "bytePerRow 11 bits, offset 15 bits)", name(), line);
+        SizeFields size{
+            static_cast<uint16_t>(8),
+            static_cast<uint16_t>(16),
+            static_cast<uint16_t>(64)};
 
-    //         append(PicFunctionBuilder::load(
-    //             std::stoull(src, nullptr, 0), std::stoull(dst, nullptr, 0),
-    //             size, commandId++));
-    //     }
-    //     return;
-    // }
+        append(PicFunctionBuilder::load(
+            0x80001000,
+            0x00020000,
+            size,
+            commandId++
+        ));
+        for (const std::string &line : calCmds) {
+            std::istringstream in(line);
+            std::vector<uint64_t> f;
+            std::string word;
+            while (in >> word)
+                f.push_back(std::stoull(word, nullptr, 0));
+            panic_if(f.size() != 12, "%s bad cal command '%s' (12 fields)",
+                     name(), line);
+            // ISA_defines.scala ISA_EXE: field widths.
+            panic_if(f[1] > mask(6) || f[2] > mask(10) || f[3] > mask(2) ||
+                     f[4] > mask(2) || f[5] > mask(3) || f[6] > mask(3) ||
+                     f[7] > mask(8) || f[8] > 1 || f[9] > 1 || f[10] > 1 ||
+                     f[11] > 1,
+                     "%s cal '%s' does not fit EXE's fields", name(), line);
+
+            ExeParams exe{
+                static_cast<uint16_t>(f[2]), static_cast<uint8_t>(f[3]),
+                static_cast<uint8_t>(f[4]), static_cast<uint8_t>(f[5]),
+                static_cast<uint8_t>(f[6]), static_cast<uint8_t>(f[7]),
+                f[8] != 0, f[9] != 0, f[10] != 0, f[11] != 0};
+            append(PicFunctionBuilder::exe(
+                f[0], static_cast<uint8_t>(f[1]), commandId++, exe));
+        }
+        return;
+    }
     
     if (trace == "store") {
 
@@ -93,18 +108,18 @@ PicTestFrontend::buildProtocolSmokeTrace()
             PicFunctionBuilder::acc(
                 0x00025000,
                 0x00028000,
-                4,
+                1,
                 2,
                 64,
                 accBitWidthCode));
         append(
             PicFunctionBuilder::store(
-                0x25000,
+                0x00025000,
                 0x80001F00,
                 8,
                 16,
                 64,
-                8
+                2
             ));
         return;
     }

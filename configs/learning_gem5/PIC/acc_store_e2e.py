@@ -242,4 +242,4 @@ print(
 # scons build/ALL/gem5.opt -j$(nproc)
 # PYTHONPATH=src/learning_gem5/PIC build/ALL/gem5.opt \
 #   --debug-flags=Scheduler \
-#   configs/learning_gem5/PIC/store_e2e.py
+#   configs/learning_gem5/PIC/acc_store_e2e.py
