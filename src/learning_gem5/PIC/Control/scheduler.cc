@@ -113,7 +113,7 @@ Scheduler::CPUSidePort::recvRespRetry()
 Scheduler::MemSidePort::MemSidePort(
     const std::string& name,
     Scheduler *owner,
-    PICPortID picPortID) : 
+    PICPortID picPortID) :
     RequestPort(name),
     owner(owner),
     picPortID(picPortID),
@@ -160,7 +160,7 @@ Scheduler::handleRequest(PacketPtr pkt)
 
     // TODO prevent from decoding every cycle
     // if (!instQueue.empty() && taskScheduler.idle() &&
-    //     !instPort.responseBlocked() && !decodeEvent.scheduled()) { 
+    //     !instPort.responseBlocked() && !decodeEvent.scheduled()) {
     //     schedule(decodeEvent, clockEdge(Cycles(1)));
     // }
     if (!instQueue.empty() && currState == TaskState::IDLE &&
@@ -401,7 +401,7 @@ Scheduler::processPrepareTaskEvent()
         }
         case pic::ModuleID::P2S_L: {
             // decode the params from SET_PARAM
-            
+
             uint8_t precision = static_cast<uint8_t>((dataPayload >> 8)& 0x7);    // precision is 3 bit
 
             RequestPtr request = std::make_shared<Request>(

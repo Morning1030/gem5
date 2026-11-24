@@ -1,13 +1,15 @@
 import os
 import sys
 
+from pic_cache import PICCache
+
 import m5
 from m5.objects import *
-from pic_cache import PICCache
 
 NUM_BANKS = 4
 FIRST_PIC_MAT = 1
-READ_START = 300000   # cycles; readers start after every LOAD is done
+READ_START = 300000  # cycles; readers start after every LOAD is done
+
 
 def array_addr(mat, bank, array, row):
     # [ matID_in_bank(4) | bankID(2) | arrayID_in_mat(2) | wordline(9) ]
@@ -23,6 +25,7 @@ def dram_byte(a):
     its neighbours, so a shifted or dropped byte shows up."""
     return ((a * 0x9E) ^ (a >> 7) ^ 0x5A) & 0xFF
 
+
 # --------------------------------------------------------------------------
 # System
 # --------------------------------------------------------------------------
@@ -30,14 +33,14 @@ def dram_byte(a):
 system = System()
 root = Root(full_system=False, system=system)
 system.clk_domain = SrcClockDomain()
-system.clk_domain.clock = '1GHz'
+system.clk_domain.clock = "1GHz"
 system.clk_domain.voltage_domain = VoltageDomain()
-system.mem_mode = 'timing'
-system.mem_ranges = [AddrRange(start=0x80000000, size='64MiB')]
+system.mem_mode = "timing"
+system.mem_ranges = [AddrRange(start=0x80000000, size="64MiB")]
 
 # memory system (DRAM, bus, system port for DMA patterns)
 system.membus = SystemXBar()
-system.memory = SimpleMemory(range=system.mem_ranges[0], latency='10ns')
+system.memory = SimpleMemory(range=system.mem_ranges[0], latency="10ns")
 system.memory.port = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
@@ -54,7 +57,7 @@ system.test_frontend = PicTestFrontend(
     inter_command_gap=1,
     exit_on_finish=False,
     trace="store",
-    acc_bit_width_code=1
+    acc_bit_width_code=1,
 )
 
 # scheduler
@@ -94,7 +97,7 @@ system.dma.mem_side = system.membus.cpu_side_ports
 system.bank_fetch.cb_port = system.bank_arb.bank_fetch_side
 for mat in cache.mats:
     system.bank_arb.mat_side = mat.array_side
-    system.autoloadl.inst_port =  mat.load_l_port
+    system.autoloadl.inst_port = mat.load_l_port
 
 system.autoloadl.cb_port = system.bank_arb.autoload_side
 
@@ -111,10 +114,7 @@ m5.instantiate()
 exit_event = m5.simulate()
 
 print(
-    'Exiting @ tick {} because {}'.format(
-        m5.curTick(),
-        exit_event.getCause()
-    )
+    f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}"
 )
 
 # export PATH=$(echo $PATH | tr ':' '\n' | grep -v miniconda | grep -v condabin | paste -sd: -)

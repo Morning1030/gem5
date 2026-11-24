@@ -101,7 +101,7 @@ PicTestFrontend::buildProtocolSmokeTrace()
         }
         return;
     }
-    
+
     if (trace == "store") {
 
         append(
@@ -218,7 +218,7 @@ PicTestFrontend::buildProtocolSmokeTrace()
 
         return;
     }
-    
+
     if (trace == "switch") {
         append(
             PicFunctionBuilder::switchMode(
