@@ -21,6 +21,7 @@ PicTestFrontend::PicTestFrontend(const PicTestFrontendParams &params)
       trace(params.trace),
       loadCmds(params.load_cmds),
       calCmds(params.cal_cmds),
+      programCmds(params.program_cmds),
       accBitWidthCode(static_cast<uint8_t>(params.acc_bit_width_code)),
       sendEvent([this] { processSendEvent(); }, name() + ".send_event")
 {
@@ -58,6 +59,64 @@ PicTestFrontend::append(
         requests.end(),
         writes.begin(),
         writes.end());
+}
+
+namespace
+{
+// gem5 only: split a trace line into numbers (decimal or 0x hex).
+std::vector<uint64_t>
+parseFields(const std::string &line)
+{
+    std::istringstream in(line);
+    std::vector<uint64_t> f;
+    std::string word;
+    while (in >> word)
+        f.push_back(std::stoull(word, nullptr, 0));
+    return f;
+}
+} // anonymous namespace
+
+// Scala: ISA.c EXE() -- one EXE (SET_SRC = baseLAddr, SET_DST =
+// targetMatID, SET_PARAM CAL). @p fields are EXE()'s arguments in order,
+// without cmdID.
+void
+PicTestFrontend::appendExe(const std::string &fields, uint8_t commandId)
+{
+    const std::vector<uint64_t> f = parseFields(fields);
+    panic_if(f.size() != 12, "%s bad cal command '%s' (12 fields)",
+             name(), fields);
+    // ISA_defines.scala ISA_EXE: field widths.
+    panic_if(f[1] > mask(6) || f[2] > mask(10) || f[3] > mask(2) ||
+             f[4] > mask(2) || f[5] > mask(3) || f[6] > mask(3) ||
+             f[7] > mask(8) || f[8] > 1 || f[9] > 1 || f[10] > 1 ||
+             f[11] > 1,
+             "%s cal '%s' does not fit EXE's fields", name(), fields);
+
+    ExeParams exe{
+        static_cast<uint16_t>(f[2]), static_cast<uint8_t>(f[3]),
+        static_cast<uint8_t>(f[4]), static_cast<uint8_t>(f[5]),
+        static_cast<uint8_t>(f[6]), static_cast<uint8_t>(f[7]),
+        f[8] != 0, f[9] != 0, f[10] != 0, f[11] != 0};
+    append(PicFunctionBuilder::exe(
+        f[0], static_cast<uint8_t>(f[1]), commandId, exe));
+}
+
+// Scala: ISA.c ACC() -- one ACC (SET_SRC, SET_DST, SET_PARAM ACC). @p
+// fields are ACC()'s arguments in order, without cmdID: onChipSrcAddr,
+// onChipDstAddr, srcNum, accRowNum, bitWidth (1 = 32-bit).
+void
+PicTestFrontend::appendAcc(const std::string &fields, uint8_t commandId)
+{
+    const std::vector<uint64_t> f = parseFields(fields);
+    panic_if(f.size() != 5, "%s bad acc command '%s' (5 fields)",
+             name(), fields);
+    // gem5 packAccParams(): srcNum 3 bits, accRowNum 11 bits, bitWidth 1.
+    panic_if(f[2] == 0 || f[2] > mask(3) || f[3] == 0 || f[3] > mask(11) ||
+             f[4] > 1,
+             "%s acc '%s' does not fit ACC's fields", name(), fields);
+    append(PicFunctionBuilder::acc(
+        f[0], f[1], commandId, static_cast<uint8_t>(f[2]),
+        static_cast<uint16_t>(f[3]), static_cast<uint8_t>(f[4])));
 }
 
 void
@@ -175,29 +234,40 @@ PicTestFrontend::buildProtocolSmokeTrace()
         // Scala: ISA.c EXE() -- one EXE (SET_SRC = baseLAddr, SET_DST =
         // targetMatID, SET_PARAM CAL) per entry, fields in EXE()'s order.
         uint8_t commandId = 1;
-        for (const std::string &line : calCmds) {
-            std::istringstream in(line);
-            std::vector<uint64_t> f;
-            std::string word;
-            while (in >> word)
-                f.push_back(std::stoull(word, nullptr, 0));
-            panic_if(f.size() != 12, "%s bad cal command '%s' (12 fields)",
-                     name(), line);
-            // ISA_defines.scala ISA_EXE: field widths.
-            panic_if(f[1] > mask(6) || f[2] > mask(10) || f[3] > mask(2) ||
-                     f[4] > mask(2) || f[5] > mask(3) || f[6] > mask(3) ||
-                     f[7] > mask(8) || f[8] > 1 || f[9] > 1 || f[10] > 1 ||
-                     f[11] > 1,
-                     "%s cal '%s' does not fit EXE's fields", name(), line);
+        for (const std::string &line : calCmds)
+            appendExe(line, commandId++);
+        return;
+    }
 
-            ExeParams exe{
-                static_cast<uint16_t>(f[2]), static_cast<uint8_t>(f[3]),
-                static_cast<uint8_t>(f[4]), static_cast<uint8_t>(f[5]),
-                static_cast<uint8_t>(f[6]), static_cast<uint8_t>(f[7]),
-                f[8] != 0, f[9] != 0, f[10] != 0, f[11] != 0};
-            append(PicFunctionBuilder::exe(
-                f[0], static_cast<uint8_t>(f[1]), commandId++, exe));
+    // gem5 only: a short program, every command sent right after the one
+    // before it without waiting for it to finish. 'wait <cycles>' stands
+    // in for ISA.c waitEnqCmdFree(): its QUERY cannot work yet, since
+    // nothing in gem5 marks an EXE as finished in CmdStateHelper.
+    if (trace == "program") {
+        uint8_t commandId = 1;
+        for (const std::string &line : programCmds) {
+            std::istringstream in(line);
+            std::string op;
+            in >> op;
+            std::string rest;
+            std::getline(in, rest);
+
+            if (op == "cal") {
+                appendExe(rest, commandId++);
+            } else if (op == "acc") {
+                appendAcc(rest, commandId++);
+            } else if (op == "wait") {
+                const std::vector<uint64_t> f = parseFields(rest);
+                panic_if(f.size() != 1, "%s bad wait '%s' (1 field)",
+                         name(), line);
+                waitBefore[requests.size()] += Cycles(f[0]);
+            } else {
+                panic("%s unknown program command '%s' (cal, acc, wait)",
+                      name(), line);
+            }
         }
+        panic_if(waitBefore.count(requests.size()),
+                 "%s program ends with a wait", name());
         return;
     }
 
@@ -252,8 +322,21 @@ PicTestFrontend::processSendEvent()
 
         return;
     }
+
+    // gem5 only: trace 'program' wait -- hold this SET, then send it.
+    auto wait = waitBefore.find(sentRequests);
+    if (wait != waitBefore.end()) {
+        const Cycles cycles = wait->second;
+        waitBefore.erase(wait);
+        DPRINTF(PicTestFrontend, "wait %llu cycles before SET %llu\n",
+                static_cast<unsigned long long>(cycles),
+                static_cast<unsigned long long>(sentRequests));
+        schedule(sendEvent, clockEdge(cycles));
+        return;
+    }
     // waitingForTransport = true;
 
+    ++sentRequests;
     transport->submit(
         requests.front(),
         // TBD 應該改成recvTimingResp再forward給handleResponse

@@ -155,9 +155,8 @@ system.dma.tlb_side = system.tlb_sched.cpu_side
 system.dma.mem_side = system.membus.cpu_side_ports
 system.read_post.buf_side = system.load_ctl.buf_side
 
-# Cache banks: PICCache's 60 PIC Mats behind the arbiter. Mats never start
-# their own cal() job here, they are only storage.
-cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
+
+cache = PICCache(system, pic_way_mask=0xFFFE)
 system.bank_arb = AccessBankArb(num_banks=NUM_BANKS)
 for mat in cache.mats:
     system.bank_arb.mat_side = mat.array_side 

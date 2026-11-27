@@ -1,4 +1,4 @@
-# Test data and golden model for cal_mat_e2e.py (one Mat runs one cal()
+# Test data and golden model for cal_frontend_e2e.py (one Mat runs one cal()
 # job), shared with check_cal_mat.py so the two can't drift apart.
 #
 # What a cal() job computes (RTL Controller.scala, Mat.scala, MAC.scala):
@@ -86,10 +86,18 @@ CASES = {
 
 
 class Case:
-    def __init__(self, name):
+    def __init__(self, name, mat=MAT, l_mat=L_MAT, seed=None):
+        """mat / l_mat / seed default to the single-Mat test's; a test with
+        several Mats (cal_acc_e2e.py) gives each Mat its own."""
         p = CASES[name]
         self.name = name
         self.__dict__.update(p)
+        if seed is not None:
+            self.seed = seed
+        self.mat = mat
+        self.l_mat = l_mat
+        self.mat_base = array_addr(*mat, 0, 0)
+        self.l_base = array_addr(*l_mat, 0, 0)
         self.cols = self.r_block_row + 1
         self.rows = self.l_block_row
         rng = random.Random(self.seed)
@@ -145,7 +153,7 @@ class Case:
                 word = 0
                 for k in range(64):
                     word |= ((self.R[k][c] >> bit) & 1) << k
-                out[MAT_BASE + ((self.n_buf + j) << 9) + c] = word
+                out[self.mat_base + ((self.n_buf + j) << 9) + c] = word
         return out
 
     def l_words(self):
@@ -156,7 +164,7 @@ class Case:
                 word = 0
                 for k in range(64):
                     word |= ((self.L[l][k] >> s) & 1) << k
-                out[L_BASE + s * self.rows + l] = word
+                out[self.l_base + s * self.rows + l] = word
         return out
 
     def m_layout(self):
@@ -172,7 +180,7 @@ class Case:
                     lanes.append((j, n // self.cols, n % self.cols))
                 else:
                     lanes.append((j, None, None))
-            out.append((MAT_BASE + w, lanes))
+            out.append((self.mat_base + w, lanes))
         return out
 
     def m_expected(self):
@@ -195,8 +203,8 @@ class Case:
         """{array address: word} that must not change: the M word after the
         last result, and every C word."""
         out = {}
-        nxt = MAT_BASE + self.m_words_needed()
-        if (nxt - MAT_BASE) < self.n_buf * WORDLINES:
+        nxt = self.mat_base + self.m_words_needed()
+        if (nxt - self.mat_base) < self.n_buf * WORDLINES:
             out[nxt] = junk(nxt)
         out.update(self.c_words())
         return out
@@ -206,19 +214,19 @@ class Case:
         out = {}
         for w in range(self.m_words_needed() + 1):
             if w < self.n_buf * WORDLINES:
-                out[MAT_BASE + w] = junk(MAT_BASE + w)
+                out[self.mat_base + w] = junk(self.mat_base + w)
         out.update(self.c_words())
         out.update(self.l_words())
         return out
 
-    def mat_params(self):
+    def cal_params(self): #change from mat_params to cal_params, because it wont goes into mat anymore
         return dict(n_buf=self.n_buf, n_cal=self.n_cal,
                     acc_width=self.acc_width, r_base_bit=self.r_base_bit,
                     r_block_row=self.r_block_row,
                     l_block_row=self.l_block_row,
                     l_precision=self.l_precision, signed_l=self.signed_l,
                     signed_r_last_exist=self.signed_r_last_exist,
-                    l_vec_fetch_addr=L_BASE)
+                    l_vec_fetch_addr=self.l_base)
 
     def compute_cycles(self):
         """Rough upper bound on the job's length, for scheduling reads."""

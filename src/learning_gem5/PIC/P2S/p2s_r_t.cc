@@ -185,8 +185,12 @@ P2S_R_T::handleResponse(PICPortID picPortID, PacketPtr pkt) {
     }
     else if (picPortID == PICPortID::CB) {
         delete pkt;
-        // done only after the last queued write is acked
-        if (p2sDone && bitSliceQueue.empty()) {
+        panic_if(writesInFlight == 0, "%s: cache-bank ACK with no write "
+                 "outstanding", name());
+        --writesInFlight;
+        // done only after every write is acked: AccessBankArb queues
+        // writes, so an ACK can belong to an earlier write
+        if (p2sDone && bitSliceQueue.empty() && writesInFlight == 0) {
             pendingReqPkt->makeResponse();
             instPort.sendPacket(pendingReqPkt);
         }
@@ -283,6 +287,7 @@ P2S_R_T::processWriteEvent() {
         bool success = cacheBankPort.sendTimingReq(pkt);
         if (success) {
             bitSliceQueue.pop_front();
+            ++writesInFlight;
             schedule(writeEvent, clockEdge(Cycles(1)));
         }
         else {

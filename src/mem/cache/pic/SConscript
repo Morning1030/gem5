@@ -35,7 +35,8 @@ DebugFlag('PICDMA', 'DMA_read_page_split: page segments, TLB, DRAM reads')
 DebugFlag('PICReadPost', 'ReadPostProcess: setup, aligned words out')
 
 # use -debug-flags=PICBankArb to open the debug output for the bank arbiter
-DebugFlag('PICBankArb', 'Bank access arbiter: P2S req/resp, grants, blocks')
+DebugFlag('PICBankArb', 'Bank access arbiter: request queue, Mat accesses, '
+                        'refusals, ACKs')
 
 # use -debug-flags=PICTLB to open the debug output for TLBReqScheduler
 DebugFlag('PICTLB', 'TLB request scheduler: arbitration, translations, paddr returns')

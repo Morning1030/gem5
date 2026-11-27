@@ -60,17 +60,32 @@ system.mem_ranges = [AddrRange(start=0x80000000, size='64MiB')]
 
 system.bank_arb = AccessBankArb(num_banks=NUM_BANKS)
 
-# The Mat under test is bank 0, way 1 (matID 1). All other Mats are storage.
+# The Mat under test is bank 0, way 1 (global matID 4).
+# All Mats wait for Scheduler EXE commands.
 system.mats = [
-    Mat(bank_index=b, way=w,
-        start_cycles=COMPUTE_START if (b, w) == (0, 1) else 10**9,
-        n_buf=1, n_cal=3, acc_width=16,
-        r_block_row=R_BLOCK_ROW, l_block_row=1, l_precision=0)
+    Mat(bank_index=b, way=w)
     for w in range(FIRST_PIC_WAY, NUM_WAYS)
     for b in range(NUM_BANKS)
 ]
 for mat in system.mats:
     system.bank_arb.mat_side = mat.array_side
+
+# Send EXE through the same command path as the main CAL test. The
+# frontend's three SETs take some cycles before the Mat sees its setup;
+# allow the nine-cycle dispatch latency for this idle frontend/scheduler.
+EXE_DISPATCH_CYCLES = 9
+system.setup_router = MatSetUpRouter(mats=system.mats, num_banks=NUM_BANKS)
+system.pic_transport = PicMmioTransport(request_gap=1, protocol_retry_delay=50)
+system.test_frontend = PicTestFrontend(
+    transport=system.pic_transport, trace='cal',
+    cal_cmds=[f"0 4 {R_BLOCK_ROW} 1 3 0 0 1 0 0 0 1"],
+    start_delay=COMPUTE_START - EXE_DISPATCH_CYCLES,
+    exit_on_finish=False)
+system.scheduler = Scheduler()
+system.cmd_state_helper = CmdStateHelper()
+system.pic_transport.mmio_port = system.scheduler.inst_port
+system.scheduler.csh_port = system.cmd_state_helper.inst_port
+system.scheduler.cb_port = system.setup_router.cmd_side
 
 # L vector path: Mat -> real AutoLoadL -> MatSink (all ones).
 system.l_mem = MatSink(read_default=0xFFFFFFFFFFFFFFFF)
@@ -113,7 +128,7 @@ system.idle.port = system.bank_arb.p2s_side[2]
 # M results of the baseline run (sub-array 0, row -> value); the other rows
 # of the first M_ROWS stay zero. These are what the RTL writes (checked
 # with a cycle-level transliteration of Controller.scala); row 2 lanes 1..3
-# hold what wBuf still had from row 1. cal_mat_e2e.py checks cal() against
+# hold what wBuf still had from row 1. cal_frontend_e2e.py checks cal() against
 # an independent golden model.
 GOLD = {addr(1, 0, 0, r): v for r, v in enumerate(
     [0x51004c004b0048, 0x51004c004c004b, 0x51004c004c004f])}

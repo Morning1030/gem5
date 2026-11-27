@@ -84,6 +84,9 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            // gem5 only: cache-bank writes accepted but not yet ACKed.
+            // AccessBankArb ACKs a write once it is in its Mat.
+            unsigned writesInFlight = 0;
             bool exitOnDone;
             Cycles exitDelay;
 
@@ -166,6 +169,9 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            // gem5 only: cache-bank writes accepted but not yet ACKed.
+            // AccessBankArb ACKs a write once it is in its Mat.
+            unsigned writesInFlight = 0;
             bool exitOnDone;
             Cycles exitDelay;
 
@@ -275,6 +281,9 @@ namespace gem5
             RequestorID requestorId;
             PacketPtr pendingReqPkt;
             bool p2sDone;
+            // gem5 only: cache-bank writes accepted but not yet ACKed.
+            // AccessBankArb ACKs a write once it is in its Mat.
+            unsigned writesInFlight = 0;
             bool exitOnDone;
             Cycles exitDelay;
 

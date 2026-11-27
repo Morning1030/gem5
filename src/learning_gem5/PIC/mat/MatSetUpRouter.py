@@ -15,8 +15,7 @@ class MatSetUpRouter(ClockedObject):
     cmd_side = ResponsePort("EXE set-ups from Scheduler.cb_port")
 
     # Every Mat an EXE may target, in any order: a Mat is found by its own
-    # (bank_index, way), not by its place in this list. Each one must have
-    # wait_for_setup=True.
+    # (bank_index, way), not by its place in this list.
     mats = VectorParam.Mat("Mats to route EXE set-ups to")
 
     # RTL SysConfig.get_bankID / get_in_bank_matID: the matID is

@@ -1,6 +1,5 @@
 #include "mem/cache/pic/access_bank_arb.hh"
 
-#include <algorithm>
 #include <cstring>
 
 #include "base/intmath.hh"
@@ -15,7 +14,6 @@ namespace gem5
 
 namespace
 {
-// mod: p2s_arbiter
 // Array-address field layout, confirmed against the real RTL --
 // SysConfig.scala:282-305's get_bankID()/get_in_bank_matID(), evaluated on
 // the accessCacheFullAddrLen(=17-bit) branch (the one that applies here,
@@ -26,55 +24,44 @@ namespace
 //   bit:    16 15 14 13 | 12 11 |  10  9  |  8 7 6 5 4 3 2 1 0
 //   field: [ matID_in_bank ][bankID][arrayID_in_mat][ wordline_offset ]
 //   width:        4            2          2                 9
-//
-// MSB -> LSB: matID_in_bank(4), bankID(2), arrayID_in_mat(2),
-// wordline_offset(9) = 4+2+2+9 = 17 bits. Bank sits *below*
-// matID_in_bank, not at the top of the address -- get_bankID() only ever
-// needs bankID = addr[12:11], so that's the only field extracted below;
-// matID_in_bank/arrayID_in_mat/offset are irrelevant to this arbiter (they
-// only matter once a request is already inside the right bank).
 constexpr unsigned kOffsetBits       = 9;  // wordline_offset, bits[8:0]
 constexpr unsigned kArrayIdInMatBits = 2;  // arrayID_in_mat, bits[10:9]
 constexpr uint32_t kWithinMatMask =
     (1u << (kOffsetBits + kArrayIdInMatBits)) - 1;
 
-/** Sender state on a packet sent to a Mat. */
+/** Sender state on a packet sent to a Mat: whose request it is. */
 class ArbMatSenderState : public Packet::SenderState
 {
   public:
-    ArbMatSenderState(unsigned _clientId, bool _isRead, uint32_t _addr)
-        : clientId(_clientId), isRead(_isRead), addr(_addr)
+    ArbMatSenderState(unsigned _clientId, PacketPtr _clientPkt)
+        : clientId(_clientId), clientPkt(_clientPkt)
     {}
 
     const unsigned clientId;
-    const bool isRead;
-    /** Full 17-bit array address of the access. */
-    const uint32_t addr;
+    /** The client's own packet, answered when the Mat answers a read. */
+    const PacketPtr clientPkt;
 };
+
+const char *
+clientName(unsigned clientId)
+{
+    static const char *names[kNumBankArbClients] = {
+        "LoadPostProcess", "BankFetch", "ACC", "AutoLoadL",
+        "P2S_L", "P2S_R", "P2S_R_T"};
+    return clientId < kNumBankArbClients ? names[clientId] : "?";
+}
 } // namespace
 
 AccessBankArb::AccessBankArb(const Params &p)
     : ClockedObject(p),
-      numClients(kNumBankArbClients),
-      reqValid(kNumBankArbClients, false),
-      // Deterministic simulation startup: scan from client 0 first.
-      lastGranted(kNumBankArbClients - 1),
-      state(ArbState::Access),
-      blockedClientId(0),
-      blockedBankId(0),
       bankReadyVec(p.num_banks, true),
-      autoLoadPort(p.name + ".autoload_side", this),
-      loadPostPort(p.name + ".load_post_side", kClientLoadPostProcess, this),
-      bankFetchPort(p.name + ".bank_fetch_side", kClientBankFetch, this),
-      accPort(p.name + ".acc_side", kClientAccumulator, this),
-      // Collect the clients' requests before choosing this cycle's grant.
-      tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent", false,
-                Event::Progress_Event_Pri),
       requestorId(p.system->getRequestorId(this)),
       matsPerBank(p.mats_per_bank),
       firstPicMat(p.first_pic_mat),
       bankBits(floorLog2(p.num_banks)),
-      heldMat(p.num_banks)
+      // Runs after the clients' same-cycle requests are queued.
+      tickEvent([this]{ processTickEvent(); }, name() + ".tickEvent", false,
+                Event::Progress_Event_Pri)
 {
     fatal_if(p.num_banks == 0 || !isPowerOf2(p.num_banks),
              "AccessBankArb: num_banks must be a non-zero power of 2");
@@ -83,29 +70,32 @@ AccessBankArb::AccessBankArb(const Params &p)
     fatal_if(p.first_pic_mat >= p.mats_per_bank,
              "AccessBankArb: first_pic_mat must be < mats_per_bank");
 
-    // mod: p2s_arbiter
     // Default decode, matching get_bankID() (SysConfig.scala:282-305):
-    // bankID sits right above arrayID_in_mat/wordline_offset and right
-    // below matID_in_bank -- addr[12:11] for the paper's default 4-bank
-    // config (see the field-layout note above). This is no longer a
-    // placeholder for that default config; setArrayAddrToBank() remains
-    // the override point if num_banks/matPerBank/core_addrLen differ.
+    // addr[12:11] for the paper's default 4-bank config.
     const unsigned num_banks = p.num_banks;
     arrayAddrToBankFn = [num_banks](uint32_t addr) {
         constexpr unsigned shift = kOffsetBits + kArrayIdInMatBits; // = 11
         return static_cast<unsigned>((addr >> shift) & (num_banks - 1));
     };
 
-    // mod: p2s_arbiter
-    // Exactly one connection per P2S engine -- index doubles as
-    // (BankArbClient - kClientP2S_L), see the file header comment.
+    // p2s_side's connection index doubles as (BankArbClient - kClientP2S_L).
     fatal_if(p.port_p2s_side_connection_count != 3,
              "AccessBankArb: p2s_side must have exactly 3 connections "
              "(P2S_L, P2S_R, P2S_R_T), got %d",
              p.port_p2s_side_connection_count);
-    for (int i = 0; i < p.port_p2s_side_connection_count; ++i) {
-        p2sPorts.emplace_back(
-            p.name + csprintf(".p2s_side[%d]", i), kClientP2S_L + i, this);
+
+    // One port per client, indexed by BankArbClient.
+    clientPorts.reserve(kNumBankArbClients);
+    clientPorts.emplace_back(p.name + ".load_post_side",
+                             kClientLoadPostProcess, this);
+    clientPorts.emplace_back(p.name + ".bank_fetch_side",
+                             kClientBankFetch, this);
+    clientPorts.emplace_back(p.name + ".acc_side", kClientAccumulator, this);
+    clientPorts.emplace_back(p.name + ".autoload_side",
+                             kClientAutoLoadVec, this);
+    for (unsigned i = 0; i < 3; ++i) {
+        clientPorts.emplace_back(p.name + csprintf(".p2s_side[%d]", i),
+                                 kClientP2S_L + i, this);
     }
 
     const unsigned numMats =
@@ -123,22 +113,16 @@ AccessBankArb::AccessBankArb(const Params &p)
 Port &
 AccessBankArb::getPort(const std::string &if_name, PortID idx)
 {
-    if (if_name == "p2s_side" &&
-        static_cast<size_t>(idx) < p2sPorts.size()) {
-        return p2sPorts[idx];
-    }
-    if (if_name == "autoload_side") {
-        return autoLoadPort;
-    }
-    if (if_name == "load_post_side") {
-        return loadPostPort;
-    }
-    if (if_name == "bank_fetch_side") {
-        return bankFetchPort;
-    }
-    if (if_name == "acc_side") {
-        return accPort;
-    }
+    if (if_name == "p2s_side" && idx >= 0 && idx < 3)
+        return clientPorts[kClientP2S_L + idx];
+    if (if_name == "load_post_side")
+        return clientPorts[kClientLoadPostProcess];
+    if (if_name == "bank_fetch_side")
+        return clientPorts[kClientBankFetch];
+    if (if_name == "acc_side")
+        return clientPorts[kClientAccumulator];
+    if (if_name == "autoload_side")
+        return clientPorts[kClientAutoLoadVec];
     if (if_name == "mat_side" &&
         static_cast<size_t>(idx) < matPorts.size()) {
         return matPorts[idx];
@@ -147,544 +131,236 @@ AccessBankArb::getPort(const std::string &if_name, PortID idx)
 }
 
 // ---------------------------------------------------------------------------
-// P2SPort
+// ClientPort
 // ---------------------------------------------------------------------------
 
-void
-AccessBankArb::P2SPort::sendPacket(PacketPtr pkt)
-{
-    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
-
-    DPRINTF(PICBankArb, "AccessBankArb: sending ack %s to client %d\n",
-            pkt->print(), id);
-    if (!sendTimingResp(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: client %d refused ack, will retry\n",
-                id);
-        blockedPacket = pkt;
-    }
-}
-
-AddrRangeList
-AccessBankArb::P2SPort::getAddrRanges() const
-{
-    // Private point-to-point link to one P2S engine, not decoded off a
-    // shared bus -- claim the whole address space like other such links
-    // in this tree (e.g. DMA_read_page_split::P2SPort).
-    AddrRangeList ranges;
-    ranges.push_back(AddrRange(0, MaxAddr));
-    return ranges;
-}
-
-void
-AccessBankArb::P2SPort::trySendRetry()
-{
-    if (canRetry() && owner->canAccept(id)) {
-        needRetry = false;
-        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to client %d\n",
-                id);
-        sendRetryReq();
-    }
-}
-
+// gem5 only: Scala io.request(clientId).ready is always true here -- every
+// request is queued on arrival.
 bool
-AccessBankArb::P2SPort::recvTimingReq(PacketPtr pkt)
+AccessBankArb::ClientPort::recvTimingReq(PacketPtr pkt)
 {
-    DPRINTF(PICBankArb, "AccessBankArb: got write req %s from client %d\n",
-            pkt->print(), id);
-
-    if (blockedPacket || needRetry) {
-        // Our previous ack to this same P2S engine hasn't gone out yet --
-        // don't accept a new write until it has.
-        needRetry = true;
-        owner->waitForGrant(id);
-        return false;
-    }
-    if (!owner->handleRequest(pkt, id)) {
-        // The client retains its request while valid waits for ready.
-        needRetry = true;
-        owner->waitForGrant(id);
-        return false;
-    }
-    return true;
+    return owner->enqueue(pkt, clientId);
 }
 
+// gem5 only: response back-pressure. Keep responses in order behind any
+// this client refused.
 void
-AccessBankArb::P2SPort::recvRespRetry()
+AccessBankArb::ClientPort::sendPacket(PacketPtr pkt)
 {
-    assert(blockedPacket != nullptr);
-    PacketPtr pkt = blockedPacket;
-    blockedPacket = nullptr;
-
-    sendPacket(pkt);
-    // May now be able to accept a new request from this same P2S engine.
-    trySendRetry();
-}
-
-// ---------------------------------------------------------------------------
-// AutoLoadPort
-// ---------------------------------------------------------------------------
-
-void
-AccessBankArb::AutoLoadPort::sendPacket(PacketPtr pkt)
-{
-    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
-
-    DPRINTF(PICBankArb, "AccessBankArb: sending read resp %s to AutoLoadL\n",
-            pkt->print());
-    if (!sendTimingResp(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: AutoLoadL refused resp, "
-                "will retry\n");
-        blockedPacket = pkt;
-    }
-}
-
-AddrRangeList
-AccessBankArb::AutoLoadPort::getAddrRanges() const
-{
-    AddrRangeList ranges;
-    ranges.push_back(AddrRange(0, MaxAddr));
-    return ranges;
-}
-
-void
-AccessBankArb::AutoLoadPort::trySendRetry()
-{
-    if (canRetry() && owner->canAccept(kClientAutoLoadVec)) {
-        needRetry = false;
-        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to AutoLoadL\n");
-        sendRetryReq();
-    }
-}
-
-bool
-AccessBankArb::AutoLoadPort::recvTimingReq(PacketPtr pkt)
-{
-    DPRINTF(PICBankArb, "AccessBankArb: got read req %s from AutoLoadL\n",
-            pkt->print());
-
-    if (blockedPacket || needRetry) {
-        needRetry = true;
-        owner->waitForGrant(kClientAutoLoadVec);
-        return false;
-    }
-    if (!owner->handleAutoLoadRequest(pkt)) {
-        needRetry = true;
-        owner->waitForGrant(kClientAutoLoadVec);
-        return false;
-    }
-    return true;
-}
-
-void
-AccessBankArb::AutoLoadPort::recvRespRetry()
-{
-    assert(blockedPacket != nullptr);
-    PacketPtr pkt = blockedPacket;
-    blockedPacket = nullptr;
-
-    sendPacket(pkt);
-    trySendRetry();
-}
-
-// ---------------------------------------------------------------------------
-// BankPort
-// ---------------------------------------------------------------------------
-
-void
-AccessBankArb::BankPort::sendPacket(PacketPtr pkt)
-{
-    DPRINTF(PICBankArb, "AccessBankArb: sending resp %s to client %u\n",
-            pkt->print(), clientId);
-    // Keep responses in order: queue behind any this client refused.
     if (!respQueue.empty() || !sendTimingResp(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: client %u resp queued\n",
-                clientId);
+        DPRINTF(PICBankArb, "AccessBankArb: %s refused a response, "
+                "holding it\n", clientName(clientId));
         respQueue.push_back(pkt);
     }
 }
 
-AddrRangeList
-AccessBankArb::BankPort::getAddrRanges() const
-{
-    AddrRangeList ranges;
-    ranges.push_back(AddrRange(0, MaxAddr));
-    return ranges;
-}
-
 void
-AccessBankArb::BankPort::trySendRetry()
+AccessBankArb::ClientPort::recvRespRetry()
 {
-    if (canRetry() && owner->canAccept(clientId)) {
-        needRetry = false;
-        DPRINTF(PICBankArb, "AccessBankArb: sending retry req to client %u\n",
-                clientId);
-        sendRetryReq();
-    }
-}
-
-bool
-AccessBankArb::BankPort::recvTimingReq(PacketPtr pkt)
-{
-    DPRINTF(PICBankArb, "AccessBankArb: got req %s from client %u\n",
-            pkt->print(), clientId);
-
-    if (!respQueue.empty() || needRetry) {
-        needRetry = true;
-        owner->waitForGrant(clientId);
-        return false;
-    }
-    if (!owner->handleBankRequest(pkt, clientId)) {
-        needRetry = true;
-        owner->waitForGrant(clientId);
-        return false;
-    }
-    return true;
-}
-
-void
-AccessBankArb::BankPort::recvRespRetry()
-{
-    assert(!respQueue.empty());
-    while (!respQueue.empty() && sendTimingResp(respQueue.front())) {
+    panic_if(respQueue.empty(), "AccessBankArb: response retry from %s "
+             "with nothing held", clientName(clientId));
+    while (!respQueue.empty() && sendTimingResp(respQueue.front()))
         respQueue.pop_front();
-    }
-    trySendRetry();
+}
+
+AddrRangeList
+AccessBankArb::ClientPort::getAddrRanges() const
+{
+    // A private point-to-point link, not decoded off a shared bus.
+    return {AddrRange(0, MaxAddr)};
 }
 
 // ---------------------------------------------------------------------------
-// Request/response handling
+// Request queue
 // ---------------------------------------------------------------------------
 
-bool
-AccessBankArb::handleRequest(PacketPtr pkt, unsigned clientId)
+// gem5 only: the client packet formats. P2S and ReadPostProcess send a
+// P2SWritePayload {arrayAddr, bitSlice}; AutoLoadL, BankFetch and ACC send
+// an 8-byte access whose packet address is the 17-bit array address.
+ReqPackage
+AccessBankArb::toReqPackage(unsigned clientId, PacketPtr pkt) const
 {
-    panic_if(pkt->getSize() != sizeof(P2SWritePayload),
-             "AccessBankArb: client %u sent a %u-byte write payload, "
-             "expected %zu", clientId, pkt->getSize(),
-             sizeof(P2SWritePayload));
-
-    const auto *payload = pkt->getConstPtr<P2SWritePayload>();
-
-    if (!submitP2SWrite(clientId, static_cast<uint32_t>(payload->arrayAddr),
-                         payload->bitSlice)) {
-        return false;
-    }
-
-    panic_if(grantedPkt, "AccessBankArb: two packets accepted in one grant");
-    grantedPkt = pkt;
-
-    DPRINTF(PICBankArb, "AccessBankArb: client %u posted addr=%#x\n",
-            clientId, payload->arrayAddr);
-
-    scheduleTick();
-    return true;
-}
-
-// AutoLoadL sends the full 17-bit word address, without a byte offset.
-bool
-AccessBankArb::handleAutoLoadRequest(PacketPtr pkt)
-{
-    panic_if(pkt->getSize() != sizeof(uint64_t),
-             "AccessBankArb: AutoLoadL sent a %u-byte read request, "
-             "expected %zu", pkt->getSize(), sizeof(uint64_t));
-
-    // One read at a time, until its response has been sent.
-    if (autoLoadPkt) {
-        return false;
-    }
-
     ReqPackage req;
-    req.addr = static_cast<uint32_t>(pkt->getAddr());
-    req.optype = AccessArrayType::READ;
-
-    if (!postRequest(kClientAutoLoadVec, req)) {
-        return false;
-    }
-    autoLoadPkt = pkt;
-
-    panic_if(grantedPkt, "AccessBankArb: two packets accepted in one grant");
-    grantedPkt = pkt;
-
-    DPRINTF(PICBankArb, "AccessBankArb: AutoLoadL posted read addr=%#x\n",
-            req.addr);
-
-    scheduleTick();
-    return true;
-}
-
-bool
-AccessBankArb::handleBankRequest(PacketPtr pkt, unsigned clientId)
-{
-    panic_if(clientId == kClientBankFetch && !pkt->isRead(),
-             "AccessBankArb: BankFetch only supports reads");
-    panic_if(pkt->getSize() != sizeof(uint64_t),
-             "AccessBankArb: client %u sent a %u-byte request, "
-             "expected %zu", clientId, pkt->getSize(), sizeof(uint64_t));
-
-    ReqPackage req;
-    req.addr = static_cast<uint32_t>(pkt->getAddr());
-    if (pkt->isRead()) {
-        req.optype = AccessArrayType::READ;
-    } else {
-        panic_if(!pkt->isWrite(), "AccessBankArb: Accumulator sent %s",
-                 pkt->print());
+    switch (clientId) {
+      case kClientLoadPostProcess:
+      case kClientP2S_L:
+      case kClientP2S_R:
+      case kClientP2S_R_T: {
+        panic_if(!pkt->isWrite(), "AccessBankArb: %s sent %s, only writes "
+                 "are allowed", clientName(clientId), pkt->print());
+        panic_if(pkt->getSize() != sizeof(P2SWritePayload),
+                 "AccessBankArb: %s sent a %u-byte write payload, "
+                 "expected %d", clientName(clientId), pkt->getSize(),
+                 sizeof(P2SWritePayload));
+        const auto *payload = pkt->getConstPtr<P2SWritePayload>();
+        req.addr = static_cast<uint32_t>(payload->arrayAddr);
         req.optype = AccessArrayType::WRITE;
-        req.dataWrittenToBank = pkt->getLE<uint64_t>();
+        req.dataWrittenToBank = payload->bitSlice;
+        break;
+      }
+      case kClientAutoLoadVec:
+      case kClientBankFetch:
+      case kClientAccumulator:
+        panic_if(pkt->getSize() != sizeof(uint64_t),
+                 "AccessBankArb: %s sent a %u-byte request, expected %d",
+                 clientName(clientId), pkt->getSize(), sizeof(uint64_t));
+        panic_if(clientId != kClientAccumulator && !pkt->isRead(),
+                 "AccessBankArb: %s sent %s, only reads are allowed",
+                 clientName(clientId), pkt->print());
+        req.addr = static_cast<uint32_t>(pkt->getAddr());
+        if (pkt->isRead()) {
+            req.optype = AccessArrayType::READ;
+        } else {
+            panic_if(!pkt->isWrite(), "AccessBankArb: %s sent %s",
+                     clientName(clientId), pkt->print());
+            req.optype = AccessArrayType::WRITE;
+            req.dataWrittenToBank = pkt->getLE<uint64_t>();
+        }
+        break;
+      default:
+        panic("AccessBankArb: unknown client %u", clientId);
     }
+    return req;
+}
 
-    // One not-yet-granted request at a time, like every other client.
-    if (!postRequest(clientId, req)) {
-        return false;
-    }
+// gem5 only: replaces the RTL RRArbiter input side. The request joins the
+// one FIFO in arrival order; the client never has to retry.
+bool
+AccessBankArb::enqueue(PacketPtr pkt, unsigned clientId)
+{
+    const ReqPackage req = toReqPackage(clientId, pkt);
+    reqQueue.push_back({clientId, pkt, req});
+    if (reqQueue.size() > maxQueueDepth)
+        maxQueueDepth = reqQueue.size();
 
-    panic_if(grantedPkt, "AccessBankArb: two packets accepted in one grant");
-    grantedPkt = pkt;
-
-    DPRINTF(PICBankArb, "AccessBankArb: %s posted %s addr=%#x\n",
-            clientId == kClientBankFetch ? "BankFetch" : "Accumulator",
-            pkt->isRead() ? "read" : "write", req.addr);
+    DPRINTF(PICBankArb, "AccessBankArb: queued %s %s addr=%#x "
+            "(queue %d, max %d)\n", clientName(clientId),
+            req.optype == AccessArrayType::READ ? "read" : "write",
+            req.addr, reqQueue.size(), maxQueueDepth);
 
     scheduleTick();
     return true;
-}
-
-void
-AccessBankArb::processTickEvent()
-{
-    lastTick = curTick();
-    std::optional<Grant> grant = tick();
-    if (grant && grant->lateCommit) {
-        DPRINTF(PICBankArb, "AccessBankArb: client %u committed after "
-                "Block\n", grant->clientId);
-    } else if (grant) {
-        panic_if(!grantedPkt,
-                 "AccessBankArb: granted client %u with no pending packet",
-                 grant->clientId);
-        PacketPtr pkt = grantedPkt;
-        grantedPkt = nullptr;
-        DPRINTF(PICBankArb, "AccessBankArb: client %u fired (bank %s)\n",
-                grant->clientId,
-                grant->committedThisCycle ? "ready" : "busy");
-
-        if (grant->clientId == kClientAutoLoadVec) {
-            // With Mats connected the response comes from the Mat
-            // (handleMatResponse); in stub mode answer with zeros here.
-            if (matPorts.empty()) {
-                const uint64_t zero = 0;
-                finishAutoLoad(reinterpret_cast<const uint8_t *>(&zero));
-            }
-        } else if (grant->clientId == kClientAccumulator ||
-                   grant->clientId == kClientBankFetch) {
-            if (pkt->isRead()) {
-                // These are already fired reads, not pending RR inputs.
-                // Match returning data to this client's grant order.
-                readFifo(grant->clientId).push_back(pkt);
-                if (matPorts.empty()) {
-                    const uint64_t zero = 0;
-                    finishBankRead(grant->clientId,
-                                   reinterpret_cast<const uint8_t *>(&zero));
-                }
-            } else {
-                pkt->makeResponse();
-                bankPort(grant->clientId).sendPacket(pkt);
-            }
-            // Any next request still needs its own RR grant.
-            bankPort(grant->clientId).trySendRetry();
-        } else {
-
-            P2SPort &port = writePort(grant->clientId);
-            pkt->makeResponse();
-            port.sendPacket(pkt);
-            // A waiting next write must receive its own RR grant.
-            port.trySendRetry();
-        }
-    }
-
-    // Keep ticking every cycle while there's pending work: either a
-    // client waiting to be granted, or we're frozen in Block waiting on
-    // a bank.
-    const bool anyPending = std::any_of(reqValid.begin(), reqValid.end(),
-                                         [](bool v) { return v; });
-    // A client answering a retry right away (the Accumulator) may already
-    // have scheduled the next tick from inside this one.
-    if ((anyPending || isBlocked()) && !tickEvent.scheduled()) {
-        schedule(tickEvent, clockEdge(Cycles(1)));
-    }
-}
-
-AccessBankArb::P2SPort &
-AccessBankArb::writePort(unsigned clientId)
-{
-    if (clientId == kClientLoadPostProcess)
-        return loadPostPort;
-    return p2sPorts[clientId - kClientP2S_L];
-}
-
-bool
-AccessBankArb::postRequest(unsigned clientId, const ReqPackage &req)
-{
-    fatal_if(clientId >= numClients,
-             "AccessBankArb::postRequest: clientId %u out of range (%u "
-             "clients)", clientId, numClients);
-    if (!canAccept(clientId)) {
-        // valid is remembered, but the caller retains the packet and its
-        // payload until this client is selected and retries successfully.
-        waitForGrant(clientId);
-        return false;
-    }
-    reqValid[clientId] = false;
-    firedClient = clientId;
-    firedReq = req;
-    DPRINTF(PICBankArb, "AccessBankArb: client %u accepted (RTL fire) "
-            "addr=%#x\n", clientId, req.addr);
-    return true;
-}
-
-bool
-AccessBankArb::canAccept(unsigned clientId) const
-{
-    return state == ArbState::Access && reservedClient == clientId &&
-           !firedClient;
 }
 
 void
 AccessBankArb::scheduleTick()
 {
     if (!tickEvent.scheduled()) {
+        // At most one head per cycle: if this cycle's tick already ran,
+        // the next one is on the next edge.
         const Tick when = clockEdge();
         schedule(tickEvent, lastTick && when <= *lastTick ?
                  clockEdge(Cycles(1)) : when);
     }
 }
 
+// Scala: AccessBank_Arb, states access/block (bankAccessScheduler.scala
+// :95-125) -- the access goes out only when its bank's mem_ready is set; a
+// blocked access holds everything behind it. gem5 only: the access is the
+// FIFO head instead of an RRArbiter grant.
 void
-AccessBankArb::waitForGrant(unsigned clientId)
+AccessBankArb::processTickEvent()
 {
-    if (!reqValid[clientId]) {
-        reqValid[clientId] = true;
-        DPRINTF(PICBankArb, "AccessBankArb: client %u waiting for grant\n",
-                clientId);
-    }
-    scheduleTick();
-}
+    lastTick = curTick();
+    if (reqQueue.empty())
+        return;
 
-bool
-AccessBankArb::clientCanRetry(unsigned clientId) const
-{
-    if (clientId == kClientAutoLoadVec)
-        return !autoLoadPkt && autoLoadPort.canRetry();
-    if (clientId == kClientAccumulator || clientId == kClientBankFetch)
-        return (clientId == kClientBankFetch ? bankFetchPort : accPort).canRetry();
-    if (clientId == kClientLoadPostProcess)
-        return loadPostPort.canRetry();
-    if (clientId >= kClientP2S_L && clientId <= kClientP2S_R_T)
-        return p2sPorts[clientId - kClientP2S_L].canRetry();
-    return false;
-}
+    const QueuedReq &head = reqQueue.front();
+    const unsigned bankId = arrayAddrToBankFn(head.req.addr);
 
-void
-AccessBankArb::retryClient(unsigned clientId)
-{
-    if (clientId == kClientAutoLoadVec)
-        autoLoadPort.trySendRetry();
-    else if (clientId == kClientAccumulator || clientId == kClientBankFetch)
-        bankPort(clientId).trySendRetry();
-    else
-        writePort(clientId).trySendRetry();
-}
-
-bool
-AccessBankArb::isPending(unsigned clientId) const
-{
-    fatal_if(clientId >= numClients,
-             "AccessBankArb::isPending: clientId %u out of range (%u "
-             "clients)", clientId, numClients);
-    return reqValid[clientId];
-}
-
-bool
-AccessBankArb::submitP2SWrite(unsigned clientId, uint32_t arrayAddr,
-                               uint64_t dataWrittenToBank)
-{
-    ReqPackage req;
-    req.addr = arrayAddr;
-    req.optype = AccessArrayType::WRITE;
-    req.dataWrittenToBank = dataWrittenToBank;
-    return postRequest(clientId, req);
-}
-
-std::optional<AccessBankArb::Grant>
-AccessBankArb::tick()
-{
-    if (state == ArbState::Block) {
-        // io.out.ready == false the whole time we're here: nobody else can
-        // be granted until this specific access lands.
-        if (!bankReadyVec[blockedBankId])
-            return std::nullopt;  // still frozen
-
-        HeldMatReq &held = heldMat[blockedBankId];
-        if (held.pkt) {
-            // A refused packet is already the blocked request. Wait for
-            // the Mat's retry, then resend it here instead of committing
-            // blockedReq a second time.
-            if (!held.retryReady)
-                return std::nullopt;
-            held.retryReady = false;
-            if (!matPorts[held.matIdx].sendTimingReq(held.pkt))
-                return std::nullopt;
-            held.pkt = nullptr;
-        } else if (!commit(blockedClientId, blockedReq, blockedBankId)) {
-            return std::nullopt;
-        }
-
-        state = ArbState::Access;
-        return Grant{blockedClientId, /*committedThisCycle=*/true,
-                     /*lateCommit=*/true};
+    if (!bankReadyVec[bankId]) {
+        // Scala: state block, io.mem_ready(bankID) low. Poll every cycle;
+        // CacheController does not notify when the bank frees up.
+        DPRINTF(PICBankArb, "AccessBankArb: bank %u busy, %s waits at the "
+                "head\n", bankId, clientName(head.clientId));
+        if (!tickEvent.scheduled())
+            schedule(tickEvent, clockEdge(Cycles(1)));
+        return;
     }
 
-    if (!reservedClient) {
-        for (unsigned i = 1; i <= numClients; ++i) {
-            const unsigned idx = (lastGranted + i) % numClients;
-            if (reqValid[idx] && clientCanRetry(idx)) {
-                reservedClient = idx;
-                break;
-            }
-        }
+    if (heldMatPkt) {
+        // The Mat refused the head earlier; matRetry() reschedules us.
+        if (!heldRetryReady)
+            return;
+        heldRetryReady = false;
+        if (!matPorts[heldMatIdx].sendTimingReq(heldMatPkt))
+            return;
+        DPRINTF(PICBankArb, "AccessBankArb: Mat[%u] took the held %s "
+                "access\n", heldMatIdx, clientName(head.clientId));
+        heldMatPkt = nullptr;
+    } else if (!issueHead(head, bankId)) {
+        return;
     }
-    if (reservedClient && !firedClient && clientCanRetry(*reservedClient))
-        retryClient(*reservedClient);
 
-    if (!firedClient)
-        return std::nullopt;
+    // The head reached its Mat: a write is ACKed now, a read is answered
+    // when the Mat's data comes back (handleMatResponse). Pop first: the
+    // client may send its next request from inside the ACK.
+    const QueuedReq done = head;
+    reqQueue.pop_front();
+    if (done.req.optype == AccessArrayType::WRITE || matPorts.empty())
+        respond(done.clientId, done.pkt, nullptr);
 
-    // The selected client has now returned from sendTimingReq(true), so
-    // it has advanced its dequeue pointer before any ACK is delivered.
-    const unsigned idx = *firedClient;
-    const ReqPackage req = firedReq;
-    firedClient.reset();
-    reservedClient.reset();
-    lastGranted = idx;
-    const unsigned bankId = arrayAddrToBankFn(req.addr);
-
-    if (bankReady(bankId) && commit(idx, req, bankId))
-        return Grant{idx, /*committedThisCycle=*/true};
-
-    state = ArbState::Block;
-    blockedReq = req;
-    blockedClientId = idx;
-    blockedBankId = bankId;
-    return Grant{idx, /*committedThisCycle=*/false};
+    // A request queued during the ACK has already scheduled the next tick.
+    if (!reqQueue.empty() && !tickEvent.scheduled())
+        schedule(tickEvent, clockEdge(Cycles(1)));
 }
 
 bool
-AccessBankArb::commit(unsigned clientId, const ReqPackage &req,
-                       unsigned bankId)
+AccessBankArb::issueHead(const QueuedReq &head, unsigned bankId)
 {
     // Stub mode (no Mats connected): nothing to write or read.
     if (matPorts.empty())
         return true;
-    return sendToMat(clientId, req, bankId);
+
+    const unsigned idx = matIndex(head.req.addr, bankId);
+    panic_if(idx >= matPorts.size(), "AccessBankArb: Mat index %u out of "
+             "range (%d Mats)", idx, matPorts.size());
+
+    const bool isRead = (head.req.optype == AccessArrayType::READ);
+    RequestPtr r = std::make_shared<Request>(
+        head.req.addr & kWithinMatMask, sizeof(uint64_t), 0, requestorId);
+    PacketPtr pkt = new Packet(r, isRead ? MemCmd::ReadReq
+                                         : MemCmd::WriteReq);
+    pkt->allocate();
+    if (!isRead) {
+        pkt->setData(
+            reinterpret_cast<const uint8_t *>(&head.req.dataWrittenToBank));
+    }
+    pkt->pushSenderState(new ArbMatSenderState(head.clientId, head.pkt));
+
+    DPRINTF(PICBankArb, "AccessBankArb: %s -> Mat[%u] %s\n",
+            clientName(head.clientId), idx, pkt->print());
+
+    if (!matPorts[idx].sendTimingReq(pkt)) {
+        DPRINTF(PICBankArb, "AccessBankArb: Mat[%u] refused, the head "
+                "waits for its retry\n", idx);
+        heldMatPkt = pkt;
+        heldMatIdx = idx;
+        heldRetryReady = false;
+        return false;
+    }
+    return true;
 }
+
+void
+AccessBankArb::respond(unsigned clientId, PacketPtr pkt,
+                       const uint8_t *readData)
+{
+    if (pkt->isRead()) {
+        // Stub mode answers reads with zeros.
+        const uint64_t zero = 0;
+        pkt->setData(readData ? readData
+                              : reinterpret_cast<const uint8_t *>(&zero));
+    }
+    pkt->makeResponse();
+    DPRINTF(PICBankArb, "AccessBankArb: %s to %s\n",
+            pkt->isRead() ? "read data" : "write ack", clientName(clientId));
+    clientPorts[clientId].sendPacket(pkt);
+}
+
+// ---------------------------------------------------------------------------
+// Mat side
+// ---------------------------------------------------------------------------
 
 unsigned
 AccessBankArb::matIndex(uint32_t addr, unsigned bankId) const
@@ -699,121 +375,25 @@ AccessBankArb::matIndex(uint32_t addr, unsigned bankId) const
 }
 
 bool
-AccessBankArb::sendToMat(unsigned clientId, const ReqPackage &req,
-                         unsigned bankId)
-{
-    const unsigned idx = matIndex(req.addr, bankId);
-    panic_if(idx >= matPorts.size(), "AccessBankArb: Mat index %u out of "
-             "range (%zu Mats)", idx, matPorts.size());
-
-    const bool isRead = (req.optype == AccessArrayType::READ);
-    RequestPtr r = std::make_shared<Request>(
-        req.addr & kWithinMatMask, sizeof(uint64_t), 0, requestorId);
-    PacketPtr pkt = new Packet(r, isRead ? MemCmd::ReadReq
-                                         : MemCmd::WriteReq);
-    pkt->allocate();
-    if (!isRead) {
-        pkt->setData(
-            reinterpret_cast<const uint8_t *>(&req.dataWrittenToBank));
-    }
-    pkt->pushSenderState(new ArbMatSenderState(clientId, isRead, req.addr));
-
-    DPRINTF(PICBankArb, "AccessBankArb: client %u -> Mat[%u] %s\n",
-            clientId, idx, pkt->print());
-
-    if (!matPorts[idx].sendTimingReq(pkt)) {
-        DPRINTF(PICBankArb, "AccessBankArb: Mat[%u] refused, bank %u "
-                "not ready\n", idx, bankId);
-        heldMat[bankId].pkt = pkt;
-        heldMat[bankId].matIdx = idx;
-        heldMat[bankId].retryReady = false;
-        return false;
-    }
-    return true;
-}
-
-bool
 AccessBankArb::handleMatResponse(PacketPtr pkt)
 {
     auto *ss = safe_cast<ArbMatSenderState *>(pkt->popSenderState());
-    if (ss->isRead) {
-        // Send the read data back to the client that asked for it.
-        if (ss->clientId == kClientAutoLoadVec) {
-            panic_if(!autoLoadPkt, "AccessBankArb: read response with no "
-                     "AutoLoadL request in flight");
-            finishAutoLoad(pkt->getConstPtr<uint8_t>());
-        } else if (ss->clientId == kClientAccumulator ||
-                   ss->clientId == kClientBankFetch) {
-            auto &fifo = readFifo(ss->clientId);
-            panic_if(fifo.empty(), "AccessBankArb: read response with no "
-                     "client %u read in flight", ss->clientId);
-            panic_if(fifo.front()->getAddr() != ss->addr,
-                     "AccessBankArb: client %u read response addr %#x, "
-                     "oldest read addr %#x", ss->clientId, ss->addr,
-                     fifo.front()->getAddr());
-            finishBankRead(ss->clientId, pkt->getConstPtr<uint8_t>());
-        } else {
-            panic("AccessBankArb: read response for client %u, which has "
-                  "no read port", ss->clientId);
-        }
-    }
-    // A write was already acked to its client at grant.
+    if (pkt->isRead())
+        respond(ss->clientId, ss->clientPkt, pkt->getConstPtr<uint8_t>());
+    // A write was already ACKed when the Mat accepted it.
     delete ss;
     delete pkt;
     return true;
 }
 
-AccessBankArb::BankPort &
-AccessBankArb::bankPort(unsigned clientId)
-{
-    panic_if(clientId != kClientAccumulator && clientId != kClientBankFetch,
-             "AccessBankArb: no raw request port for client %u", clientId);
-    return clientId == kClientBankFetch ? bankFetchPort : accPort;
-}
-
-std::deque<PacketPtr> &
-AccessBankArb::readFifo(unsigned clientId)
-{
-    panic_if(clientId != kClientAccumulator && clientId != kClientBankFetch,
-             "AccessBankArb: no read FIFO for client %u", clientId);
-    return clientId == kClientBankFetch ? bankFetchReadFifo : accReadFifo;
-}
-
-void
-AccessBankArb::finishBankRead(unsigned clientId, const uint8_t *data)
-{
-    auto &fifo = readFifo(clientId);
-    PacketPtr pkt = fifo.front();
-    fifo.pop_front();
-    pkt->setData(data);
-    pkt->makeResponse();
-    bankPort(clientId).sendPacket(pkt);
-}
-
-void
-AccessBankArb::finishAutoLoad(const uint8_t *data)
-{
-    PacketPtr pkt = autoLoadPkt;
-    autoLoadPkt = nullptr;
-    pkt->setData(data);
-    pkt->makeResponse();
-    autoLoadPort.sendPacket(pkt);
-    autoLoadPort.trySendRetry();
-}
-
 void
 AccessBankArb::matRetry(int idx)
 {
-    HeldMatReq &h = heldMat[idx % bankReadyVec.size()];
-    panic_if(!h.pkt || h.matIdx != static_cast<unsigned>(idx),
+    panic_if(!heldMatPkt || heldMatIdx != static_cast<unsigned>(idx),
              "AccessBankArb: unexpected retry from Mat[%d]", idx);
-    // Keep the request in Block until an arbiter tick can resend it.
-    // That tick returns without granting another client, so arbitration
-    // resumes on the following cycle, with no duplicate commit or ACK.
-    h.retryReady = true;
-    if (!tickEvent.scheduled()) {
+    heldRetryReady = true;
+    if (!tickEvent.scheduled())
         schedule(tickEvent, clockEdge(Cycles(1)));
-    }
 }
 
 bool
@@ -832,7 +412,7 @@ void
 AccessBankArb::setBankReady(unsigned bankId, bool ready)
 {
     fatal_if(bankId >= bankReadyVec.size(),
-             "AccessBankArb::setBankReady: bank %u out of range (%zu "
+             "AccessBankArb::setBankReady: bank %u out of range (%d "
              "banks)", bankId, bankReadyVec.size());
     bankReadyVec[bankId] = ready;
 }
@@ -841,9 +421,9 @@ bool
 AccessBankArb::bankReady(unsigned bankId) const
 {
     fatal_if(bankId >= bankReadyVec.size(),
-             "AccessBankArb::bankReady: bank %u out of range (%zu banks)",
+             "AccessBankArb::bankReady: bank %u out of range (%d banks)",
              bankId, bankReadyVec.size());
-    return bankReadyVec[bankId] && heldMat[bankId].pkt == nullptr;
+    return bankReadyVec[bankId];
 }
 
 void

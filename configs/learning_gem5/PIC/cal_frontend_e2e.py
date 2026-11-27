@@ -1,14 +1,13 @@
-# Same cal() job and checks as cal_mat_e2e.py, except the Mat is started
-# the way the RTL starts it: by an EXE command through the frontend.
+# CAL data and result checks, started by a Scheduler EXE command.
 #
 #   PicTestFrontend (EXE: SET_SRC, SET_DST, SET_PARAM) -> PicMmioTransport
 #     -> Scheduler (decode, cb_port) -> MatSetUpRouter -> the Mat under test
 #
-# The Mats get no cal() parameters of their own (wait_for_setup=True), so
+# The Mats get no cal() parameters of their own, so
 # the job only computes the right M if every EXE field makes it through the
 # frontend, the Scheduler's decode and the router. Data in (C, L, junk M)
 # and read back still go through ArbTestClients on AccessBankArb, and the L
-# fetch through the real AutoLoadL, exactly as in cal_mat_e2e.py.
+# fetch goes through the real AutoLoadL.
 #
 # Run from the gem5 root (pick a case from cal_test_data.CASES: u16,
 # u16_multi, s32, big; default u16):
@@ -86,11 +85,11 @@ mats = []
 for w in range(ctd.FIRST_PIC_WAY, ctd.NUM_WAYS):
     for b in range(ctd.NUM_BANKS):
         if (w, b) == ctd.MAT:
-            mat = Mat(bank_index=b, way=w, wait_for_setup=True,
+            mat = Mat(bank_index=b, way=w,
                       max_cycles=10 * case.compute_cycles())
             mat_under_test = mat
         else:
-            mat = Mat(bank_index=b, way=w, wait_for_setup=True)
+            mat = Mat(bank_index=b, way=w)
         mats.append(mat)
 system.mats = mats
 for mat in system.mats:
@@ -145,7 +144,7 @@ system.reader.port = system.bank_arb.acc_side
 outdir = m5.options.outdir
 with open(os.path.join(outdir, 'cal_test_input.txt'), 'w') as f:
     f.write(f"case {case.name}: " + ", ".join(
-        f"{k}={v}" for k, v in case.mat_params().items()) + "\n")
+        f"{k}={v}" for k, v in case.cal_params().items()) + "\n")
     f.write(f"EXE (ISA.c EXE() order): {exe_cmd}\n")
     f.write(f"Mat under test: way {ctd.MAT[0]} bank {ctd.MAT[1]} "
             f"(matID {TARGET_MAT_ID}, base {ctd.MAT_BASE:#x}); L words in "

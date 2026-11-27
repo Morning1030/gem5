@@ -77,7 +77,8 @@ system.acc = Accumulator(
 # Mats are storage only: start_cycles keeps them from starting their own
 # cal() job, which would drop every external write. Way 0 is the normal
 # cache way; all other ways are in PIC mode.
-cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
+#cache = PICCache(system, pic_way_mask=0xFFFE, start_cycles=10**9)
+cache = PICCache(system, pic_way_mask=0xFFFE)
 
 system.bank_arb = AccessBankArb(num_banks=4)
 for mat in cache.mats:

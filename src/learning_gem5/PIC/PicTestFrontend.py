@@ -28,8 +28,8 @@ class PicTestFrontend(ClockedObject):
 
     trace = Param.String(
         "p2s",
-        "Frontend trace: p2s, acc, load (commands from load_cmds), or cal "
-        "(commands from cal_cmds)",
+        "Frontend trace: p2s, acc, load (commands from load_cmds), cal "
+        "(commands from cal_cmds), or program (commands from program_cmds)",
     )
 
     load_cmds = VectorParam.String(
@@ -48,6 +48,18 @@ class PicTestFrontend(ClockedObject):
         "<needL>' (baseLAddr = array address of the first L word, "
         "targetMatID = way * 4 + bank, accWidth 1 = 32-bit); command IDs "
         "count from 1",
+    )
+
+    # gem5 only: several commands sent back to back, none waiting for the
+    # one before it to finish.
+    program_cmds = VectorParam.String(
+        [],
+        "trace 'program': one command per entry, sent in order without "
+        "waiting for completion. 'cal <the 12 cal_cmds fields>'; "
+        "'acc <src> <dst> <srcNum> <accRowNum> <bitWidth>' (ISA.c ACC() "
+        "order, array addresses, bitWidth 1 = 32-bit); 'wait <cycles>' holds "
+        "the next command's first SET that many cycles, in place of ISA.c "
+        "waitEnqCmdFree(). Command IDs count from 1",
     )
 
     acc_bit_width_code = Param.Unsigned(

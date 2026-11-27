@@ -31,7 +31,7 @@ system.test_frontend = PicTestFrontend(
 
 system.scheduler = Scheduler(system=system)
 system.cmd_state_helper = CmdStateHelper(system=system)
-pic_cache = PICCache(system=system, pic_way_mask=0, with_ctrl=True, start_cycles=10**10)
+pic_cache = PICCache(system=system, pic_way_mask=0, with_ctrl=True)
 system.switchCtrl = SwitchController(
     system=system,
     cache=pic_cache.ctrl
